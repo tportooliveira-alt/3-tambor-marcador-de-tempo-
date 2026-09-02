@@ -6,8 +6,9 @@ import java.nio.ByteBuffer
  * Calcula a variação de luminância na faixa (ROI) a partir do plano Y de cada quadro.
  *
  * Mantém apenas as duas últimas faixas (c-1 e c-2) e as referências de fundo — nunca o quadro
- * inteiro. Todos os arrays são alocados uma vez no construtor e reutilizados (sem alocação
- * por quadro no caminho quente, exceto a cópia entregue em [FrameMeasurement]).
+ * inteiro. Todos os arrays são alocados uma vez no construtor e reutilizados: NÃO há alocação
+ * por quadro no caminho quente. A [FrameMeasurement] devolvida referencia os buffers rotativos
+ * (válidos até o próximo `process()`); quem precisa guardar as faixas copia (o engine, no candidato).
  *
  * Com `lag == 2` (flicker de 120 Hz a 240 FPS) a comparação é feita com o quadro de mesma
  * fase de iluminação e a referência de fundo é separada por paridade do quadro.
@@ -28,6 +29,8 @@ class StripDifferencer(
 
     private var prev1: IntArray? = null
     private var prev2: IntArray? = null
+    private var prev1Ts: Nanos = 0L
+    private var prev2Ts: Nanos = 0L
     private val background = arrayOfNulls<DoubleArray>(2)
     private var frameIndex = 0
 
@@ -44,6 +47,8 @@ class StripDifferencer(
     fun reset() {
         prev1 = null
         prev2 = null
+        prev1Ts = 0L
+        prev2Ts = 0L
         background[0] = null
         background[1] = null
         frameIndex = 0
@@ -92,16 +97,18 @@ class StripDifferencer(
             background[bi] = DoubleArray(n) { cur[it].toDouble() }
         }
         val ref = if (lag == 1) prev1 else prev2
+        val refTs = if (lag == 1) prev1Ts else prev2Ts
         if (ref == null) {
             prev2 = prev1
+            prev2Ts = prev1Ts
             prev1 = cur
+            prev1Ts = tsNs
             return null
         }
         val bg = background[bi]!!
         var sumFull = 0L
         var sumCore = 0L
         var sumBg = 0.0
-        val rowCore = DoubleArray(h)
         for (row in 0 until h) {
             val o = row * w
             var rowSumCore = 0L
@@ -117,7 +124,6 @@ class StripDifferencer(
                 rowSumCore += d
             }
             sumCore += rowSumCore
-            rowCore[row] = rowSumCore.toDouble() / coreWidth
         }
         var lag2: Double? = null
         val p2 = prev2
@@ -132,18 +138,20 @@ class StripDifferencer(
         }
         val m = FrameMeasurement(
             tsNs = tsNs,
+            prevTsNs = refTs,
             deltaFull = sumFull.toDouble() / n,
             deltaCore = sumCore.toDouble() / (coreWidth * h),
             deltaBackground = sumBg / n,
-            rowCore = rowCore,
-            stripPrev = ref.copyOf(),
-            stripCur = cur.copyOf(),
-            stripBg = bg.copyOf(),
+            stripPrev = ref,
+            stripCur = cur,
+            stripBg = bg,
             deltaFullLag2 = lag2,
             lag = lag,
         )
         prev2 = prev1
+        prev2Ts = prev1Ts
         prev1 = cur
+        prev1Ts = tsNs
         return m
     }
 

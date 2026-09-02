@@ -7,16 +7,19 @@ import android.view.Surface
 /**
  * Geometria do preview.
  *
- * O buffer do sensor (ImageReader e leitor GL) está na orientação NATIVA do sensor: para uma
- * câmera traseira com SENSOR_ORIENTATION = 90, isso é a paisagem "normal" (ROTATION_90) e fica
- * de cabeça para baixo em ROTATION_270. A imagem é exibida "fit" (letterbox) no TextureView.
+ * O buffer do sensor (ImageReader e leitor GL) está na orientação NATIVA do sensor: para uma câmera
+ * traseira com SENSOR_ORIENTATION = 90, isso é a paisagem "normal" (ROTATION_90) e fica de cabeça
+ * para baixo em ROTATION_270. A imagem é exibida "fit" (letterbox) no TextureView.
  *
- * Na sessão normal, o próprio Camera2 desenha no TextureView já rotacionado para a orientação
- * natural do aparelho (retrato), então o TextureView precisa da transformação clássica do
- * Camera2Basic (rotação de ±90° + escala) para aparecer certo em paisagem; no leitor GL nós
- * desenhamos a textura do sensor diretamente, e só o "fit" (+180° quando invertido) se aplica.
+ * Dois produtores desenham no TextureView:
+ *  - o leitor GL (sessão de alta velocidade) desenha a textura do sensor diretamente: só "fit"
+ *    (+180° quando invertido);
+ *  - o Camera2 (sessão normal) entrega buffers marcados com a rotação do sensor, que o TextureView
+ *    aplica como se o aparelho estivesse em retrato; em paisagem é preciso a transformação clássica
+ *    do Camera2Basic (rotação de ∓90° + escala) — [bufferRotatedBySensor].
  *
- * As funções bufferX/bufferY convertem frações da tela → frações do buffer do sensor.
+ * bufferX/bufferY convertem frações da tela → frações do buffer do sensor e valem para os dois casos,
+ * porque o resultado exibido é o mesmo (sensor "fit", ±180°).
  */
 data class PreviewGeometry(
     val viewW: Float,
@@ -25,18 +28,21 @@ data class PreviewGeometry(
     val sensorH: Float,
     val sensorOrientation: Int,
     val displayRotation: Int,
-    val cameraRendersNatural: Boolean,
+    val bufferRotatedBySensor: Boolean,
 ) {
     /** Verdadeiro quando a imagem do sensor aparece invertida (180°) nesta orientação de tela. */
     val rotated180: Boolean
         get() = (sensorOrientation == 90 && displayRotation == Surface.ROTATION_270) ||
             (sensorOrientation == 270 && displayRotation == Surface.ROTATION_90)
 
+    private val fitScale: Float
+        get() = if (viewW <= 0f || viewH <= 0f || sensorW <= 0f || sensorH <= 0f) 1f else minOf(viewW / sensorW, viewH / sensorH)
+
+    /** Retângulo da imagem do sensor na tela ("fit", centrado). */
     val imageRect: RectF = run {
         if (viewW <= 0f || viewH <= 0f || sensorW <= 0f || sensorH <= 0f) return@run RectF(0f, 0f, viewW, viewH)
-        val scale = minOf(viewW / sensorW, viewH / sensorH)
-        val w = sensorW * scale
-        val h = sensorH * scale
+        val w = sensorW * fitScale
+        val h = sensorH * fitScale
         val l = (viewW - w) / 2f
         val t = (viewH - h) / 2f
         RectF(l, t, l + w, t + h)
@@ -61,24 +67,18 @@ data class PreviewGeometry(
         if (viewW <= 0f || viewH <= 0f) return m
         val cx = viewW / 2f
         val cy = viewH / 2f
-        if (cameraRendersNatural && (displayRotation == Surface.ROTATION_90 || displayRotation == Surface.ROTATION_270)) {
-            // Camera2Basic: o buffer chega em orientação natural (retrato); em paisagem rotacionamos ±90°
-            // e escalamos para caber ("fit") mantendo a proporção do sensor.
-            val viewRect = RectF(0f, 0f, viewW, viewH)
-            val bufferRect = RectF(0f, 0f, viewH, viewW)
-            bufferRect.offset(cx - bufferRect.centerX(), cy - bufferRect.centerY())
-            m.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
-            val fit = minOf(viewW / sensorW, viewH / sensorH)
-            val sx = (sensorW * fit) / viewW
-            val sy = (sensorH * fit) / viewH
-            m.postScale(sx / (viewH / viewW), sy / (viewW / viewH), cx, cy)
+        val fitW = imageRect.width()
+        val fitH = imageRect.height()
+        if (bufferRotatedBySensor && (displayRotation == Surface.ROTATION_90 || displayRotation == Surface.ROTATION_270)) {
+            // O conteúdo chega rotacionado 90° e esticado na view. Vamos rotacioná-lo de volta (∓90°);
+            // a rotação troca os eixos, então ANTES dela o conteúdo precisa medir (fitH × fitW) para
+            // terminar em (fitW × fitH) — a mesma conta do Camera2Basic, mas com "fit" em vez de "fill".
+            m.setScale(fitH / viewW, fitW / viewH, cx, cy)
             m.postRotate(90f * (displayRotation - 2), cx, cy)
             return m
         }
         // Leitor GL (ou tela em retrato): só o fit e a inversão de 180° quando necessário.
-        val sx = imageRect.width() / viewW
-        val sy = imageRect.height() / viewH
-        m.setScale(sx, sy, cx, cy)
+        m.setScale(fitW / viewW, fitH / viewH, cx, cy)
         if (rotated180) m.postRotate(180f, cx, cy)
         return m
     }

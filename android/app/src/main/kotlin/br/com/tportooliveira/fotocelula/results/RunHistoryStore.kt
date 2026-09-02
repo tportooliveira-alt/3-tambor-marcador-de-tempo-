@@ -4,6 +4,7 @@ import android.content.Context
 import br.com.tportooliveira.fotocelula.core.TimeFormatter
 import org.json.JSONArray
 import java.io.File
+import java.util.concurrent.Executors
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -12,6 +13,8 @@ import java.util.Locale
 class RunHistoryStore(context: Context) {
     private val file = File(context.filesDir, "historico.json")
     private val _records = ArrayList<RunRecord>()
+    /** Escritas em disco fora da main thread, em ordem. */
+    private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "history-io") }
     val records: List<RunRecord> get() = _records
 
     init { load() }
@@ -33,7 +36,14 @@ class RunHistoryStore(context: Context) {
     private fun save() {
         val arr = JSONArray()
         for (r in _records) arr.put(r.toJson())
-        file.writeText(arr.toString(2))
+        val text = arr.toString(2)
+        io.execute {
+            try {
+                val tmp = File(file.path + ".tmp")
+                tmp.writeText(text)
+                if (!tmp.renameTo(file)) file.writeText(text)
+            } catch (_: Exception) { }
+        }
     }
 
     fun toCsv(): String {

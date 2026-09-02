@@ -41,12 +41,14 @@ exposições curtas e longas, calibração, máquina de estados completa).
 | Modo | Erro por gatilho | Observação |
 |---|---|---|
 | Por quadro (bruto) a 240 FPS | ±2,08 ms | limite da amostragem |
-| **Refinado, qualidade 2** (fração de exposição) | **0,01–0,1 ms** na simulação (1.920 cenários: erro médio 0,007 ms, p95 0,03 ms, máximo 0,17 ms) | precisa de contraste ≥ 20 níveis entre cavalo e fundo e exposição ≥ 1/480 s; a incerteza 3σ é mostrada junto do tempo |
-| Refinado, qualidade 1 (intervalo) | intervalo honesto que contém a verdade (tipicamente ±0,5–1,5 ms) | exposição curta, contraste baixo ou bordo visto numa só coluna |
-| Refinado, qualidade 0 | ±2,08 ms (meio da janela do quadro) | o app mostra o bruto |
+| **Refinado, qualidade 2** (fração de exposição) | **0,01–0,1 ms** na simulação (3.840 cenários; sem textura: erro médio 0,007 ms, p95 0,03 ms, máximo 0,31 ms) | precisa de contraste ≥ 20 níveis entre cavalo e fundo, **superfície uniforme na banda** e exposição ≥ 1/480 s; a incerteza 3σ é mostrada junto do tempo |
+| Refinado, qualidade 1 (intervalo) | intervalo honesto que contém a verdade (tipicamente ±0,5–1,5 ms) | exposição curta, contraste baixo, bordo inclinado ou visto numa só coluna |
+| Refinado, qualidade 0 | ±2,08 ms (meio da janela do quadro) | **textura no objeto** (pelagem malhada, peiteira, arreios na banda): o estimador recusa o refinamento em vez de inventar precisão; o app mostra o bruto |
 | Samsung (30 FPS para apps de terceiros) | ±17 ms | o app avisa na tela |
 
-Números por condição (velocidade × exposição × ruído × flicker): [`docs/validacao-numerica.md`](docs/validacao-numerica.md).
+Números por condição (velocidade × exposição × ruído × flicker × textura): [`docs/validacao-numerica.md`](docs/validacao-numerica.md).
+Escolha a **banda** numa região uniforme do cavalo (peito ou pescoço sem peiteira) — é o que decide se o
+milésimo refinado aparece; com textura o tempo continua correto, mas com ±2 ms por gatilho.
 
 O estimador mede, em cada pixel da faixa, a fração da janela de exposição em que o cavalo já cobria
 o pixel (`V = B + (O − B)·f`) e ajusta uma reta tempo × coluna para obter o instante em que o bordo
@@ -104,7 +106,12 @@ python3 Tools/validate_project.py       # validação estática do projeto iOS (
 **No Xcode**
 1. Abra `ios/FotocelulaTambor.xcodeproj`, selecione o alvo, Signing & Capabilities → Team = seu Apple ID (gratuito instala por 7 dias; o Programa de Desenvolvedor permite TestFlight e 1 ano). Nenhuma capability extra é necessária.
 2. Conecte o iPhone, escolha-o como destino e rode. **Meça sempre em Release** (Product → Scheme → Edit Scheme → Run → Build Configuration = Release): em Debug o laço da faixa é 10–50× mais lento.
-3. O painel de diagnósticos mostra a taxa medida e o jitter de ΔPTS; o app só arma com 240 FPS confirmados.
+3. O painel de diagnósticos mostra a taxa medida; o app só arma com a taxa **medida** ≥ 237,5 FPS depois da trava (a exposição real aplicada, e não a desejada, alimenta o estimador — em alguns modelos o iOS prende a exposição mínima em 1/240 s no formato de 240 fps; o refinamento continua funcionando, só com mais blur).
+
+**No Android**
+1. A sonda escolhe o modo: 240/120 FPS em sessão de alta velocidade (uma única superfície, lida por OpenGL) ou 120/60/30 FPS em sessão normal. Se a sessão de alta velocidade não entregar a taxa prometida (medida nos timestamps), o app cai sozinho para a normal e avisa.
+2. Samsung só libera 30 FPS a apps de terceiros (±17 ms por gatilho): use um Pixel/Motorola/Xiaomi para o milésimo.
+3. O skew do rolling shutter vem do próprio aparelho (`SENSOR_ROLLING_SHUTTER_SKEW`) e aparece nos diagnósticos.
 
 ## Checklist de verificação no aparelho
 
@@ -113,6 +120,8 @@ python3 Tools/validate_project.py       # validação estática do projeto iOS (
 3. Latência de retomada dos quadros aos 8 s (Diagnósticos → FPS volta a 240 antes dos 10 s).
 4. 10 min armado sem o badge térmico passar de "sério".
 5. Validação de ΔT com um LED/tela piscando a 1,000 Hz cruzando a faixa: 1,000 ± 0,001 s (refinado).
+6. Validação de campo com referência externa: fotocélula de duplo feixe a 50 cm da linha (dois celulares concordando entre si não provam exatidão — o viés é comum aos dois); alternativa: dois celulares na mesma linha com um flash comum para sincronizar (0,3–0,5 ms).
+7. Banda numa região uniforme do cavalo: se o resultado sair sempre com qualidade 0 (±2 ms), a banda está pegando peiteira/arreios/malha — suba ou desça as alças.
 
 ## Estrutura
 

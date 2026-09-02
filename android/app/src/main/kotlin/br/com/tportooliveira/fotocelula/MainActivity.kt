@@ -1,7 +1,10 @@
 package br.com.tportooliveira.fotocelula
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.hardware.display.DisplayManager
+import android.os.Build
 import android.os.Bundle
 import android.view.Surface
 import androidx.activity.ComponentActivity
@@ -26,16 +29,30 @@ import br.com.tportooliveira.fotocelula.ui.PhotocellViewModel
 
 /**
  * Atividade única, sempre em paisagem (`sensorLandscape` no manifesto), tela ligada e 120 Hz quando
- * disponível. Pede a permissão de câmera, sonda o hardware e monta a tela.
+ * disponível. Pede a permissão de câmera, sonda o hardware e monta a tela. A câmera abre em onStart
+ * e fecha em onStop (uma prova em andamento é interrompida — por projeto, nunca medida às cegas).
  */
 class MainActivity : ComponentActivity() {
     private lateinit var vm: PhotocellViewModel
     private var permission by mutableStateOf<Boolean?>(null)
+    /** Rotação atual da tela (0/90/180/270 → Surface.ROTATION_*), atualizada pelo DisplayManager. */
+    private var rotation by mutableStateOf(Surface.ROTATION_90)
 
     private val requestPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         permission = ok
         if (ok) vm.probe()
     }
+
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) {}
+        override fun onDisplayRemoved(displayId: Int) {}
+        override fun onDisplayChanged(displayId: Int) { rotation = currentRotation() }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun currentRotation(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) (display?.rotation ?: Surface.ROTATION_90)
+        else windowManager.defaultDisplay.rotation
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,6 +63,7 @@ class MainActivity : ComponentActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
         vm = PhotocellViewModel(applicationContext)
+        rotation = currentRotation()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             permission = true
             vm.probe()
@@ -55,12 +73,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 when (permission) {
-                    true -> {
-                        @Suppress("DEPRECATION")
-                        val rotation = if (android.os.Build.VERSION.SDK_INT >= 30) (display?.rotation ?: Surface.ROTATION_90)
-                                       else windowManager.defaultDisplay.rotation
-                        MainScreen(vm, displayRotation = rotation)
-                    }
+                    true -> MainScreen(vm, displayRotation = rotation)
                     false -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("Permissão de câmera necessária. A fotocélula usa a câmera traseira em alta velocidade; nenhum vídeo é gravado.")
                     }
@@ -68,6 +81,19 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).registerDisplayListener(displayListener, null)
+        rotation = currentRotation()
+        vm.start()
+    }
+
+    override fun onStop() {
+        (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).unregisterDisplayListener(displayListener)
+        vm.stop()
+        super.onStop()
     }
 
     override fun onDestroy() {

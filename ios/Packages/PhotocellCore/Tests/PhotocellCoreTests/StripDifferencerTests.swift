@@ -28,7 +28,7 @@ final class StripDifferencerTests: XCTestCase {
         XCTAssertEqual(m.deltaFull, 10.0, accuracy: 1e-12)
         XCTAssertEqual(m.deltaCore, 10.0, accuracy: 1e-12)
         XCTAssertEqual(m.deltaBackground, 10.0, accuracy: 1e-12)
-        XCTAssertEqual(m.rowCore.count, roi.height)
+        XCTAssertEqual(m.prevTsNs, 0, "timestamp do quadro de referência")
     }
 
     func testSentinelPaddingIsNeverRead() throws {

@@ -28,7 +28,7 @@ public struct PhotocellConfig: Equatable, Sendable {
     public var degradedDropWindowNs: Nanos = 50_000_000
     /// Colunas centrais da faixa usadas para o gatilho (o "plano" da fotocélula).
     public var coreWidth: Int = 3
-    /// Duração de exposição fixa configurada na câmera (1/480 s por padrão).
+    /// Duração de exposição REAL aplicada pela câmera (lida do aparelho após a trava; 1/480 s por padrão).
     public var exposureNs: Nanos = 2_083_333
     /// |O − B| mínimo (níveis de luma) para um pixel participar do refinamento sub-quadro.
     public var minContrast: Double = 20.0
@@ -49,8 +49,25 @@ public struct PhotocellConfig: Equatable, Sendable {
     /// Se ΔY(lag 2) < ratio·ΔY(lag 1) na calibração, usa o quadro c−2 como referência (flicker 120 Hz).
     public var flickerRatio: Double = 0.5
     public var flickerAuto: Bool = true
+    /// Curva de tom a desfazer antes da fração f (1.0 = desligado; ~2.2 para vídeo com tone curve padrão).
+    public var gamma: Double = 1.0
 
     public init() {}
 
     public var framePeriodNs: Nanos { nsPerSecond / Int64(frameRateHz) }
+
+    public enum ValidationError: Error, Equatable {
+        case invalidFrameRate
+        case frameResumeBeforeLockoutEnds
+        case finishArmBeforeFrameResume
+        case invalidExposureOrGamma
+    }
+
+    /// Janelas coerentes: os quadros voltam depois do bloqueio e a chegada arma depois de voltarem.
+    public func validate() throws {
+        if frameRateHz < 1 { throw ValidationError.invalidFrameRate }
+        if frameResumeNs < startLockoutNs + 500_000_000 { throw ValidationError.frameResumeBeforeLockoutEnds }
+        if finishArmNs < frameResumeNs + 500_000_000 { throw ValidationError.finishArmBeforeFrameResume }
+        if exposureNs < 1 || gamma <= 0.0 { throw ValidationError.invalidExposureOrGamma }
+    }
 }

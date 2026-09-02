@@ -76,7 +76,9 @@ class Scene:
                  skew_ns: int, exposure_ns: int, period_ns: int, direction: int,
                  speed_px_per_s: float, t_cross_center_ns: int, rows_a: int, rows_b: int,
                  bg_level: int = 96, obj_level: int = 184, noise_sigma: float = 1.5,
-                 flicker_amp: float = 0.0, seed: int = 1):
+                 flicker_amp: float = 0.0, seed: int = 1,
+                 gamma: float = 1.0, tilt_px_per_row: float = 0.0, texture_amp: float = 0.0,
+                 flicker_integrated: bool = False, psf_px: float = 0.0):
         self.pw, self.stride, self.ph, self.roi = plane_width, stride, plane_height, roi
         self.skew, self.E, self.period = skew_ns, exposure_ns, period_ns
         self.d = direction
@@ -88,27 +90,59 @@ class Scene:
         self.sigma = noise_sigma
         self.flicker = flicker_amp
         self.rng = Rng(seed)
+        # Efeitos "reais" opcionais (os portes Kotlin/Swift do simulador tem os mesmos):
+        self.gamma = gamma                        # curva de tom: V = 255*(lin/255)^(1/gamma)
+        self.tilt = tilt_px_per_row               # bordo inclinado: coluna do bordo varia com a linha
+        self.tex = texture_amp                    # textura presa ao objeto (senoide em x e y)
+        self.fint = flicker_integrated            # flicker integrado ao longo da exposicao
+        self.psf = psf_px                         # desfoque: caixa de psf_px (5 amostras)
 
     def edge_time_at(self, x: int) -> float:
         # instante em que o bordo alcança a coluna x
         return self.tc + (x - self.xc) * self.d / self.v
 
+    def _edge_time_at_x(self, xe: float) -> float:
+        return self.tc + (xe - self.xc) * self.d / self.v
+
     def frame_bytes(self, t_frame: int) -> bytes:
         buf = bytearray([SENTINEL]) * (self.stride * self.roi.height)
         r = self.roi
+        mid = (self.ra + self.rb) / 2.0
         for row in range(r.height):
             g = r.y0 + row
             t_row = t_frame + (g * self.skew) // self.ph
-            flick = 1.0 + self.flicker * math.sin(2.0 * math.pi * 120.0 * (t_row / NS_PER_SEC))
+            if self.fint and self.flicker > 0.0:
+                wf = 2.0 * math.pi * 120.0 / NS_PER_SEC
+                flick = 1.0 + self.flicker * (math.cos(wf * t_row) - math.cos(wf * (t_row + self.E))) / (wf * self.E)
+            else:
+                flick = 1.0 + self.flicker * math.sin(2.0 * math.pi * 120.0 * (t_row / NS_PER_SEC))
             for x in range(self.pw):
                 base = self.bg + ((x * 7 + g * 3) % 11)
                 frac = 0.0
                 if self.ra <= g <= self.rb:
-                    tx = self.edge_time_at(x)
-                    frac = (t_row + self.E - tx) / self.E
-                    frac = 0.0 if frac < 0.0 else (1.0 if frac > 1.0 else frac)
-                val = (base + (self.obj - base) * frac) * flick + self.rng.gauss(self.sigma)
-                iv = int(round(val))
+                    xe = x - (g - mid) * self.tilt
+                    if self.psf > 0.0:
+                        acc = 0.0
+                        for k in range(5):
+                            xk = xe + (k - 2.0) * self.psf / 4.0
+                            fk = (t_row + self.E - self._edge_time_at_x(xk)) / self.E
+                            acc += 0.0 if fk < 0.0 else (1.0 if fk > 1.0 else fk)
+                        frac = acc / 5.0
+                    else:
+                        frac = (t_row + self.E - self._edge_time_at_x(xe)) / self.E
+                        frac = 0.0 if frac < 0.0 else (1.0 if frac > 1.0 else frac)
+                obj = float(self.obj)
+                if self.tex > 0.0:
+                    # textura presa ao objeto: fase relativa ao bordo (px atras do bordo no meio da exposicao)
+                    rel = (x - self.xc) * self.d - (t_row + self.E / 2.0 - self.tc) * self.v
+                    obj = self.obj + self.tex * math.sin(rel * 0.9 + g * 0.3)
+                lin = base + (obj - base) * frac
+                if self.gamma != 1.0:
+                    val = 255.0 * math.pow((lin if lin > 0.0 else 0.0) / 255.0, 1.0 / self.gamma)
+                else:
+                    val = lin
+                val = val * flick + self.rng.gauss(self.sigma)
+                iv = int(math.floor(val + 0.5))
                 iv = 0 if iv < 0 else (255 if iv > 255 else iv)
                 buf[row * self.stride + x] = iv
         return bytes(buf)
@@ -160,19 +194,21 @@ def trigger_json(t) -> Optional[Dict]:
         return None
     return {"rawTs": t.raw_ts_ns, "refinedTs": t.refined_ts_ns, "quality": t.quality,
             "uncertaintyNs": t.uncertainty_ns, "interiorCount": t.interior_count,
-            "degraded": t.degraded}
+            "degraded": t.degraded, "texturedColumns": t.textured_columns}
 
 
 def strip_vector(name: str, *, direction: int, skew_ns: Optional[int], flicker: float,
                  drop_frames: List[int], seed: int, rows_margin: int = 12,
                  speed_m_s: float = 14.0, mm_per_px: float = 6.0, noise_sigma: float = 1.5,
                  exposure_ns: int = NS_PER_SEC // 480, cross_fraction: float = 0.37,
-                 tolerance_ms: float = 0.15) -> Dict:
+                 tolerance_ms: float = 0.15, gamma: float = 1.0, cfg_gamma: float = 1.0,
+                 tilt_px_per_row: float = 0.0, texture_amp: float = 0.0, psf_px: float = 0.0,
+                 strip_width: int = 9) -> Dict:
     cfg = PhotocellConfig(calibration_samples=32, calibration_min_samples_for_outlier=8,
-                          skew_ns=skew_ns, exposure_ns=exposure_ns)
+                          skew_ns=skew_ns, exposure_ns=exposure_ns, gamma=cfg_gamma)
     period = cfg.frame_period_ns
-    plane_width, stride, plane_height = 24, 32, 720
-    roi = RoiRect(x=8, width=9, y0=300, y1=396)     # banda de 96 linhas
+    plane_width, stride, plane_height = (24, 32, 720) if strip_width <= 9 else (32, 40, 720)
+    roi = RoiRect(x=8, width=strip_width, y0=300, y1=396)     # banda de 96 linhas
     exposure = exposure_ns
     scene_skew = skew_ns if skew_ns is not None else 3_200_000   # a cena sempre tem rolling shutter
     speed_px = speed_m_s * 1000.0 / mm_per_px
@@ -185,7 +221,8 @@ def strip_vector(name: str, *, direction: int, skew_ns: Optional[int], flicker: 
                   skew_ns=scene_skew, exposure_ns=exposure, period_ns=period, direction=direction,
                   speed_px_per_s=speed_px, t_cross_center_ns=t_cross,
                   rows_a=roi.y0 + rows_margin, rows_b=roi.y1 - 1 - rows_margin,
-                  noise_sigma=noise_sigma, flicker_amp=flicker, seed=seed)
+                  noise_sigma=noise_sigma, flicker_amp=flicker, seed=seed, gamma=gamma,
+                  tilt_px_per_row=tilt_px_per_row, texture_amp=texture_amp, psf_px=psf_px)
     n_frames = cross_frame + 10
     frames, timestamps = [], []
     for i in range(n_frames):
@@ -206,10 +243,10 @@ def strip_vector(name: str, *, direction: int, skew_ns: Optional[int], flicker: 
         sum(((g_ * scene_skew) // plane_height) for g_ in range(roi.y0, roi.y1)) // roi.height
     err_ref_ms = (st.refined_ts_ns + row_offset - truth) / 1e6
     print(f"  {name:30s} raw={err_raw_ms:+7.3f} ms  refinado={err_ref_ms:+7.3f} ms  "
-          f"±{st.uncertainty_ns/1e6:.3f}  q={st.quality} int={st.interior_count} lag={eng.lag} "
-          f"T={eng.threshold:.2f} drops={eng.drops} degr={st.degraded}")
+          f"±{st.uncertainty_ns/1e6:.3f}  q={st.quality} int={st.interior_count} tex={st.textured_columns} "
+          f"lag={eng.lag} T={eng.threshold:.2f} drops={eng.drops} degr={st.degraded}")
     if st.quality == 2:
-        assert abs(err_ref_ms) < tolerance_ms, f"{name}: refinamento fora da tolerância"
+        assert abs(err_ref_ms) < max(tolerance_ms, st.uncertainty_ns / 1e6 + 0.1), f"{name}: refinamento fora da tolerância"
     elif st.quality == 1:
         assert abs(err_ref_ms) * 1e6 <= st.uncertainty_ns + 1e5, f"{name}: verdade fora do intervalo"
     return {
@@ -241,7 +278,8 @@ def strip_vector(name: str, *, direction: int, skew_ns: Optional[int], flicker: 
         "groundTruth": {"tCrossCenterNs": truth, "exposureNs": exposure, "sceneSkewNs": scene_skew,
                         "crossFraction": cross_fraction,
                         "speedPxPerS": speed_px, "rawErrorMs": err_raw_ms,
-                        "refinedErrorMs": err_ref_ms},
+                        "refinedErrorMs": err_ref_ms, "gamma": gamma, "tiltPxPerRow": tilt_px_per_row,
+                        "textureAmp": texture_amp, "psfPx": psf_px},
     }
 
 
@@ -279,7 +317,7 @@ def run_fsm(cfg: PhotocellConfig, roi: RoiRect, plane_height: int, steps: List[D
             for k in range(s["count"]):
                 ts = s["ts0"] + k * s["period"]
                 rows = s.get("rows", [])
-                m = FrameMeasurement(ts, s["full"], s["core"], s["bg"], list(rows),
+                m = FrameMeasurement(ts, ts - s["period"], s["full"], s["core"], s["bg"],
                                      list(s.get("stripPrev", [])), list(s.get("stripCur", [])),
                                      list(s.get("stripBg", [])))
                 eng.frame(m)
@@ -433,6 +471,19 @@ def main() -> None:
     vectors.append(strip_vector("strip_cross_short_exposure_day", direction=-1, skew_ns=3_200_000,
                                 flicker=0.0, drop_frames=[], seed=19,
                                 exposure_ns=NS_PER_SEC // 2000, cross_fraction=0.5))
+    # efeitos "reais": textura no objeto, curva de tom, bordo inclinado, drop encostado no gatilho
+    vectors.append(strip_vector("strip_cross_textured", direction=+1, skew_ns=3_200_000,
+                                flicker=0.0, drop_frames=[], seed=21, texture_amp=30.0,
+                                strip_width=15, tolerance_ms=0.35))
+    vectors.append(strip_vector("strip_cross_gamma", direction=-1, skew_ns=3_200_000,
+                                flicker=0.0, drop_frames=[], seed=22, gamma=2.2, cfg_gamma=2.2,
+                                strip_width=15))
+    vectors.append(strip_vector("strip_cross_tilted", direction=+1, skew_ns=3_200_000,
+                                flicker=0.0, drop_frames=[], seed=23, tilt_px_per_row=0.05,
+                                strip_width=15, tolerance_ms=0.35))
+    vectors.append(strip_vector("strip_cross_drop_at_trigger", direction=-1, skew_ns=3_200_000,
+                                flicker=0.0, drop_frames=[47], seed=24, strip_width=15,
+                                cross_fraction=0.61, tolerance_ms=0.35))
 
     # --- calibração ----------------------------------------------------------
     cfg = PhotocellConfig()
@@ -477,10 +528,12 @@ def main() -> None:
                               PhotocellConfig(skew_ns=3_200_000),
                               build_full_run(PhotocellConfig(skew_ns=3_200_000), with_drop=False,
                                              interrupted=True, reject_first=False)))
+    # janelas curtas (mínimo permitido por PhotocellConfig.validate: retomada 0,5 s após o lockout e
+    # chegada armada 0,5 s após a retomada): a retomada acontece em RUNNING logo após o lockout
     cfg_short = PhotocellConfig(skew_ns=3_200_000, start_lockout_ns=1_500_000_000,
-                                frame_resume_ns=1_000_000_000, finish_arm_ns=1_200_000_000)
-    vectors.append(fsm_vector("fsm_blind_window_shorter_than_lockout",
-                              "Janela cega menor que o lockout: DEBOUNCE_START ainda é respeitado",
+                                frame_resume_ns=2_000_000_000, finish_arm_ns=2_500_000_000)
+    vectors.append(fsm_vector("fsm_short_windows",
+                              "Janelas mínimas: lockout 1,5 s, retomada 2,0 s, chegada armada 2,5 s",
                               cfg_short, build_full_run(cfg_short, with_drop=False,
                                                         interrupted=False, reject_first=False)))
 

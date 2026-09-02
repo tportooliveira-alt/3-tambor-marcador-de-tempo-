@@ -30,7 +30,7 @@ data class PhotocellConfig(
     val degradedDropWindowNs: Nanos = 50_000_000L,
     /** Colunas centrais da faixa usadas para o gatilho (o "plano" da fotocélula). */
     val coreWidth: Int = 3,
-    /** Duração de exposição fixa configurada na câmera (1/480 s por padrão). */
+    /** Duração de exposição REAL aplicada pela câmera (lida do aparelho após a trava; 1/480 s por padrão). */
     val exposureNs: Nanos = 2_083_333L,
     /** |O - B| mínimo (níveis de luma) para um pixel participar do refinamento sub-quadro. */
     val minContrast: Double = 20.0,
@@ -51,6 +51,16 @@ data class PhotocellConfig(
     /** Se ΔY(lag 2) < ratio * ΔY(lag 1) na calibração, usa o quadro c-2 como referência (flicker 120 Hz). */
     val flickerRatio: Double = 0.5,
     val flickerAuto: Boolean = true,
+    /** Curva de tom a desfazer antes da fração f (1.0 = desligado; ~2.2 para vídeo com tone curve padrão). */
+    val gamma: Double = 1.0,
 ) {
     val framePeriodNs: Nanos get() = NS_PER_SEC / frameRateHz
+
+    /** Janelas coerentes: os quadros voltam depois do bloqueio e a chegada arma depois de voltarem. */
+    fun validate() {
+        require(frameRateHz >= 1) { "frameRateHz inválido" }
+        require(frameResumeNs >= startLockoutNs + 500_000_000L) { "frameResumeNs precisa ser >= startLockoutNs + 0,5 s" }
+        require(finishArmNs >= frameResumeNs + 500_000_000L) { "finishArmNs precisa ser >= frameResumeNs + 0,5 s" }
+        require(exposureNs >= 1L && gamma > 0.0) { "exposureNs/gamma inválidos" }
+    }
 }

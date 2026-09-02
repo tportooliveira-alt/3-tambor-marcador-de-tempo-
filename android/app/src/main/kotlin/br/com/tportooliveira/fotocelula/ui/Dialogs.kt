@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -68,7 +70,7 @@ fun SettingsDialog(vm: PhotocellViewModel, onClose: () -> Unit) {
         onDismissRequest = onClose,
         title = { Text("Ajustes") },
         text = {
-            Column(Modifier.height(340.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(Modifier.height(360.dp).fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Largura da faixa: ${s.stripWidthPx} px")
                 Slider(value = s.stripWidthPx.toFloat(), onValueChange = { vm.updateSettings(s.copy(stripWidthPx = it.toInt())) }, valueRange = 5f..40f, steps = 34)
                 Text("Colunas centrais (gatilho): ${s.coreWidth}")
@@ -84,9 +86,12 @@ fun SettingsDialog(vm: PhotocellViewModel, onClose: () -> Unit) {
                 Text("Bloqueio na largada: ${s.startLockoutMs} ms")
                 Slider(value = s.startLockoutMs.toFloat(), onValueChange = { vm.updateSettings(s.copy(startLockoutMs = (it / 100).toInt() * 100)) }, valueRange = 500f..5000f)
                 Text("Retomar quadros aos %.1f s · armar chegada aos %.1f s".format(s.frameResumeS, s.finishArmS))
-                Slider(value = s.finishArmS, onValueChange = { vm.updateSettings(s.copy(finishArmS = it, frameResumeS = minOf(s.frameResumeS, it - 1f).coerceAtLeast(1f))) }, valueRange = 2f..20f)
+                Slider(value = s.finishArmS, onValueChange = { vm.updateSettings(s.copy(finishArmS = it, frameResumeS = minOf(s.frameResumeS, it - 0.5f))) }, valueRange = 2.5f..20f)
                 Text("Bloqueio na chegada: ${s.finishLockoutMs} ms")
                 Slider(value = s.finishLockoutMs.toFloat(), onValueChange = { vm.updateSettings(s.copy(finishLockoutMs = (it / 100).toInt() * 100)) }, valueRange = 500f..5000f)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Curva de tom (gamma 2,2)"); Switch(checked = s.gamma > 1.05f, onCheckedChange = { vm.updateSettings(s.copy(gamma = if (it) 2.2f else 1.0f)) })
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Flicker 120 Hz auto"); Switch(checked = s.flickerAuto, onCheckedChange = { vm.updateSettings(s.copy(flickerAuto = it)) })
                     Text("Bipe"); Switch(checked = s.feedbackSound, onCheckedChange = { vm.updateSettings(s.copy(feedbackSound = it)) })

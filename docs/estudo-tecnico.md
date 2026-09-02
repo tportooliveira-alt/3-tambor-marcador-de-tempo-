@@ -83,6 +83,32 @@ limites); **0** = meio da janela de exposição do quadro candidato, ±P/2. Com 
 menos) a maioria dos cruzamentos cai fora da janela e o resultado é 1 ou 0 — física, não defeito; por
 isso o padrão é 1/480 s. Os números medidos na simulação estão em [`validacao-numerica.md`](validacao-numerica.md).
 
+**Efeitos reais que o modelo `V = B + (O − B)·f` não contém** (medidos numa cena mais realista —
+curva de tom, bordo inclinado, textura presa ao objeto, flicker integrado dentro da exposição, desfoque):
+
+| Efeito | Sem tratamento | Tratamento no estimador |
+|---|---|---|
+| Curva de tom (gamma 2,2) | viés −0,07 ms, cancela em ΔT | `PhotocellConfig.gamma` lineariza B, O e V antes de `f` (padrão 1,0 = desligado; 2,2 quando a câmera aplica a curva de vídeo padrão); viés → 0,003 ms |
+| Bordo inclinado 0,05–0,15 px/linha | +0,01 a +0,03 ms | a mediana por coluna absorve; a dispersão entre linhas entra na variância empírica e marca a coluna como "texturizada" (`textured_columns` no diagnóstico) → qualidade 1 |
+| Desfoque (PSF 2–4 px) | ≤ 0,05 ms | nada a fazer; tolerável |
+| Flicker integrado na exposição | ≤ 0,01 ms | referência de mesma fase (lag 2) |
+| **Textura no objeto** (pelagem, peiteira, arreios: ±30 níveis) | viés +0,2 a +1,9 ms **com qualidade 2 declarada** | (1) `O` **local**: mediana de até 3 colunas já cobertas atrás do bordo, na mesma linha e no mesmo quadro (distância bordo→amostra de O cai de ~40 px para 1–3 px); (2) variância **empírica** por coluna e χ² reduzido, com o erro coerente entre colunas somado após a propagação; (3) margem `m` aumentada pela amplitude de textura `a_tex` estimada no platô (variância espacial menos o ruído); (4) limites descartados quando há textura ou colunas texturizadas; limites contraditórios ⇒ qualidade 0. Resultado: **nunca declara qualidade 2 sob textura**; cai para 1 ou 0 (±P/2) |
+
+A varredura física ganhou o eixo textura ∈ {0, ±30}: 3.840 cenários, sem textura erro médio 0,007 ms,
+p95 0,03 ms, máximo 0,31 ms (qualidade 2 em 61 % dos cenários e em 99 % dos favoráveis: exposição ≥ P/2 e
+SNR suficiente); **com textura ±30 o estimador cai para qualidade 0 em 100 % dos casos** — honesto, mas é o
+principal limite prático conhecido: um cavalo real tem textura, e o refinamento sub-quadro só entra onde a
+banda escolhida (peito/pescoço uniforme, sem peiteira) tem contraste limpo. A comparação com vídeo real
+decide isso (importador de clipes previsto).
+
+**Tempo por linha (rolling shutter) e semântica dos timestamps.** No Android, `SENSOR_TIMESTAMP` é o
+início da exposição da **primeira linha**; `SENSOR_ROLLING_SHUTTER_SKEW` é o intervalo do início da
+exposição da primeira linha ao início da linha seguinte à última (tempo de leitura); `SENSOR_FRAME_DURATION`
+é início-a-início. O modelo `t_ini(linha) = ts + linha·skew/H` está, portanto, correto; o app lê o skew
+do `CaptureResult` e o passa a `PhotocellConfig.skewNs`. No iOS o skew não é exposto e precisa ser
+**medido** (LED a ~1 kHz atrás de um difusor → faixas horizontais; período em linhas → linhas/ms); sem
+ele o offset por linha é ignorado e cancela em ΔT quando o cavalo cruza na mesma altura.
+
 Por que não "primeira linha alterada" (rolling shutter como relógio): com exposição de 2 ms a rampa da
 transição se espalha por ~470 linhas, maior que qualquer banda razoável, e a "primeira linha" fica
 ambígua; a simulação mostrou isso antes de trocar de modelo. O rolling shutter continua compensado
@@ -103,9 +129,14 @@ quadro; o display link/Choreographer apenas lê o snapshot. O engine tem dono ú
   `activeFormat` **reseta** as frame durations: setar `CMTime(1, 240)` logo depois, no mesmo lock.
 - Exposição: duração custom acima de 1/240 s alonga o quadro silenciosamente. Procedimento
   "convergir e travar": `activeMaxExposureDuration` = exposição desejada (≤ período) → AE/AF/AWB
-  contínuos no centro da faixa → esperar `isAdjusting*` → `setExposureModeCustom(duration, iso)`,
-  `setFocusModeLocked(lensPosition:)`, `setWhiteBalanceModeLocked(with:)` → verificar
-  `activeVideoMinFrameDuration` (erro fatal na UI se saiu de 240).
+  contínuos no centro da faixa → esperar a transição `isAdjusting*` true→false (piso 400 ms, duas leituras
+  estáveis) → `setExposureModeCustom(duration, iso)`, `setFocusModeLocked(lensPosition:)`,
+  `setWhiteBalanceModeLocked(with:)` → medir ΔPTS por ≥ 1 s (o app só arma com a taxa **medida** ≥ 237,5).
+  Há relato (fórum Apple, sem resposta oficial) de exposição mínima **presa a 1/240 s** no formato de
+  240 fps em alguns modelos: por isso o app nunca assume 1/480 s — a exposição **real** (`device.exposureDuration`
+  após a trava) alimenta `E` do estimador, que a 1/240 s continua dando qualidade 2 (varredura: erro médio 0,003 ms).
+- Drops: `didDrop` com motivo; um drop `Discontinuity` (número desconhecido de quadros perdidos, TN2445)
+  invalida o candidato em confirmação e marca a prova como degradada (`framesDropped()` no núcleo).
 - Guardas: `isVideoHDRSupported` antes de `isVideoHDREnabled` (lança exceção sem suporte),
   `isGeometricDistortionCorrectionSupported`, `isLowLightBoostSupported`, `isVideoStabilizationModeSupported(.off)`,
   `automaticallyAdjustsFaceDrivenAutoFocusEnabled = false`, `isSubjectAreaChangeMonitoringEnabled = false`.
@@ -125,15 +156,32 @@ quadro; o display link/Choreographer apenas lê o snapshot. O engine tem dono ú
 - ≥ 120 FPS só com `createConstrainedHighSpeedCaptureSession`, que aceita apenas superfícies de
   preview/gravação (não `ImageReader`). Solução: SurfaceTexture próprio + OpenGL ES numa thread
   dedicada; a cada quadro `updateTexImage()`, `getTimestamp()` (= SENSOR_TIMESTAMP), render **só da
-  faixa** num FBO minúsculo com conversão para luminância no shader e `glReadPixels` de poucos KB;
-  o preview é desenhado a cada 4 quadros na superfície do TextureView.
+  faixa** num FBO minúsculo com conversão para luminância (faixa de vídeo, como o plano Y) no shader e
+  `glReadPixels` de poucos KB; o preview é desenhado a cada 4 quadros na superfície do TextureView.
+- **Uma única superfície na sessão restrita.** Pelo código do framework
+  (`CameraConstrainedHighSpeedCaptureSessionImpl.createHighSpeedRequestList`): o lote tem
+  `fps/30` pedidos; com **duas** saídas só o primeiro pedido do lote inclui a de preview (ela recebe 30 FPS,
+  a de gravação recebe tudo — é o comportamento que o CameraX documenta); com **uma** saída todos os
+  pedidos a têm como alvo e ela recebe a taxa cheia. Por isso a sessão de alta velocidade do app tem só a
+  SurfaceTexture do leitor GL, e o preview sai do próprio leitor. Como garantia, o leitor mede a taxa real
+  nos timestamps e o controlador cai para a sessão normal (120/60/30 fixos) se ela ficar abaixo de 80 %.
+- Lotes: o HAL só reporta o shutter do último pedido do lote e o framework sintetiza os demais timestamps
+  (`camera3.h`, CONSTRAINED_HIGH_SPEED_MODE); jitter dentro do lote é invisível e um drop no lote pode não
+  aparecer no timestamp. O app trata `SENSOR_FRAME_DURATION` como fonte da verdade do período e conta
+  quadros por janela de 1 s; a validação com LED a 1 kHz é o teste definitivo por aparelho.
 - Fallback: sessão normal com `ImageReader(YUV_420_888)` no maior `CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES`
-  fixo (120/60/30). **Samsung expõe só 30 FPS a apps de terceiros**; a sonda (`CapabilityProbe`) informa
-  o modo e a precisão esperada na tela.
-- Travas: `CONTROL_AE_MODE_OFF` + `SENSOR_EXPOSURE_TIME`/`SENSOR_SENSITIVITY` (capacidade
-  `MANUAL_SENSOR`) ou `CONTROL_AE_LOCK`; `CONTROL_AWB_LOCK`; estabilização, redução de ruído e
-  realce desligados; `SENSOR_FRAME_DURATION` fixo. A exposição realmente aplicada é lida dos
-  `CaptureResult` e alimenta o estimador (E).
+  **fixo** (`lower == upper`) num tamanho que o hardware entrega nessa taxa (`getOutputMinFrameDuration`,
+  sem stall). **Samsung expõe só 30 FPS a apps de terceiros**; a sonda (`CapabilityProbe`) informa o modo
+  e a precisão esperada na tela. Preferência pela câmera traseira física (não a lógica multi-câmera) e
+  `CONTROL_ZOOM_RATIO = 1` quando for lógica.
+- Travas: convergência com regiões AE/AF no centro da faixa (AE convergido, AF parado, exposição estável
+  em duas leituras, 0,8–3,5 s) → sessão normal com `MANUAL_SENSOR`: `CONTROL_AE_MODE_OFF` +
+  `SENSOR_EXPOSURE_TIME` (≤ período) + `SENSOR_SENSITIVITY` compensado + `SENSOR_FRAME_DURATION`; alta
+  velocidade (o HAL ignora AE OFF): `CONTROL_AE_LOCK`; `CONTROL_AWB_LOCK`; foco `CONTROL_AF_MODE_OFF` +
+  `LENS_FOCUS_DISTANCE` convergida (senão `AUTO` parado; nunca contínuo armado); estabilização, redução de
+  ruído e realce desligados quando o hardware lista o modo OFF. A exposição realmente aplicada e o skew
+  são lidos dos `CaptureResult` e alimentam o estimador; depois da trava o app confere por 1,3 s que a
+  taxa medida se manteve.
 - Relógio: `SENSOR_INFO_TIMESTAMP_SOURCE` REALTIME = `elapsedRealtimeNanos()`; UNKNOWN = relógio
   próprio; `SensorClock` estima o deslocamento (mínimo observado) só para o cronômetro de tela e wake-ups.
 - Térmico: `PowerManager.addThermalStatusListener`; tela a 120 Hz via `preferredRefreshRate`;
@@ -146,12 +194,23 @@ Consequências: três casas decimais, penalidades e SAT no resultado, histórico
 estimador no plano central para o sentido oposto do retorno não gerar viés.
 
 ## 7. Verificação
-- Aqui (Linux, sem Xcode/SDK): 27 testes Kotlin passando (21 vetores + unitários); código Android de
-  câmera/engine compilado contra o framework Android; projeto Xcode gerado e validado com o parser
-  `pbxproj`; auto-teste físico do gerador de vetores.
+- Aqui (Linux, sem Xcode/SDK): 42 testes Kotlin passando (25 vetores compartilhados, unitários,
+  invariantes da FSM com eventos aleatórios, prova completa simulada e varredura física de 3.840
+  cenários); código Android de câmera/engine compilado contra o framework Android; projeto Xcode gerado
+  e validado com o parser `pbxproj`; auto-teste físico do gerador de vetores; os mesmos testes existem em
+  Swift (XCTest) e rodam no Mac.
 - No Mac: `swift test` no pacote; build no iPhone. No Android Studio: `assembleDebug`.
-- Em campo: taxa medida = 240,0; dedo sobre a faixa reage; retomada aos 8 s; 10 min armado sem
-  pressão térmica; LED a 1,000 Hz → 1,000 ± 0,001 s.
+- Em campo, três protocolos (da literatura de validação de cronometragem por vídeo):
+  1. **Fotocélula de referência** (duplo feixe, ~0,4 ms) a 50 cm da linha: o estudo do app "Photo
+     Finish" (30 fps) contra Microgate Witty mediu viés de +5 a +12 ms e erro máximo de 90 ms — e dois
+     celulares concordando entre si (ICC 0,999) **não** provam exatidão, porque o viés é comum.
+  2. **Dois celulares + flash comum**: sincronização por rolling shutter com flashes atinge 0,3–0,5 ms
+     (Šmíd & Matas); serve para comparar largada/chegada entre dois aparelhos na mesma linha.
+  3. **LED a 1,000 Hz** (ou tela piscando) cruzando a faixa: ΔT = 1,000 ± 0,001 s no modo refinado;
+     com GPS 1PPS dá para checar a continuidade dos timestamps por horas (10.000 quadros sem discrepância
+     na literatura).
+  Mais: taxa medida = 240,0 após a trava; dedo sobre a faixa reage; retomada aos 8 s; 10 min armado sem
+  pressão térmica; histograma de ΔPTS com espiga única em 4,167 ms.
 
 ## Fontes
 - Apple TN2409 (formatos 240 FPS): https://developer.apple.com/library/archive/technotes/tn2409/_index.html
@@ -166,3 +225,13 @@ estimador no plano central para o sentido oposto do retorno não gerar viés.
 - Rolling shutter e leitura sequencial: https://photographyicon.com/rolling-readout/
 - Rolling shutter para detectar sinais de alta frequência (SPIE 2019): https://ui.adsabs.harvard.edu/abs/2019SPIE11137E..0HF/abstract
 - Regras dos Três Tambores: https://www.atletapro.com.br/regras-tres-tambores/
+- `CaptureResult` (SENSOR_TIMESTAMP, SENSOR_ROLLING_SHUTTER_SKEW, SENSOR_FRAME_DURATION): https://developer.android.com/reference/android/hardware/camera2/CaptureResult
+- `createHighSpeedRequestList` (lote e alvo por pedido): https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/hardware/camera2/impl/CameraConstrainedHighSpeedCaptureSessionImpl.java
+- HAL3 `camera3.h` (CONSTRAINED_HIGH_SPEED_MODE, timestamps sintetizados no lote): https://android.googlesource.com/platform/hardware/libhardware/+/refs/heads/main/include/hardware/camera3.h
+- CameraX 1.5 alta velocidade (preview a 30 fps, gravação na taxa alta): https://android-developers.googleblog.com/2025/10/high-speed-capture-and-slow-motion.html
+- Exposição mínima 1/240 s a 240 fps (fórum Apple, relato): https://developer.apple.com/forums/thread/674180
+- Šmíd & Matas, sincronização por rolling shutter com flashes (0,3–0,5 ms): https://arxiv.org/abs/1902.11084
+- Validação do app Photo Finish contra fotocélulas Witty (MDPI Sensors 24(20):6719): https://www.mdpi.com/1424-8220/24/20/6719
+- Verificação de timestamps com LED e GPS 1PPS: https://arxiv.org/abs/1503.05705
+- Medição do tempo de leitura (rolling shutter) com LED ~1 kHz: https://github.com/gyroflow/rollingshutter
+- NBHA Rulebook (cronômetro eletrônico, 0,001 s): https://www.nbha.com/

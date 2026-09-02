@@ -2,11 +2,11 @@ package br.com.tportooliveira.fotocelula.ui
 
 import android.app.Activity
 import android.content.Context
+import android.graphics.SurfaceTexture
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
-import android.view.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -24,6 +24,7 @@ import br.com.tportooliveira.fotocelula.engine.Snapshot
 import br.com.tportooliveira.fotocelula.feedback.TriggerFeedback
 import br.com.tportooliveira.fotocelula.results.RunHistoryStore
 import br.com.tportooliveira.fotocelula.results.RunRecord
+import kotlin.math.abs
 
 /** Estado da interface (main thread). Liga sonda, câmera, serviço da fotocélula, feedback e histórico. */
 class PhotocellViewModel(private val context: Context) {
@@ -48,45 +49,93 @@ class PhotocellViewModel(private val context: Context) {
     private var controller: CameraController? = null
     private var service: PhotocellService? = null
     private val placeholderClock = SensorClock(true)
+    private var previewTexture: SurfaceTexture? = null
+    private var started = false
+    private var thermalListener: PowerManager.OnThermalStatusChangedListener? = null
+    private val saveRunnable = Runnable { settings.save(context) }
 
     val sensorClock: SensorClock get() = controller?.sensorClock ?: placeholderClock
 
+    /** Aplica ajustes coerentes ([AppSettings.fix]) e persiste com debounce (os sliders disparam por pixel). */
     fun updateSettings(s: AppSettings) {
-        // a retomada dos quadros precisa acontecer antes de armar a chegada
-        val fixed = if (s.frameResumeS > s.finishArmS - 0.5f) s.copy(frameResumeS = (s.finishArmS - 0.5f).coerceAtLeast(1f)) else s
+        val fixed = s.fix()
+        val roiChanged = fixed.lineXFraction != settings.lineXFraction || fixed.bandTopFraction != settings.bandTopFraction ||
+            fixed.bandBottomFraction != settings.bandBottomFraction || fixed.stripWidthPx != settings.stripWidthPx
         settings = fixed
-        fixed.save(context)
+        main.removeCallbacks(saveRunnable)
+        main.postDelayed(saveRunnable, 400)
         applySettings()
+        if (roiChanged) roiDirty = true
     }
+
+    /** A ROI mapeada pelo preview depende da geometria; o preview a reenvia quando este sinal muda. */
+    var roiDirty by mutableStateOf(false)
 
     private fun applySettings() {
         val cap = capability ?: return
-        service?.updateConfig(settings.makeConfig(cap.mode.fps, lockState.exposureNs))
+        val ls = lockState
+        service?.updateConfig(settings.makeConfig(cap.mode.fps, if (ls.locked) ls.exposureNs else 0, ls.skewNs))
     }
 
     /** Sonda o hardware (chamar após a permissão de câmera). */
     fun probe() {
+        if (capability != null) return
         capability = CapabilityProbe.probe(context)
         if (capability == null) errorMessage = "Nenhuma câmera traseira encontrada."
         registerThermal()
     }
 
-    /** Abre a câmera com a superfície do preview (TextureView). */
-    fun openCamera(previewSurface: Surface, w: Int, h: Int) {
+    // ---------------------------------------------------------------- ciclo de vida
+    /** Superfície do preview disponível (TextureView). */
+    fun previewSurfaceAvailable(st: SurfaceTexture) {
+        previewTexture = st
+        if (started) openCamera()
+    }
+
+    /** O TextureView destruiu a superfície: fecha a câmera (devolve true para o TextureView liberá-la). */
+    fun previewSurfaceDestroyed() {
+        previewTexture = null
+        closeCamera()
+    }
+
+    fun start() { started = true; if (previewTexture != null) openCamera() }
+    fun stop() { started = false; closeCamera() }
+
+    private fun openCamera() {
         val cap = capability ?: return
+        val st = previewTexture ?: return
         if (controller != null) return
         val clock = SensorClock(cap.timestampRealtime)
-        val ctrl = CameraController(context, cap, sink = createService(cap, clock), sensorClock = clock, initialRoi = currentRoi())
+        val svc = service ?: createService(cap, clock)
+        val ctrl = CameraController(context, cap, sink = svc, sensorClock = clock, roiProvider = { svc.currentRoiPixels() })
         ctrl.onLockStateChanged = { ls ->
             main.post {
-                val exposureChanged = ls.exposureNs != lockState.exposureNs
+                val prev = lockState
                 lockState = ls
-                if (exposureChanged) applySettings()
+                // a exposição REAL aplicada alimenta o estimador: reenvia a configuração quando muda (>1 %)
+                val expChanged = abs(ls.exposureNs - prev.exposureNs) > maxOf(prev.exposureNs, 1L) / 100
+                if (ls.locked && (expChanged || ls.locked != prev.locked || ls.skewNs != prev.skewNs)) applySettings()
             }
         }
         ctrl.onError = { msg -> main.post { errorMessage = msg; service?.captureInterrupted() } }
+        ctrl.onCapabilityChanged = { nc, reason ->
+            main.post {
+                capability = nc
+                infoMessage = "$reason. Usando ${nc.mode.label}."
+                service?.setSensorSize(nc.size.width, nc.size.height)
+                service?.captureInterrupted()
+                applySettings()
+            }
+        }
+        svc.onRoiApplied = { r -> controller?.glStripReader?.setRoiRect(r) }
         controller = ctrl
-        ctrl.open(previewSurface, w, h)
+        ctrl.open(st)
+    }
+
+    private fun closeCamera() {
+        controller?.close(); controller = null
+        service?.captureInterrupted()
+        lockState = LockState()
     }
 
     private fun currentRoi(): NormalizedRoi {
@@ -110,16 +159,32 @@ class PhotocellViewModel(private val context: Context) {
         return svc
     }
 
+    /** Chamado pelo preview quando a ROI é mapeada para o buffer. Ignorado com a ROI travada. */
     fun roiMapped(centerX: Double, top: Double, bottom: Double) {
-        val roi = NormalizedRoi(centerX, top, bottom, settings.stripWidthPx)
-        service?.updateRoi(roi)
-        controller?.glStripReader?.roi = roi
+        roiDirty = false
+        if (roiLocked) return
+        service?.updateRoi(NormalizedRoi(centerX, top, bottom, settings.stripWidthPx))
     }
 
     val roiLocked: Boolean get() = snapshot.state.isActive || snapshot.state == PhotocellState.CALIBRATING
-    val canCalibrate: Boolean get() = snapshot.state == PhotocellState.IDLE || snapshot.state == PhotocellState.FINISHED || snapshot.state == PhotocellState.ERROR
-    val canArm: Boolean get() = (snapshot.state == PhotocellState.IDLE || snapshot.state == PhotocellState.FINISHED) && lockState.locked
+    val canCalibrate: Boolean get() = controller != null && (snapshot.state == PhotocellState.IDLE || snapshot.state == PhotocellState.FINISHED || snapshot.state == PhotocellState.ERROR)
     val thermalBlocked: Boolean get() = thermalStatus >= 4 // PowerManager.THERMAL_STATUS_CRITICAL
+    /** A taxa medida nos quadros entregues ao engine precisa bater com a prometida pelo modo. */
+    val frameRateOk: Boolean get() {
+        val cap = capability ?: return false
+        return diagnostics.fpsValid && diagnostics.measuredFps >= cap.mode.fps - 2.5
+    }
+    /** Motivo pelo qual não é seguro armar agora; null quando está tudo certo. */
+    val armBlockReason: String? get() {
+        val cap = capability ?: return "Câmera não sondada."
+        if (controller == null) return "Câmera fechada."
+        if (thermalBlocked) return "Aparelho quente demais para armar com segurança. Aguarde esfriar."
+        if (!lockState.locked) return "Calibre primeiro (exposição, foco e branco precisam estar travados)."
+        if (!diagnostics.fpsValid) return "Taxa de quadros ainda não medida: aguarde 1 s após calibrar."
+        if (!frameRateOk) return "A câmera está entregando %.1f FPS, não %d. Mais luz ou outra exposição nos Ajustes; calibre de novo.".format(diagnostics.measuredFps, cap.mode.fps)
+        return null
+    }
+    val canArm: Boolean get() = (snapshot.state == PhotocellState.IDLE || snapshot.state == PhotocellState.FINISHED) && armBlockReason == null
 
     fun calibrate() {
         if (!canCalibrate) return
@@ -130,15 +195,17 @@ class PhotocellViewModel(private val context: Context) {
             main.post {
                 isCalibratingCamera = false
                 if (err != null) errorMessage = err
-                // aguarda a exposição travada chegar nos resultados antes da calibração de ruído
-                main.postDelayed({ applySettings(); service?.calibrate() }, 300)
+                // exposição real e skew já chegaram nos resultados: config antes da calibração de ruído
+                applySettings()
+                service?.calibrate()
             }
         }
     }
 
     fun arm() {
+        val reason = armBlockReason
+        if (reason != null) { errorMessage = reason; return }
         if (!canArm) return
-        if (thermalBlocked) { errorMessage = "Aparelho quente demais para armar com segurança."; return }
         errorMessage = null
         pendingResult = null
         service?.arm()
@@ -182,17 +249,25 @@ class PhotocellViewModel(private val context: Context) {
     fun deleteRecord(id: String) { history.remove(id); historyVersion++ }
 
     private fun registerThermal() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && thermalListener == null) {
             val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
             thermalStatus = pm.currentThermalStatus
-            pm.addThermalStatusListener(context.mainExecutor) { st -> thermalStatus = st }
+            val l = PowerManager.OnThermalStatusChangedListener { st -> thermalStatus = st }
+            thermalListener = l
+            pm.addThermalStatusListener(context.mainExecutor, l)
         }
     }
 
     fun close() {
-        controller?.close(); controller = null
+        main.removeCallbacks(saveRunnable)
+        settings.save(context)
+        closeCamera()
         service?.release(); service = null
         feedback.release()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            thermalListener?.let { (context.getSystemService(Context.POWER_SERVICE) as PowerManager).removeThermalStatusListener(it) }
+            thermalListener = null
+        }
     }
 
     companion object {

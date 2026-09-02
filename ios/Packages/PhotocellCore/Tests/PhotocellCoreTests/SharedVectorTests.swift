@@ -68,6 +68,7 @@ final class SharedVectorTests: XCTestCase {
         c.readoutTopToBottom = bool(j["readout_top_to_bottom"])
         c.flickerRatio = dbl(j["flicker_ratio"])
         c.flickerAuto = bool(j["flicker_auto"])
+        c.gamma = dbl(j["gamma"])
         return c
     }
 
@@ -93,6 +94,7 @@ final class SharedVectorTests: XCTestCase {
         XCTAssertLessThanOrEqual(abs(int64(e["uncertaintyNs"]) - a.uncertaintyNs), 1, "\(what).uncertainty")
         XCTAssertEqual(int(e["interiorCount"]), a.interiorCount, "\(what).interiorCount")
         XCTAssertEqual(bool(e["degraded"]), a.degraded, "\(what).degraded")
+        XCTAssertEqual(isNull(e["texturedColumns"]) ? 0 : int(e["texturedColumns"]), a.texturedColumns, "\(what).texturedColumns")
     }
 
     private func assertEffects(_ expected: [[String: Any]], _ actual: [(String, [String])], _ name: String) {
@@ -144,7 +146,7 @@ final class SharedVectorTests: XCTestCase {
             let frames = v["frames"] as! [String]
             let userEvents = v["userEvents"] as! [String: String]
             let diff = try StripDifferencer(roi: roi, planeWidth: planeWidth, planeHeight: planeHeight, coreWidth: cfg.coreWidth)
-            let eng = PhotocellEngine(cfg: cfg, roi: roi, planeHeight: planeHeight)
+            let eng = try PhotocellEngine(cfg: cfg, roi: roi, planeHeight: planeHeight)
             let applier = EffectApplier(diff: diff, cfg: cfg)
             var plane = [UInt8](repeating: sentinel, count: stride * planeHeight)
             let exp = v["expected"] as! [String: Any]
@@ -159,14 +161,14 @@ final class SharedVectorTests: XCTestCase {
                 let ts = int64(timestamps[i])
                 let m = plane.withUnsafeBufferPointer { diff.process(plane: $0.baseAddress!, stride: stride, tsNs: ts) }
                 if let m = m {
-                    let e = try XCTUnwrap(expMeas[i] as? [String: Any], "\(name): quadro \(i) deveria ser semente")
+                    let e = try XCTUnwrap(expMeas[i] as? [String: Any], "\(name): quadro \(i) deveria ter medição")
                     XCTAssertEqual(int64(e["ts"]), m.tsNs, "\(name): ts do quadro \(i)")
                     assertClose(dbl(e["full"]), m.deltaFull, "\(name): deltaFull quadro \(i)")
                     assertClose(dbl(e["core"]), m.deltaCore, "\(name): deltaCore quadro \(i)")
                     assertClose(dbl(e["bg"]), m.deltaBackground, "\(name): deltaBackground quadro \(i)")
                     eng.frame(m)
                 } else {
-                    XCTAssertTrue(isNull(expMeas[i]), "\(name): quadro \(i) deveria ter medição")
+                    XCTAssertTrue(isNull(expMeas[i]), "\(name): quadro \(i) deveria ser semente")
                     eng.frame(nil, tsNs: ts)
                 }
                 applier.apply(eng, "frame:\(i)")
@@ -209,22 +211,28 @@ final class SharedVectorTests: XCTestCase {
             let cfg = config(v["config"] as! [String: Any])
             let roi = roi(v["roi"] as! [String: Any])
             let planeHeight = int(v["planeHeight"])
-            let eng = PhotocellEngine(cfg: cfg, roi: roi, planeHeight: planeHeight)
+            let eng = try PhotocellEngine(cfg: cfg, roi: roi, planeHeight: planeHeight)
             let applier = EffectApplier(diff: nil, cfg: cfg)
             var idx = 0
             for st in v["steps"] as! [[String: Any]] {
                 switch st["type"] as! String {
                 case "frames":
-                    let rows = (st["rows"] as? [Any])?.map { dbl($0) } ?? []
                     let prev = (st["stripPrev"] as? [Any])?.map { UInt8(int($0)) } ?? []
                     let cur = (st["stripCur"] as? [Any])?.map { UInt8(int($0)) } ?? []
                     let bg = (st["stripBg"] as? [Any])?.map { dbl($0) } ?? []
                     for k in 0..<int(st["count"]) {
                         let ts = int64(st["ts0"]) + Int64(k) * int64(st["period"])
-                        let m = FrameMeasurement(tsNs: ts, deltaFull: dbl(st["full"]), deltaCore: dbl(st["core"]),
-                                                 deltaBackground: dbl(st["bg"]), rowCore: rows, stripPrev: prev,
-                                                 stripCur: cur, stripBg: bg, deltaFullLag2: nil, lag: 1)
-                        eng.frame(m)
+                        // as faixas são vistas sobre arrays locais, válidas só dentro deste bloco (como no differencer)
+                        prev.withUnsafeBufferPointer { prevP in
+                            cur.withUnsafeBufferPointer { curP in
+                                bg.withUnsafeBufferPointer { bgP in
+                                    let m = FrameMeasurement(tsNs: ts, prevTsNs: ts - int64(st["period"]), deltaFull: dbl(st["full"]),
+                                                             deltaCore: dbl(st["core"]), deltaBackground: dbl(st["bg"]),
+                                                             stripPrev: prevP, stripCur: curP, stripBg: bgP, deltaFullLag2: nil, lag: 1)
+                                    eng.frame(m)
+                                }
+                            }
+                        }
                         applier.apply(eng, "frame:\(idx)")
                         idx += 1
                     }

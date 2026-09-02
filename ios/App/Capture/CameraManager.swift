@@ -9,17 +9,19 @@ struct ActiveCaptureInfo: Equatable {
     var height: Int = 0
     var fps: Double = 0
     var isBinned: Bool = false
+    /// Exposição REALMENTE aplicada pelo aparelho após a trava (ns). É este valor que alimenta o
+    /// estimador sub-quadro (E), nunca o desejado.
     var exposureNs: Int64 = 0
     var iso: Float = 0
     var locked: Bool = false
-    var measuredFps: Double = 0
 }
 
 /// Gerencia o `AVCaptureSession`: permissão, câmera traseira 1x, formato 240 FPS em NV12, travas
 /// de exposição/foco/balanço de branco, saída de dados e suspensão de quadros.
 ///
 /// Toda configuração roda em `sessionQueue`; os quadros chegam em `processingQueue`
-/// (serial, `.userInteractive`), onde vive o `PhotocellSession`.
+/// (serial, `.userInteractive`), onde vive o `PhotocellSession`. Estado lido de outras filas
+/// (`suspendStrategy`, `desiredExposureNs`, dimensões do formato) fica atrás de `stateLock`.
 final class CameraManager: NSObject {
     static let log = Logger(subsystem: "br.com.tportooliveira.fotocelulatambor", category: "camera")
 
@@ -29,14 +31,38 @@ final class CameraManager: NSObject {
                                         qos: .userInteractive, autoreleaseFrequency: .workItem)
     let videoOutput = AVCaptureVideoDataOutput()
 
-    private(set) var device: AVCaptureDevice?
+    /// Só acessado na `sessionQueue`.
+    private var device: AVCaptureDevice?
     private var input: AVCaptureDeviceInput?
     /// O `AVCaptureVideoDataOutput` NÃO retém o delegate: mantemos referência forte aqui.
     private var frameDelegate: AVCaptureVideoDataOutputSampleBufferDelegate?
     private var kvo: [NSKeyValueObservation] = []
     private var notificationTokens: [NSObjectProtocol] = []
 
-    var suspendStrategy: SuspendStrategy = .disableConnection
+    private let stateLock = NSLock()
+    private var _suspendStrategy: SuspendStrategy = .disableConnection
+    private var _desiredExposureNs: Int64 = 2_083_333
+    private var _formatDimensions: (width: Int, height: Int) = (0, 0)
+
+    /// Estratégia de suspensão (lida no `setFrameDelivery`, fila de processamento).
+    var suspendStrategy: SuspendStrategy {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _suspendStrategy }
+        set { stateLock.lock(); _suspendStrategy = newValue; stateLock.unlock() }
+    }
+    /// Duração de exposição desejada (ns). O aparelho pode aplicar outra (limites do formato; a 240 FPS
+    /// há relatos de mínimo em 1/240 s): o valor aplicado é o de `activeInfo.exposureNs`.
+    var desiredExposureNs: Int64 {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _desiredExposureNs }
+        set {
+            stateLock.lock(); _desiredExposureNs = newValue; stateLock.unlock()
+            sessionQueue.async { self.applyDesiredExposure() }
+        }
+    }
+    /// Dimensões do formato ativo (0×0 antes de configurar); seguro de qualquer fila.
+    var formatDimensions: (width: Int, height: Int) {
+        stateLock.lock(); defer { stateLock.unlock() }; return _formatDimensions
+    }
+
     /// Usado pela estratégia `.softGate`; lido no delegate (thread de processamento).
     let softGateOpen = ManagedAtomicBool(true)
 
@@ -47,8 +73,10 @@ final class CameraManager: NSObject {
     var onInterruption: ((Bool) -> Void)?
     var onRuntimeError: ((Error) -> Void)?
 
-    /// Duração de exposição desejada (ns). A 240 FPS o hardware limita a ≤ 1/240 s.
-    var desiredExposureNs: Int64 = 2_083_333
+    override init() {
+        super.init()
+        observeSession()
+    }
 
     // MARK: - Permissão
     func requestAccess(_ completion: @escaping (Bool) -> Void) {
@@ -60,7 +88,7 @@ final class CameraManager: NSObject {
     }
 
     // MARK: - Configuração
-    /// Configura a sessão (na `sessionQueue`) e chama `completion` com o erro, se houver.
+    /// Configura (ou reconfigura) a sessão na `sessionQueue` e chama `completion` com o erro, se houver.
     func configure(delegate: AVCaptureVideoDataOutputSampleBufferDelegate,
                    completion: @escaping (Error?) -> Void) {
         sessionQueue.async {
@@ -73,11 +101,12 @@ final class CameraManager: NSObject {
         }
     }
 
+    /// Ordem (Apple): entrada adicionada ANTES de escolher o formato; `activeFormat` e as frame durations no
+    /// mesmo `lockForConfiguration`; tudo dentro de begin/commitConfiguration. Em falha o input anterior volta.
     private func configureLocked(delegate: AVCaptureVideoDataOutputSampleBufferDelegate) throws {
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
             throw CameraError.noBackWideCamera
         }
-        self.device = device
         self.frameDelegate = delegate
 
         session.beginConfiguration()
@@ -86,6 +115,25 @@ final class CameraManager: NSObject {
         // Prioridade ao formato escolhido por nós e sem troca automática para wide color (420f).
         session.sessionPreset = .inputPriority
         session.automaticallyConfiguresCaptureDeviceForWideColor = false
+        session.automaticallyConfiguresApplicationAudioSession = false
+
+        // Entrada (antes do formato)
+        let oldInput = input
+        if let old = oldInput { session.removeInput(old) }
+        let newInput: AVCaptureDeviceInput
+        do {
+            newInput = try AVCaptureDeviceInput(device: device)
+        } catch {
+            if let old = oldInput, session.canAddInput(old) { session.addInput(old) }
+            throw error
+        }
+        guard session.canAddInput(newInput) else {
+            if let old = oldInput, session.canAddInput(old) { session.addInput(old) }
+            throw CameraError.cannotAddInput
+        }
+        session.addInput(newInput)
+        input = newInput
+        self.device = device
 
         // Formato 240 FPS em 420v, menor área.
         let candidates = FormatSelection.candidates(from: device)
@@ -95,38 +143,30 @@ final class CameraManager: NSObject {
         }
         let format = device.formats[chosen.index]
 
-        try device.lockForConfiguration()
-        defer { device.unlockForConfiguration() }
-        device.activeFormat = format   // ATENÇÃO: reseta as frame durations -> setar logo abaixo
-        let frameDuration = CMTime(value: 1, timescale: 240)
-        device.activeVideoMinFrameDuration = frameDuration
-        device.activeVideoMaxFrameDuration = frameDuration
-        device.videoZoomFactor = 1.0
-        if format.isVideoHDRSupported {
-            device.automaticallyAdjustsVideoHDREnabled = false
-            device.isVideoHDREnabled = false
-        }
-        if device.isGeometricDistortionCorrectionSupported {
-            device.isGeometricDistortionCorrectionEnabled = false
-        }
-        if device.isLowLightBoostSupported {
-            device.automaticallyEnablesLowLightBoostWhenAvailable = false
-        }
-        device.isSubjectAreaChangeMonitoringEnabled = false
-        if #available(iOS 15.4, *) {
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            device.activeFormat = format   // ATENÇÃO: reseta as frame durations -> setar logo abaixo
+            let frameDuration = CMTime(value: 1, timescale: 240)
+            device.activeVideoMinFrameDuration = frameDuration
+            device.activeVideoMaxFrameDuration = frameDuration
+            device.videoZoomFactor = 1.0
+            if format.isVideoHDRSupported {
+                device.automaticallyAdjustsVideoHDREnabled = false
+                device.isVideoHDREnabled = false
+            }
+            if device.isGeometricDistortionCorrectionSupported {
+                device.isGeometricDistortionCorrectionEnabled = false
+            }
+            if device.isLowLightBoostSupported {
+                device.automaticallyEnablesLowLightBoostWhenAvailable = false
+            }
+            device.isSubjectAreaChangeMonitoringEnabled = false
             device.automaticallyAdjustsFaceDrivenAutoFocusEnabled = false
             device.isFaceDrivenAutoFocusEnabled = false
+            // Teto da exposição automática durante a convergência: nunca acima do período do quadro.
+            device.activeMaxExposureDuration = Self.clampExposure(ns: desiredExposureNs, format: format)
         }
-        // Teto da exposição automática durante a convergência: nunca acima do período do quadro.
-        let capNs = min(desiredExposureNs, chosen.maxExposureNs)
-        device.activeMaxExposureDuration = CMTime(value: max(capNs, chosen.minExposureNs), timescale: 1_000_000_000)
-
-        // Entrada
-        if let old = input { session.removeInput(old) }
-        let newInput = try AVCaptureDeviceInput(device: device)
-        guard session.canAddInput(newInput) else { throw CameraError.cannotAddInput }
-        session.addInput(newInput)
-        input = newInput
 
         // Saída de dados: NV12 (420v), plano 0 = luminância. Quadros atrasados são descartados.
         let nv12 = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
@@ -145,12 +185,22 @@ final class CameraManager: NSObject {
         }
 
         let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+        stateLock.lock(); _formatDimensions = (Int(dims.width), Int(dims.height)); stateLock.unlock()
         DispatchQueue.main.async {
             self.activeInfo = ActiveCaptureInfo(width: Int(dims.width), height: Int(dims.height), fps: 240,
                                                 isBinned: format.isVideoBinned, exposureNs: 0, iso: 0, locked: false)
         }
         Self.log.info("Formato: \(dims.width)x\(dims.height) @240 420v binned=\(format.isVideoBinned) expo=[\(chosen.minExposureNs)...\(chosen.maxExposureNs)] ns ISO=[\(chosen.minISO)...\(chosen.maxISO)]")
         observeDevice(device)
+    }
+
+    /// Limita uma duração (ns) aos limites do formato comparando `CMTime` (não inteiros arredondados:
+    /// um valor arredondado para baixo do mínimo real lança uma exceção Objective-C impossível de capturar).
+    static func clampExposure(ns: Int64, format: AVCaptureDevice.Format) -> CMTime {
+        var d = CMTime(value: ns, timescale: 1_000_000_000)
+        if CMTimeCompare(d, format.minExposureDuration) < 0 { d = format.minExposureDuration }
+        if CMTimeCompare(d, format.maxExposureDuration) > 0 { d = format.maxExposureDuration }
+        return d
     }
 
     func start() {
@@ -186,17 +236,22 @@ final class CameraManager: NSObject {
     }
 
     // MARK: - Convergir e travar (Calibrar)
-    /// 1) exposição/foco/balanço contínuos com ponto de interesse no centro da ROI;
-    /// 2) espera `isAdjusting*` == false (KVO, timeout);
+    /// 1) reaplica o teto de exposição desejado e liga exposição/foco/balanço contínuos com ponto de
+    ///    interesse no centro da ROI;
+    /// 2) espera a convergência de verdade: piso de 400 ms, depois `isAdjusting*` == false em duas
+    ///    leituras seguidas (50 ms), com timeout;
     /// 3) trava: `setExposureModeCustom(duration, iso)`, `setFocusModeLocked(lensPosition)`,
-    ///    `setWhiteBalanceModeLocked(gains)`;
-    /// 4) verifica que a duração do quadro continuou em 1/240 s.
-    func convergeAndLock(pointOfInterest: CGPoint, timeout: TimeInterval = 1.5,
+    ///    `setWhiteBalanceModeLocked(gains)`, e publica a exposição REAL aplicada.
+    /// A verificação de que a taxa continuou em 240 FPS é feita pela `PhotocellSession` com o ΔPTS dos
+    /// quadros que chegam durante a calibração de ruído (`activeVideoMinFrameDuration` é o valor pedido,
+    /// nunca muda sozinho e por isso não serve de verificação).
+    func convergeAndLock(pointOfInterest: CGPoint, timeout: TimeInterval = 2.0,
                          completion: @escaping (Error?) -> Void) {
         sessionQueue.async {
             guard let device = self.device else { completion(CameraError.noBackWideCamera); return }
             do {
                 try device.lockForConfiguration()
+                device.activeMaxExposureDuration = Self.clampExposure(ns: self.desiredExposureNs, format: device.activeFormat)
                 if device.isExposurePointOfInterestSupported { device.exposurePointOfInterest = pointOfInterest }
                 if device.isFocusPointOfInterestSupported { device.focusPointOfInterest = pointOfInterest }
                 if device.isExposureModeSupported(.continuousAutoExposure) { device.exposureMode = .continuousAutoExposure }
@@ -206,103 +261,92 @@ final class CameraManager: NSObject {
             } catch {
                 completion(CameraError.configuration(error.localizedDescription)); return
             }
-            let deadline = Date().addingTimeInterval(timeout)
-            self.waitForConvergence(device: device, deadline: deadline) {
-                self.sessionQueue.async {
-                    do {
-                        try device.lockForConfiguration()
-                        defer { device.unlockForConfiguration() }
-                        let duration = device.exposureDuration
-                        let iso = device.iso
-                        if device.isExposureModeSupported(.custom) {
-                            device.setExposureModeCustom(duration: duration, iso: iso, completionHandler: nil)
-                        } else if device.isExposureModeSupported(.locked) {
-                            device.exposureMode = .locked
-                        }
-                        if device.isFocusModeSupported(.locked) {
-                            if device.isLockingFocusWithCustomLensPositionSupported {
-                                device.setFocusModeLocked(lensPosition: AVCaptureDevice.currentLensPosition, completionHandler: nil)
-                            } else {
-                                device.focusMode = .locked
+            let startedAt = Date()
+            let deadline = startedAt.addingTimeInterval(timeout)
+            self.sessionQueue.asyncAfter(deadline: .now() + 0.4) {
+                self.waitForConvergence(device: device, deadline: deadline, settledStreak: 0) {
+                    self.sessionQueue.async {
+                        do {
+                            try device.lockForConfiguration()
+                            defer { device.unlockForConfiguration() }
+                            let duration = device.exposureDuration
+                            let iso = device.iso
+                            if device.isExposureModeSupported(.custom) {
+                                device.setExposureModeCustom(duration: duration, iso: iso, completionHandler: nil)
+                            } else if device.isExposureModeSupported(.locked) {
+                                device.exposureMode = .locked
                             }
-                        }
-                        if device.isWhiteBalanceModeSupported(.locked) {
-                            if device.isLockingWhiteBalanceWithCustomDeviceGainsSupported {
-                                device.setWhiteBalanceModeLocked(with: AVCaptureDevice.currentWhiteBalanceGains, completionHandler: nil)
-                            } else {
-                                device.whiteBalanceMode = .locked
+                            if device.isFocusModeSupported(.locked) {
+                                if device.isLockingFocusWithCustomLensPositionSupported {
+                                    device.setFocusModeLocked(lensPosition: AVCaptureDevice.currentLensPosition, completionHandler: nil)
+                                } else {
+                                    device.focusMode = .locked
+                                }
                             }
-                        }
-                        // Verificação: a exposição custom não pode ter alongado o quadro.
-                        let fd = device.activeVideoMinFrameDuration
-                        let fps = Double(fd.timescale) / Double(fd.value)
-                        let expNs = CMTimeConvertScale(duration, timescale: 1_000_000_000, method: .roundHalfAwayFromZero).value
-                        Self.log.info("Travado: exposição \(expNs) ns, ISO \(iso), frame duration -> \(fps) FPS")
-                        DispatchQueue.main.async {
-                            self.activeInfo.exposureNs = expNs
-                            self.activeInfo.iso = iso
-                            self.activeInfo.locked = true
-                            self.activeInfo.fps = fps
-                        }
-                        if abs(fps - 240) > 2.4 {
-                            completion(CameraError.frameRateNotHeld(measuredFps: fps))
-                        } else {
+                            if device.isWhiteBalanceModeSupported(.locked) {
+                                if device.isLockingWhiteBalanceWithCustomDeviceGainsSupported {
+                                    device.setWhiteBalanceModeLocked(with: AVCaptureDevice.currentWhiteBalanceGains, completionHandler: nil)
+                                } else {
+                                    device.whiteBalanceMode = .locked
+                                }
+                            }
+                            let expNs = CMTimeConvertScale(duration, timescale: 1_000_000_000, method: .roundHalfAwayFromZero).value
+                            Self.log.info("Travado: exposição \(expNs) ns (desejada \(self.desiredExposureNs)), ISO \(iso), convergência \(Int(Date().timeIntervalSince(startedAt) * 1000)) ms")
+                            DispatchQueue.main.async {
+                                self.activeInfo.exposureNs = expNs
+                                self.activeInfo.iso = iso
+                                self.activeInfo.locked = true
+                            }
                             completion(nil)
+                        } catch {
+                            completion(CameraError.configuration(error.localizedDescription))
                         }
-                    } catch {
-                        completion(CameraError.configuration(error.localizedDescription))
                     }
                 }
             }
         }
     }
 
-    private func waitForConvergence(device: AVCaptureDevice, deadline: Date, done: @escaping () -> Void) {
+    /// Convergência: duas leituras seguidas (50 ms) sem `isAdjusting*`, ou timeout.
+    private func waitForConvergence(device: AVCaptureDevice, deadline: Date, settledStreak: Int, done: @escaping () -> Void) {
         let settled = !(device.isAdjustingExposure || device.isAdjustingFocus || device.isAdjustingWhiteBalance)
-        if settled || Date() >= deadline {
+        let streak = settled ? settledStreak + 1 : 0
+        if streak >= 2 || Date() >= deadline {
             done()
         } else {
             sessionQueue.asyncAfter(deadline: .now() + 0.05) {
-                self.waitForConvergence(device: device, deadline: deadline, done: done)
+                self.waitForConvergence(device: device, deadline: deadline, settledStreak: streak, done: done)
             }
         }
     }
 
-    /// Exposição/ISO explícitos (ajuste manual nas configurações).
-    func setCustomExposure(durationNs: Int64, iso: Float) {
-        sessionQueue.async {
-            guard let device = self.device else { return }
-            do {
-                try device.lockForConfiguration()
-                defer { device.unlockForConfiguration() }
-                let f = device.activeFormat
-                let d = CMTime(value: min(max(durationNs, CMTimeConvertScale(f.minExposureDuration, timescale: 1_000_000_000, method: .roundHalfAwayFromZero).value),
-                                          CMTimeConvertScale(f.maxExposureDuration, timescale: 1_000_000_000, method: .roundHalfAwayFromZero).value),
-                               timescale: 1_000_000_000)
-                let i = min(max(iso, f.minISO), f.maxISO)
-                if device.isExposureModeSupported(.custom) {
-                    device.setExposureModeCustom(duration: d, iso: i, completionHandler: nil)
-                }
+    /// Aplica a exposição desejada: como teto do AE (antes de travar) ou como nova exposição custom
+    /// (já travada, mantendo o ISO atual). Sempre na `sessionQueue`.
+    private func applyDesiredExposure() {
+        guard let device = self.device else { return }
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            let d = Self.clampExposure(ns: desiredExposureNs, format: device.activeFormat)
+            device.activeMaxExposureDuration = d
+            if device.exposureMode == .custom, device.isExposureModeSupported(.custom) {
+                let iso = device.iso
+                device.setExposureModeCustom(duration: d, iso: iso, completionHandler: nil)
+                let expNs = CMTimeConvertScale(d, timescale: 1_000_000_000, method: .roundHalfAwayFromZero).value
                 DispatchQueue.main.async {
-                    self.activeInfo.exposureNs = d.value
-                    self.activeInfo.iso = i
+                    self.activeInfo.exposureNs = expNs
+                    self.activeInfo.iso = iso
                     self.activeInfo.locked = true
                 }
-            } catch {
-                Self.log.error("setCustomExposure: \(error.localizedDescription)")
             }
+        } catch {
+            Self.log.error("applyDesiredExposure: \(error.localizedDescription)")
         }
     }
 
     // MARK: - Observação (pressão do sistema, interrupções, erros)
-    private func observeDevice(_ device: AVCaptureDevice) {
-        kvo.removeAll()
-        kvo.append(device.observe(\.systemPressureState, options: [.initial, .new]) { [weak self] dev, _ in
-            let level = dev.systemPressureState.level
-            DispatchQueue.main.async { self?.systemPressure = level }
-        })
-        for t in notificationTokens { NotificationCenter.default.removeObserver(t) }
-        notificationTokens.removeAll()
+    /// Observadores da SESSÃO: registrados no `init`, antes de qualquer `throw` da configuração.
+    private func observeSession() {
         let nc = NotificationCenter.default
         notificationTokens.append(nc.addObserver(forName: .AVCaptureSessionWasInterrupted, object: session, queue: nil) { [weak self] note in
             let reason = note.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int
@@ -317,6 +361,14 @@ final class CameraManager: NSObject {
                 Self.log.error("Erro de runtime: \(err.localizedDescription)")
                 self?.onRuntimeError?(err)
             }
+        })
+    }
+
+    private func observeDevice(_ device: AVCaptureDevice) {
+        kvo.removeAll()
+        kvo.append(device.observe(\.systemPressureState, options: [.initial, .new]) { [weak self] dev, _ in
+            let level = dev.systemPressureState.level
+            DispatchQueue.main.async { self?.systemPressure = level }
         })
     }
 

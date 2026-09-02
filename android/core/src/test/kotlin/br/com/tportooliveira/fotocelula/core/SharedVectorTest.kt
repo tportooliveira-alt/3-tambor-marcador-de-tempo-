@@ -81,6 +81,7 @@ class SharedVectorTest {
         readoutTopToBottom = j.getBoolean("readout_top_to_bottom"),
         flickerRatio = j.getDouble("flicker_ratio"),
         flickerAuto = j.getBoolean("flicker_auto"),
+        gamma = j.getDouble("gamma"),
     )
 
     private fun roi(j: JSONObject) = RoiRect(j.getInt("x"), j.getInt("width"), j.getInt("y0"), j.getInt("y1"))
@@ -99,6 +100,7 @@ class SharedVectorTest {
         assertTrue(abs(exp.getLong("uncertaintyNs") - act.uncertaintyNs) <= 1, "$what.uncertainty")
         assertEquals(exp.getInt("interiorCount"), act.interiorCount, "$what.interiorCount")
         assertEquals(exp.getBoolean("degraded"), act.degraded, "$what.degraded")
+        assertEquals(exp.optInt("texturedColumns", 0), act.texturedColumns, "$what.texturedColumns")
     }
 
     private fun assertEffects(expected: JSONArray, actual: List<Pair<String, List<String>>>) {
@@ -226,14 +228,13 @@ class SharedVectorTest {
             when (st.getString("type")) {
                 "frames" -> {
                     val count = st.getInt("count")
-                    val rows = doubleArray(st.optJSONArray("rows"))
                     val prev = intArray(st.optJSONArray("stripPrev"))
                     val cur = intArray(st.optJSONArray("stripCur"))
                     val bg = doubleArray(st.optJSONArray("stripBg"))
                     for (k in 0 until count) {
                         val ts = st.getLong("ts0") + k * st.getLong("period")
-                        val m = FrameMeasurement(ts, st.getDouble("full"), st.getDouble("core"), st.getDouble("bg"),
-                            rows.copyOf(), prev.copyOf(), cur.copyOf(), bg.copyOf(), null, 1)
+                        val m = FrameMeasurement(ts, ts - st.getLong("period"), st.getDouble("full"), st.getDouble("core"),
+                            st.getDouble("bg"), prev.copyOf(), cur.copyOf(), bg.copyOf(), null, 1)
                         eng.frame(m)
                         applier.apply(eng, "frame:$idx")
                         idx += 1

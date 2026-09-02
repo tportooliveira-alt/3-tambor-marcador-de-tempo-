@@ -9,8 +9,8 @@ final class FullRunSimulationTests: XCTestCase {
         cfg.calibrationSamples = 32; cfg.calibrationMinSamplesForOutlier = 8
         cfg.skewNs = 3_200_000; cfg.exposureNs = 2_083_333
         let p = cfg.framePeriodNs
-        let planeWidth = 32, stride = 40, planeHeight = 720
-        let roi = RoiRect(x: 8, width: 15, y0: 300, y1: 396)
+        let planeWidth = 24, stride = 32, planeHeight = 720
+        let roi = RoiRect(x: 8, width: 9, y0: 300, y1: 396)
         let speedPx = 14.0 * 1000.0 / 6.0
         let t0: Int64 = 500_000_000_000
         let startFrame = 60
@@ -21,7 +21,7 @@ final class FullRunSimulationTests: XCTestCase {
         var sceneFinish = Scene(planeWidth: planeWidth, stride: stride, planeHeight: planeHeight, roi: roi, skewNs: 3_200_000, exposureNs: cfg.exposureNs, periodNs: p, direction: -1, speedPxPerS: speedPx, tCrossCenterNs: tFinish, rowsA: 312, rowsB: 383, seed: 6)
         var quiet = Scene(planeWidth: planeWidth, stride: stride, planeHeight: planeHeight, roi: roi, skewNs: 3_200_000, exposureNs: cfg.exposureNs, periodNs: p, direction: 1, speedPxPerS: speedPx, tCrossCenterNs: tFinish + 100_000_000_000, rowsA: 312, rowsB: 383, seed: 9)
         let diff = try StripDifferencer(roi: roi, planeWidth: planeWidth, planeHeight: planeHeight, coreWidth: cfg.coreWidth)
-        let eng = PhotocellEngine(cfg: cfg, roi: roi, planeHeight: planeHeight)
+        let eng = try PhotocellEngine(cfg: cfg, roi: roi, planeHeight: planeHeight)
         var plane = [UInt8](repeating: 0xEE, count: stride * planeHeight)
         func feed(_ band: [UInt8], _ ts: Int64) {
             plane.replaceSubrange((roi.y0 * stride)..<(roi.y0 * stride + band.count), with: band)

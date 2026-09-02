@@ -17,6 +17,8 @@ data class CrossingEstimate(
     val boundCount: Int,
     val lowerNs: Nanos?,
     val upperNs: Nanos?,
+    /** Colunas cuja dispersão de tempos excede o que o ruído explica (textura/inclinação). */
+    val texturedColumns: Int = 0,
 )
 
 /**
@@ -25,42 +27,54 @@ data class CrossingEstimate(
  * Cada pixel integra a luz durante [t_ini, t_ini + E]; se o bordo (luma O) cobre o pixel (fundo B)
  * em t_x dentro da janela, V = B + (O − B)·f com f = (t_ini + E − t_x)/E ⇒ t_x = t_ini + E·(1 − f).
  * O bordo se move a velocidade constante: t_x(coluna) = t_c + s·dx. Um ajuste linear ponderado
- * sobre as MEDIANAS por coluna dos pixels "interiores" de três quadros (c−lag, c, c+lag) devolve
- * t_c (cruzamento do plano central) e a velocidade, cancelando o viés de direção.
+ * sobre as MEDIANAS por coluna dos pixels "interiores" de três quadros (c−lag, c, c+lag; deslocamentos
+ * de tempo MEDIDOS pelos timestamps) devolve t_c (cruzamento do plano central) e a velocidade.
  *
- * Passo 1 seleciona os pixels interiores pelo valor OBSERVADO (m < f < 1−m); como essa seleção é
- * correlacionada com o sinal do ruído perto dos cortes, o passo 2 reseleciona pelo valor PREVISTO
- * pelo ajuste e usa o f observado sem corte (não enviesado). A incerteza (3σ) é propagada do ruído
- * por pixel através do ajuste: pequena (≤ P/8) ⇒ qualidade 2; senão intervalo (qualidade 1).
- * Pixels saturados só dão limites; colunas com poucas linhas não entram; inclinação implausível ou
- * coluna única ⇒ intervalo (qualidade 1) pela faixa de velocidades.
+ * Passo 1 seleciona os pixels interiores pelo valor OBSERVADO usando o platô (c+2·lag) como O; o
+ * passo 2 reseleciona pelo valor PREVISTO pelo ajuste (sem viés de seleção) e usa um O LOCAL: a
+ * mediana das 3 colunas logo atrás do bordo, na mesma linha e quadro (textura do objeto). A incerteza
+ * (3σ) é propagada do ruído por pixel, usando por coluna o maior entre a variância do modelo e a
+ * amostral, mais um termo de textura (variância espacial do platô) e a dispersão residual entre
+ * colunas quando há colunas "texturizadas". Incerteza ≤ P/8 ⇒ qualidade 2; senão intervalo (1); sem
+ * informação ⇒ tempo do quadro (0).
  */
 object CrossingEstimator {
-    private class ColumnStats(val good: List<Int>, val t: HashMap<Int, Double>, val variance: HashMap<Int, Double>)
+    private class ColumnStats(val good: IntArray, val t: DoubleArray, val variance: DoubleArray, val textured: Int, val crms: DoubleArray)
     private class LineFit(val tc: Double, val slope: Double, val varT: Double)
 
-    fun estimate(
-        cfg: PhotocellConfig, roi: RoiRect, planeHeight: Int, cand: FrameMeasurement,
-        nextStrip: IntArray?, plateauStrip: IntArray?, noiseSigmaPx: Double,
-    ): CrossingEstimate {
+    /** Desfaz a curva de tom (gamma) para que V seja linear em f; gamma == 1 desliga. */
+    fun linearize(v: Double, gamma: Double): Double {
+        if (gamma == 1.0) return v
+        if (v <= 0.0) return 0.0
+        return 255.0 * Math.pow(v / 255.0, gamma)
+    }
+
+    fun estimate(cfg: PhotocellConfig, roi: RoiRect, planeHeight: Int, inp: CrossingInput, noiseSigmaPx: Double): CrossingEstimate {
         val p = cfg.framePeriodNs
         // Sem refinamento possível, a melhor estimativa é o meio da janela de exposição da banda.
         val midRowOffset = cfg.skewNs?.let { Math.floorDiv((roi.y0 + roi.height / 2).toLong() * it, planeHeight.toLong()) } ?: 0L
-        val none = CrossingEstimate(0, cand.tsNs + midRowOffset + cfg.exposureNs / 2, p / 2, 0, 0, null, null)
-        val n = cand.stripCur.size
-        if (n == 0 || plateauStrip == null || plateauStrip.size != n || cand.stripPrev.size != n || cand.stripBg.size != n) return none
+        val none = CrossingEstimate(0, inp.tsNs + midRowOffset + cfg.exposureNs / 2, p / 2, 0, 0, null, null, 0)
+        val n = inp.stripCur.size
+        val plateauStrip = inp.plateauStrip
+        if (n == 0 || plateauStrip == null || plateauStrip.size != n || inp.stripPrev.size != n || inp.stripBg.size != n) return none
         val h = roi.height
         val w = roi.width
         if (w * h != n) return none
         val e = cfg.exposureNs.toDouble()
-        val lag = cand.lag
+        val gamma = cfg.gamma
         val kSig = cfg.fractionMarginSigmas
         val noiseTerm = kSig * sqrt(2.0) * noiseSigmaPx
         val center = (w - 1) / 2.0
-        val frames = ArrayList<Pair<IntArray, Double>>()
-        frames.add(cand.stripPrev to -(lag * p).toDouble())
-        frames.add(cand.stripCur to 0.0)
-        if (nextStrip != null && nextStrip.size == n) frames.add(nextStrip to (lag * p).toDouble())
+        val frameStrips = ArrayList<IntArray>()
+        val frameOffsets = ArrayList<Double>()
+        frameStrips.add(inp.stripPrev); frameOffsets.add((inp.prevTsNs - inp.tsNs).toDouble())
+        frameStrips.add(inp.stripCur); frameOffsets.add(0.0)
+        val nextStrip = inp.nextStrip
+        val nextTs = inp.nextTsNs
+        if (nextStrip != null && nextStrip.size == n && nextTs != null) {
+            frameStrips.add(nextStrip); frameOffsets.add((nextTs - inp.tsNs).toDouble())
+        }
+        val nFrames = frameStrips.size
         val sMin = 1e9 / cfg.speedPxPerSMax
         val sMax = 1e9 / cfg.speedPxPerSMin
         val minRows = maxOf(1, cfg.minInteriorRowsPerColumn, Math.ceil(cfg.minInteriorRowsFraction * h).toInt())
@@ -68,60 +82,80 @@ object CrossingEstimator {
         val uncQ2Max = p / 8                      // acima disso o ajuste vira intervalo (qualidade 1)
         val skew = cfg.skewNs
         fun rowTime(row: Int): Long =
-            if (skew != null) cand.tsNs + Math.floorDiv((roi.y0 + row).toLong() * skew, planeHeight.toLong()) else cand.tsNs
+            if (skew != null) inp.tsNs + Math.floorDiv((roi.y0 + row).toLong() * skew, planeHeight.toLong()) else inp.tsNs
+
+        // fundo e platô linearizados uma vez
+        val bgLin = DoubleArray(n) { linearize(inp.stripBg[it], gamma) }
+        val plateauLin = DoubleArray(n) { linearize(plateauStrip[it].toDouble(), gamma) }
+        // Textura do objeto: variância espacial do platô ao longo das colunas (mediana das linhas), além
+        // do ruído. Entra como variância adicional COERENTE por coluna (não cai com sqrt(n)).
+        val rowVars = DoubleArray(h)
+        for (row in 0 until h) {
+            val o = row * w
+            var meanP = 0.0
+            for (i in 0 until w) meanP += plateauLin[o + i]
+            meanP = meanP / w.toDouble()
+            var ssP = 0.0
+            for (i in 0 until w) {
+                val d = plateauLin[o + i] - meanP
+                ssP += d * d
+            }
+            rowVars[row] = ssP / w.toDouble()
+        }
+        val texVarPx = median(rowVars, h) - noiseSigmaPx * noiseSigmaPx
+        val aTex = if (texVarPx > 0.0) sqrt(texVarPx) else 0.0
+        // A textura também limita a classificação coberto/interior: margem = maior entre ruído e ~1,5·aTex
+        val texTerm = 1.5 * aTex
+        val marginTerm = if (noiseTerm >= texTerm) noiseTerm else texTerm
 
         var interior = 0
         var bounds = 0
         var lower: Double? = null
         var upper: Double? = null
-        val coveredColsCand = HashSet<Int>()
+        val coveredColsCand = BooleanArray(w)
+        val maxPerCol = h * nFrames
 
         // ---- passo 1: seleção pelo valor observado + limites --------------------------------
-        val colSumW = HashMap<Int, Double>()
-        val colTimes = HashMap<Int, ArrayList<Double>>()   // t_x por coluna (mediana resiste a pixels espúrios)
-        val colS2 = HashMap<Int, Double>()                 // soma das variâncias de t por pixel
-        val colN = HashMap<Int, Int>()
+        val colSumW = DoubleArray(w)
+        val colTimes = Array(w) { DoubleArray(maxPerCol) }
+        val colS2 = DoubleArray(w)
+        val colN = IntArray(w)
         for (row in 0 until h) {
             val tRow = rowTime(row)
             for (i in 0 until w) {
                 val idx = row * w + i
-                val b = cand.stripBg[idx]
-                val o = plateauStrip[idx].toDouble()
+                val b = bgLin[idx]
+                val o = plateauLin[idx]
                 val contrast = o - b
                 val c = if (contrast >= 0.0) contrast else -contrast
                 if (c < cfg.minContrast) continue
                 val dx = i - center
-                // Limites só da coluna central (dx = 0): em outra coluna o limite valeria para t_x(dx),
-                // não para t_c. Com largura par (dx = ±0,5) aplica-se uma folga de |dx|·s_max.
                 val isCenterCol = abs(dx) <= 0.5
                 val centerSlack = abs(dx) * sMax
-                var m = noiseTerm / c
+                var m = marginTerm / c
                 if (m < cfg.fractionMarginMin) m = cfg.fractionMarginMin
                 if (m >= 0.5) continue
                 val usableInterior = m <= cfg.fractionMarginMax
                 val lo = m
                 val hi = 1.0 - m
-                // Limites: f_obs >= 1-m com ruído até m implica f >= 1-2m, logo t_x <= t_ini + 2mE
-                // (e simetricamente t_x >= t_ini + E(1-2m) para f_obs <= m).
                 val upOff = e * 2.0 * m
                 val loOff = e * (1.0 - 2.0 * m)
                 val wgt = contrast * contrast
-                val st = e * m / kSig                  // σ de t deste pixel (E·√2·σ_px/C)
-                for (k in frames.indices) {
-                    val strip = frames[k].first
-                    val f = (strip[idx].toDouble() - b) / contrast
-                    val tIni = tRow.toDouble() + frames[k].second
+                val st = e * m / kSig
+                for (k in 0 until nFrames) {
+                    val f = (linearize(frameStrips[k][idx].toDouble(), gamma) - b) / contrast
+                    val tIni = tRow.toDouble() + frameOffsets[k]
                     if (f > lo && f < hi) {
                         if (usableInterior) {
                             val t = tIni + e * (1.0 - f)
-                            colSumW[i] = (colSumW[i] ?: 0.0) + wgt
-                            colTimes.getOrPut(i) { ArrayList() }.add(t)
-                            colS2[i] = (colS2[i] ?: 0.0) + st * st
-                            colN[i] = (colN[i] ?: 0) + 1
+                            colSumW[i] += wgt
+                            colTimes[i][colN[i]] = t
+                            colS2[i] += st * st
+                            colN[i] += 1
                             interior += 1
                         }
                     } else if (f >= hi) {
-                        if (k == 1) coveredColsCand.add(i)
+                        if (k == 1) coveredColsCand[i] = true
                         if (isCenterCol) {
                             bounds += 1
                             val u = tIni + upOff + centerSlack
@@ -137,16 +171,19 @@ object CrossingEstimator {
                 }
             }
         }
-        val lowerI: Long? = lower?.let { floor(it + 0.5).toLong() }
-        val upperI: Long? = upper?.let { floor(it + 0.5).toLong() }
+        var lowerI: Long? = lower?.let { floor(it + 0.5).toLong() }
+        var upperI: Long? = upper?.let { floor(it + 0.5).toLong() }
+        var texturedCols = 0
 
         fun intervalResult(loNs: Long?, hiNs: Long?, quality: Int): CrossingEstimate? {
             if (loNs == null || hiNs == null) return null
-            val a = if (loNs <= hiNs) loNs else hiNs
-            val bb = if (loNs <= hiNs) hiNs else loNs
+            // limites contraditórios (classificação corrompida, p.ex. textura): sem informação honesta
+            if (loNs > hiNs) return null
+            val a = loNs
+            val bb = hiNs
             if (Math.floorDiv(bb - a, 2L) > p / 2) return null
             val mid = Math.floorDiv(a + bb, 2L)
-            return CrossingEstimate(quality, mid, Math.floorDiv(bb - a, 2L), interior, bounds, a, bb)
+            return CrossingEstimate(quality, mid, Math.floorDiv(bb - a, 2L), interior, bounds, a, bb, texturedCols)
         }
 
         /** Qualidade 2 se a incerteza (3σ) propagada do ajuste é pequena; senão intervalo. */
@@ -154,41 +191,74 @@ object CrossingEstimator {
             var unc = floor(3.0 * sqrt(varT) + 0.5).toLong()
             if (unc < uncFloor) unc = uncFloor
             val refined = floor(tEst + 0.5).toLong()
-            if (unc <= uncQ2Max) return CrossingEstimate(2, refined, unc, interior, bounds, lowerI, upperI)
+            if (unc <= uncQ2Max) return CrossingEstimate(2, refined, unc, interior, bounds, lowerI, upperI, texturedCols)
             val a0 = refined - unc
             val b0 = refined + unc
             var a = a0
             var bb = b0
-            if (lowerI != null && lowerI > a) a = lowerI
-            if (upperI != null && upperI < bb) bb = upperI
+            val li = lowerI
+            val ui = upperI
+            if (li != null && li > a) a = li
+            if (ui != null && ui < bb) bb = ui
             if (a > bb) { a = a0; bb = b0 }
             return intervalResult(a, bb, 1)
         }
 
-        /** Colunas confiáveis (≥ minRows pixels), mediana e variância da mediana por coluna. */
-        fun columnStats(sumW: HashMap<Int, Double>, times: HashMap<Int, ArrayList<Double>>, s2: HashMap<Int, Double>, cnt: HashMap<Int, Int>): ColumnStats {
-            val good = sumW.keys.filter { (cnt[it] ?: 0) >= minRows }.sorted()
-            // Tempo por coluna = MEDIANA dos t_x dos pixels interiores: um único pixel saturado que o ruído
-            // classificou como interior (erro ~P) não desloca a coluna, ao contrário da média ponderada.
-            val t = HashMap<Int, Double>()
-            for ((c, list) in times) t[c] = median(list)
-            // variância da mediana da coluna ~ (π/2) · variância da média
-            val variance = HashMap<Int, Double>()
-            for ((c, v) in s2) variance[c] = (PI / 2.0) * v / (cnt[c]!!.toDouble() * cnt[c]!!.toDouble())
-            return ColumnStats(good, t, variance)
+        /** Colunas confiáveis, mediana, variância da mediana por coluna e número de colunas texturizadas. */
+        fun columnStats(sumW: DoubleArray, times: Array<DoubleArray>, s2: DoubleArray, cnt: IntArray): ColumnStats {
+            val goodList = ArrayList<Int>()
+            for (c in 0 until w) if (cnt[c] > 0 && cnt[c] >= minRows) goodList.add(c)
+            val t = DoubleArray(w)
+            val variance = DoubleArray(w)
+            val crms = DoubleArray(w)
+            var textured = 0
+            for (c in 0 until w) {
+                val nc = cnt[c]
+                if (nc == 0) continue
+                val fn = nc.toDouble()
+                t[c] = median(times[c], nc)
+                // variância da mediana da coluna ~ (π/2) · variância da média (modelo de ruído)
+                val varModel = (PI / 2.0) * s2[c] / (fn * fn)
+                // variância amostral dos tempos da coluna (dois passos, ordem de inserção)
+                var mean = 0.0
+                for (k in 0 until nc) mean += times[c][k]
+                mean = mean / fn
+                var ss = 0.0
+                for (k in 0 until nc) {
+                    val d = times[c][k] - mean
+                    ss += d * d
+                }
+                val varS = if (nc >= 2) ss / (fn - 1.0) else 0.0
+                val varEmp = (PI / 2.0) * varS / fn
+                variance[c] = if (varModel >= varEmp) varModel else varEmp
+                // contraste RMS da coluna (sumW = soma de contrast²), para o termo coerente de textura
+                crms[c] = sqrt(sumW[c] / fn)
+                if (nc >= minRows) {
+                    val sigmaModelPx = sqrt(s2[c] / fn)
+                    if (sqrt(varS) > 3.0 * sigmaModelPx + e / 10.0) textured += 1
+                }
+            }
+            return ColumnStats(goodList.toIntArray(), t, variance, textured, crms)
+        }
+
+        /** Variância COERENTE (não cai com o número de pixels/colunas) de t causada pela textura do objeto. */
+        fun texVar(crms: Double): Double {
+            val tTex = e * aTex / crms
+            return tTex * tTex
         }
 
         /**
          * Ajuste linear ponderado sobre as medianas por coluna, com rejeição de colunas cujo resíduo é
          * fisicamente impossível (> E + P/4). Devolve (t_c, inclinação, variância de t_c) ou null.
          */
-        fun fitLine(good: List<Int>, sumW: HashMap<Int, Double>, colT: HashMap<Int, Double>, colVar: HashMap<Int, Double>): LineFit? {
-            val fitCols = ArrayList(good)
+        fun fitLine(good: IntArray, sumW: DoubleArray, colT: DoubleArray, colVar: DoubleArray, textured: Int, colCrms: DoubleArray): LineFit? {
+            val fitCols = ArrayList<Int>()
+            for (c in good) fitCols.add(c)
             for (iter in 0 until 3) {
                 var gw = 0.0; var gx = 0.0; var gt = 0.0; var gxx = 0.0; var gxt = 0.0
                 for (col in fitCols) {
-                    val wc = sumW[col]!!
-                    val tc = colT[col]!!
+                    val wc = sumW[col]
+                    val tc = colT[col]
                     val dxc = col - center
                     gw += wc; gx += wc * dxc; gt += wc * tc; gxx += wc * dxc * dxc; gxt += wc * dxc * tc
                 }
@@ -200,19 +270,40 @@ object CrossingEstimator {
                 var worst: Int? = null
                 var worstRes = 0.0
                 for (col in fitCols) {
-                    val res = abs(colT[col]!! - (tc + slope * (col - center)))
+                    val res = abs(colT[col] - (tc + slope * (col - center)))
                     if (res > worstRes) { worstRes = res; worst = col }
                 }
                 if (worst != null && worstRes > e + p / 4.0 && fitCols.size > 2) { fitCols.remove(worst); continue }
                 if (worstRes <= e + p / 4.0 && abs(slope) in sMin..sMax) {
                     // propagação: t_c = Σ a_c·t_col(c), a_c = w_c/gw − gx·w_c·(gw·dx_c − gx)/(denom·gw)
                     var varT = 0.0
+                    var chi2 = 0.0
+                    var resSs = 0.0
                     for (col in fitCols) {
-                        val wc = sumW[col]!!
+                        val wc = sumW[col]
                         val dxc = col - center
                         val ac = wc / gw - gx * wc * (gw * dxc - gx) / (denom * gw)
-                        varT += ac * ac * colVar[col]!!
+                        varT += ac * ac * colVar[col]
+                        val res = colT[col] - (tc + slope * dxc)
+                        chi2 += if (colVar[col] > 0.0) res * res / colVar[col] else 0.0
+                        resSs += res * res
                     }
+                    // resíduos entre colunas maiores do que as variâncias explicam: escala pelo χ² reduzido
+                    val dof = fitCols.size - 2
+                    if (dof >= 1) {
+                        val chi2r = chi2 / dof.toDouble()
+                        if (chi2r > 1.0) varT = varT * chi2r
+                    }
+                    // com colunas texturizadas os erros são coerentes: incerteza ≥ dispersão residual
+                    if (textured > 0) {
+                        val resMs2 = resSs / fitCols.size.toDouble()
+                        if (resMs2 > varT) varT = resMs2
+                    }
+                    // textura do objeto: erro coerente, somado DEPOIS da propagação (não é reduzido pelo ajuste)
+                    var crms = 0.0
+                    for (col in fitCols) crms += colCrms[col]
+                    crms = crms / fitCols.size.toDouble()
+                    varT += texVar(crms)
                     return LineFit(tc, slope, varT)
                 }
                 return null
@@ -224,81 +315,113 @@ object CrossingEstimator {
         val goodCols = stats1.good
         val colT = stats1.t
         val colVar = stats1.variance
+        texturedCols = stats1.textured
+        if (texturedCols > 0 || texTerm > noiseTerm) {
+            // os limites foram classificados com o platô como O: com textura (detectada no platô ou na
+            // dispersão das colunas) não são confiáveis
+            lowerI = null
+            upperI = null
+        }
         if (goodCols.isNotEmpty()) {
-            var fit = fitLine(goodCols, colSumW, colT, colVar)
-            // ---- passo 2 (duas iterações): reseleção pelo valor PREVISTO ----------------------
+            var fit = fitLine(goodCols, colSumW, colT, colVar, texturedCols, stats1.crms)
+            // ---- passo 2 (duas iterações): reseleção pelo valor PREVISTO, O local ------------------
             for (iter in 0 until 2) {
                 val f1 = fit ?: break
-                val sumW2 = HashMap<Int, Double>()
-                val times2 = HashMap<Int, ArrayList<Double>>()
-                val s22 = HashMap<Int, Double>()
-                val n2 = HashMap<Int, Int>()
+                val behind = if (f1.slope > 0.0) -1 else 1     // bordo vindo da esquerda (s > 0): atrás = colunas menores
+                val sumW2 = DoubleArray(w)
+                val times2 = Array(w) { DoubleArray(maxPerCol) }
+                val s22 = DoubleArray(w)
+                val n2 = IntArray(w)
+                val neigh = DoubleArray(3)
                 for (row in 0 until h) {
                     val tRow = rowTime(row)
                     for (i in 0 until w) {
                         val idx = row * w + i
-                        val b = cand.stripBg[idx]
-                        val o = plateauStrip[idx].toDouble()
-                        val contrast = o - b
-                        val c = if (contrast >= 0.0) contrast else -contrast
-                        if (c < cfg.minContrast) continue
-                        var m = noiseTerm / c
-                        if (m < cfg.fractionMarginMin) m = cfg.fractionMarginMin
-                        if (m > cfg.fractionMarginMax) continue
+                        val b = bgLin[idx]
                         val tPred = f1.tc + f1.slope * (i - center)
-                        val wgt = contrast * contrast
-                        val st = e * m / kSig
-                        for (k in frames.indices) {
-                            val tIni = tRow.toDouble() + frames[k].second
+                        for (k in 0 until nFrames) {
+                            val strip = frameStrips[k]
+                            val tIni = tRow.toDouble() + frameOffsets[k]
                             val fPred = (tIni + e - tPred) / e
-                            if (fPred > m && fPred < 1.0 - m) {
-                                val f = (frames[k].first[idx].toDouble() - b) / contrast
-                                val t = tIni + e * (1.0 - f)
-                                sumW2[i] = (sumW2[i] ?: 0.0) + wgt
-                                times2.getOrPut(i) { ArrayList() }.add(t)
-                                s22[i] = (s22[i] ?: 0.0) + st * st
-                                n2[i] = (n2[i] ?: 0) + 1
+                            if (!(fPred > 0.0 && fPred < 1.0)) continue
+                            // O local: mediana das até 3 colunas logo atrás do bordo, mesma linha e quadro,
+                            // previstas E observadas totalmente cobertas; senão o platô.
+                            var nNeigh = 0
+                            for (d in 1..3) {
+                                val j = i + behind * d
+                                if (j < 0 || j >= w) break
+                                val tPredJ = f1.tc + f1.slope * (j - center)
+                                if (tPredJ > tIni) continue
+                                val vj = linearize(strip[row * w + j].toDouble(), gamma)
+                                val bj = bgLin[row * w + j]
+                                val cj = plateauLin[row * w + j] - bj
+                                if (cj == 0.0) continue
+                                var mj = marginTerm / (if (cj >= 0.0) cj else -cj)
+                                if (mj < cfg.fractionMarginMin) mj = cfg.fractionMarginMin
+                                if ((vj - bj) / cj >= 1.0 - mj) { neigh[nNeigh] = vj; nNeigh += 1 }
                             }
+                            val o = if (nNeigh > 0) median(neigh, nNeigh) else plateauLin[idx]
+                            val contrast = o - b
+                            val c = if (contrast >= 0.0) contrast else -contrast
+                            if (c < cfg.minContrast) continue
+                            var m = marginTerm / c
+                            if (m < cfg.fractionMarginMin) m = cfg.fractionMarginMin
+                            if (m > cfg.fractionMarginMax) continue
+                            if (!(fPred > m && fPred < 1.0 - m)) continue
+                            val f = (linearize(strip[idx].toDouble(), gamma) - b) / contrast
+                            val t = tIni + e * (1.0 - f)
+                            val wgt = contrast * contrast
+                            val st = e * m / kSig
+                            sumW2[i] += wgt
+                            times2[i][n2[i]] = t
+                            s22[i] += st * st
+                            n2[i] += 1
                         }
                     }
                 }
                 val stats2 = columnStats(sumW2, times2, s22, n2)
-                val fit2 = if (stats2.good.isNotEmpty()) fitLine(stats2.good, sumW2, stats2.t, stats2.variance) else null
+                val fit2 = if (stats2.good.isNotEmpty()) fitLine(stats2.good, sumW2, stats2.t, stats2.variance, stats2.textured, stats2.crms) else null
                 if (fit2 == null) break
                 fit = fit2
+                texturedCols = stats2.textured
             }
             if (fit != null) fittedResult(fit.tc, fit.varT)?.let { return it }
             // uma coluna dominante (ou inclinação implausível): usa a coluna com mais peso
             var col = goodCols[0]
-            for (c2 in goodCols) if (colSumW[c2]!! > colSumW[col]!!) col = c2
+            for (c2 in goodCols) if (colSumW[c2] > colSumW[col]) col = c2
             val dx0 = col - center
-            val tInt = colT[col]!!
-            if (abs(dx0) < 0.5) fittedResult(tInt, colVar[col]!!)?.let { return it }
+            val tInt = colT[col]
+            if (abs(dx0) < 0.5) fittedResult(tInt, colVar[col] + texVar(stats1.crms[col]))?.let { return it }
             // sentido: colunas já cobertas no candidato ficam do lado de onde o bordo veio
-            val leftCov = coveredColsCand.any { it < col }
-            val rightCov = coveredColsCand.any { it > col }
+            var leftCov = false
+            var rightCov = false
+            for (c2 in 0 until w) if (coveredColsCand[c2]) { if (c2 < col) leftCov = true; if (c2 > col) rightCov = true }
             val cands = ArrayList<Double>()
             if (leftCov || !rightCov) { cands.add(tInt - dx0 * sMin); cands.add(tInt - dx0 * sMax) }
             if (rightCov || !leftCov) { cands.add(tInt + dx0 * sMin); cands.add(tInt + dx0 * sMax) }
-            // incerteza da média da coluna: ±E·m/sqrt(n)
+            // incerteza da coluna: maior entre ±E·m/sqrt(n) e 3σ da variância da coluna
             val mCol = noiseTerm / maxOf(cfg.minContrast, 1.0)
-            val colUnc = e * minOf(mCol, 0.5) / sqrt(maxOf(1, colN[col] ?: 1).toDouble())
+            var colUnc = e * minOf(mCol, 0.5) / sqrt(maxOf(1, colN[col]).toDouble())
+            val colUnc3 = 3.0 * sqrt(colVar[col] + texVar(stats1.crms[col]))
+            if (colUnc3 > colUnc) colUnc = colUnc3
             val a0 = floor(cands.min() - colUnc + 0.5).toLong()
             val b0 = floor(cands.max() + colUnc + 0.5).toLong()
             var a = a0
             var bb = b0
-            if (lowerI != null && lowerI > a) a = lowerI
-            if (upperI != null && upperI < bb) bb = upperI
+            val li = lowerI
+            val ui = upperI
+            if (li != null && li > a) a = li
+            if (ui != null && ui < bb) bb = ui
             if (a > bb) { a = a0; bb = b0 }   // limites inconsistentes (ruído): só a faixa de velocidades
             intervalResult(a, bb, 1)?.let { return it }
         }
         return intervalResult(lowerI, upperI, 1) ?: none
     }
 
-    /** Mediana determinística (n par: média dos dois centrais) — mesma definição em Python/Swift. */
-    private fun median(values: List<Double>): Double {
-        val v = values.sorted()
-        val n = v.size
-        return if (n % 2 == 1) v[n / 2] else (v[n / 2 - 1] + v[n / 2]) / 2.0
+    /** Mediana determinística dos primeiros [count] valores (n par: média dos dois centrais). */
+    private fun median(values: DoubleArray, count: Int): Double {
+        val v = values.copyOf(count)
+        v.sort()
+        return if (count % 2 == 1) v[count / 2] else (v[count / 2 - 1] + v[count / 2]) / 2.0
     }
 }

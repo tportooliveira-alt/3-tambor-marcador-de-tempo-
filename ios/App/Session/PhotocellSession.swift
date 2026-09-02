@@ -10,11 +10,16 @@ struct SessionDiagnostics: Equatable {
     var lastDeltaFull: Double = 0
     var lastDeltaCore: Double = 0
     var lastDeltaBackground: Double = 0
+    /// Taxa medida pelo ΔPTS na última janela de 1 s; válida só com `fpsMeasurementValid`.
     var measuredFps: Double = 0
+    /// false até fechar uma janela de 1 s de quadros desde a última (re)ativação da entrega.
+    var fpsMeasurementValid: Bool = false
     /// Desvio-padrão de ΔPTS na última janela de 1 s (ms). Espera-se ≪ 0,1 ms a 240 FPS estáveis.
     var ptsJitterMs: Double = 0
     var framesProcessed: Int = 0
     var droppedByOutput: Int = 0
+    /// Drops do tipo "Discontinuity" (TN2445): número desconhecido de quadros perdidos.
+    var discontinuities: Int = 0
     var lastFrameCostMicros: Double = 0
     var planeWidth: Int = 0
     var planeHeight: Int = 0
@@ -113,11 +118,12 @@ final class PhotocellSession: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         if let e = engine, e.state != .idle { rebuildPending = true; return }
         rebuildPending = false
         if planeWidth == 0 || planeHeight == 0 {
-            // Antes do primeiro quadro (a entrega começa desligada em IDLE) usamos as dimensões do formato ativo.
-            if let fd = camera.device?.activeFormat.formatDescription {
-                let dims = CMVideoFormatDescriptionGetDimensions(fd)
-                planeWidth = Int(dims.width)
-                planeHeight = Int(dims.height)
+            // Antes do primeiro quadro (a entrega começa desligada em IDLE) usamos as dimensões do formato ativo
+            // (cacheadas pelo CameraManager na configuração; leitura segura de qualquer fila).
+            let dims = camera.formatDimensions
+            if dims.width > 0, dims.height > 0 {
+                planeWidth = dims.width
+                planeHeight = dims.height
                 diagnostics.planeWidth = planeWidth
                 diagnostics.planeHeight = planeHeight
             }
@@ -136,15 +142,17 @@ final class PhotocellSession: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         cfg.coreWidth = cw
         do {
             differencer = try StripDifferencer(roi: r, planeWidth: planeWidth, planeHeight: planeHeight, coreWidth: cw)
+            engine = try PhotocellEngine(cfg: cfg, roi: r, planeHeight: planeHeight)
         } catch {
-            Self.log.error("ROI inválida: \(String(describing: error))")
+            Self.log.error("ROI/configuração inválida: \(String(describing: error))")
+            differencer = nil
+            engine = nil
             return
         }
         roi = r
-        engine = PhotocellEngine(cfg: cfg, roi: r, planeHeight: planeHeight)
         diagnostics.roi = r
         publish()
-        publishDiagnostics(force: true)
+        publishDiagnostics()
     }
 
     // MARK: - Callback da câmera (< 4 ms por quadro; sem alocação no caminho quente)
@@ -156,8 +164,8 @@ final class PhotocellSession: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         let t0 = mach_absolute_time()
 
         let pts = SessionClock.presentationNanos(of: sampleBuffer)
-        // Bloqueia o buffer somente para leitura e SEMPRE libera ao final do quadro.
-        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        // Bloqueia o buffer somente para leitura e SEMPRE libera ao final do quadro (só se o lock funcionou).
+        guard CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess else { return }
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
         guard CVPixelBufferGetPlaneCount(pixelBuffer) >= 1,
               let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else { return }
@@ -166,13 +174,19 @@ final class PhotocellSession: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         let stride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)   // lido a cada quadro (padding pode variar)
 
         if width != planeWidth || height != planeHeight || engine == nil {
-            planeWidth = width
-            planeHeight = height
-            diagnostics.planeWidth = width
-            diagnostics.planeHeight = height
-            rebuildIfIdle()
+            if engine == nil || engine?.state == .idle {
+                planeWidth = width
+                planeHeight = height
+                diagnostics.planeWidth = width
+                diagnostics.planeHeight = height
+                rebuildIfIdle()
+            } else {
+                // formato mudou fora de IDLE: o differencer atual foi validado para outras dimensões
+                rebuildPending = true
+            }
         }
-        guard let diff = differencer, let eng = engine else { return }
+        guard let diff = differencer, let eng = engine, let r = roi,
+              r.y1 <= height, r.x + r.width <= width else { return }   // nunca ler fora do plano
 
         let plane = base.assumingMemoryBound(to: UInt8.self)
         let m = diff.process(plane: UnsafePointer(plane), stride: stride, tsNs: pts)
@@ -189,12 +203,20 @@ final class PhotocellSession: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         diagnostics.framesProcessed += 1
         let dt = mach_absolute_time() - t0
         diagnostics.lastFrameCostMicros = Double(dt) * Self.timebaseNanos / 1000.0
-        if diagnostics.framesProcessed % 16 == 0 { publishDiagnostics(force: false) }
+        if diagnostics.framesProcessed % 16 == 0 { publishDiagnostics() }
     }
 
     func captureOutput(_ output: AVCaptureOutput, didDrop sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        // Chamado na mesma fila; manter trivial. O engine detecta gaps pelos PTS.
+        // Mesma fila; manter trivial. Drops normais aparecem como gap de PTS no engine; uma
+        // "Discontinuity" (TN2445) perdeu um número desconhecido de quadros: o engine descarta o candidato.
         diagnostics.droppedByOutput += 1
+        if let reason = CMGetAttachment(sampleBuffer, key: kCMSampleBufferAttachmentKey_DroppedFrameReason, attachmentModeOut: nil),
+           CFGetTypeID(reason) == CFStringGetTypeID(),
+           CFEqual(reason, kCMSampleBufferDroppedFrameReason_Discontinuity) {
+            diagnostics.discontinuities += 1
+            engine?.framesDropped()
+            runEffects()
+        }
     }
 
     private static let timebaseNanos: Double = {
@@ -215,6 +237,7 @@ final class PhotocellSession: NSObject, AVCaptureVideoDataOutputSampleBufferDele
             let span = pts - start
             if span >= nsPerSecond {
                 diagnostics.measuredFps = Double(fpsWindowCount) * 1e9 / Double(span)
+                diagnostics.fpsMeasurementValid = true
                 let n = Double(fpsWindowCount)
                 let mean = deltaSum / n
                 let variance = max(0, deltaSumSq / n - mean * mean)
@@ -241,7 +264,11 @@ final class PhotocellSession: NSObject, AVCaptureVideoDataOutputSampleBufferDele
             switch e {
             case .setFrameDelivery(let on):
                 camera.setFrameDelivery(on)
-                if on { fpsWindowStart = nil; lastPts = nil }
+                if on {
+                    // nova janela de medição: a taxa anterior não vale mais
+                    fpsWindowStart = nil; lastPts = nil
+                    diagnostics.fpsMeasurementValid = false
+                }
             case .resetDifferencer:
                 differencer?.reset()
             case .updateBackground:
@@ -267,9 +294,13 @@ final class PhotocellSession: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         let timer = DispatchSource.makeTimerSource(queue: queue)
         let delay = max(0, at - clock.nowNs())
         timer.schedule(deadline: .now() + .nanoseconds(Int(delay)), leeway: .microseconds(250))
-        timer.setEventHandler { [weak self] in
-            guard let self = self, let eng = self.engine else { return }
-            eng.wakeup(nowNs: self.clock.nowNs())
+        timer.setEventHandler { [weak self, weak timer] in
+            timer?.cancel()
+            guard let self = self else { return }
+            if let t = timer { self.timers.removeAll { $0 === t } }
+            guard let eng = self.engine else { return }
+            // o timer pode disparar um instante antes do prazo no relógio da sessão: nunca perder o deadline
+            eng.wakeup(nowNs: max(self.clock.nowNs(), at))
             self.runEffects()
         }
         timers.append(timer)
@@ -293,7 +324,7 @@ final class PhotocellSession: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         }
     }
 
-    private func publishDiagnostics(force: Bool) {
+    private func publishDiagnostics() {
         let d = diagnostics
         let cb = onDiagnostics
         DispatchQueue.main.async { cb?(d) }

@@ -55,6 +55,30 @@
       "description": "Cruzamento sintético; direção <-; skew=3200000; flicker=0.0; drops=[]"
     },
     {
+      "name": "strip_cross_textured",
+      "kind": "strip",
+      "file": "strip_cross_textured.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.0; drops=[]"
+    },
+    {
+      "name": "strip_cross_gamma",
+      "kind": "strip",
+      "file": "strip_cross_gamma.json",
+      "description": "Cruzamento sintético; direção <-; skew=3200000; flicker=0.0; drops=[]"
+    },
+    {
+      "name": "strip_cross_tilted",
+      "kind": "strip",
+      "file": "strip_cross_tilted.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.0; drops=[]"
+    },
+    {
+      "name": "strip_cross_drop_at_trigger",
+      "kind": "strip",
+      "file": "strip_cross_drop_at_trigger.json",
+      "description": "Cruzamento sintético; direção <-; skew=3200000; flicker=0.0; drops=[47]"
+    },
+    {
       "name": "calibration_normal",
       "kind": "calibration",
       "file": "calibration_normal.json",
@@ -115,10 +139,10 @@
       "description": "Interrupção da captura em RUNNING → ERROR → reset"
     },
     {
-      "name": "fsm_blind_window_shorter_than_lockout",
+      "name": "fsm_short_windows",
       "kind": "fsm",
-      "file": "fsm_blind_window_shorter_than_lockout.json",
-      "description": "Janela cega menor que o lockout: DEBOUNCE_START ainda é respeitado"
+      "file": "fsm_short_windows.json",
+      "description": "Janelas mínimas: lockout 1,5 s, retomada 2,0 s, chegada armada 2,5 s"
     },
     {
       "name": "format_elapsed",

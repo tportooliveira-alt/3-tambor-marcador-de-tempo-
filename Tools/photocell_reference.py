@@ -60,10 +60,22 @@ class PhotocellConfig:
     readout_top_to_bottom: bool = True
     flicker_ratio: float = 0.5                   # se ΔY(lag 2) < ratio * ΔY(lag 1) na calibração -> lag 2
     flicker_auto: bool = True                    # detectar flicker de 120 Hz (2 quadros por ciclo a 240 FPS)
+    gamma: float = 1.0                           # curva de tom a desfazer antes da fração f (1.0 = desligado)
 
     @property
     def frame_period_ns(self) -> int:
         return NS_PER_SEC // self.frame_rate_hz
+
+    def validate(self) -> None:
+        """Janelas coerentes: os quadros voltam depois do bloqueio e a chegada arma depois de voltarem."""
+        if self.frame_rate_hz < 1:
+            raise ValueError("frame_rate_hz inválido")
+        if self.frame_resume_ns < self.start_lockout_ns + 500_000_000:
+            raise ValueError("frame_resume_ns precisa ser >= start_lockout_ns + 0,5 s")
+        if self.finish_arm_ns < self.frame_resume_ns + 500_000_000:
+            raise ValueError("finish_arm_ns precisa ser >= frame_resume_ns + 0,5 s")
+        if self.exposure_ns < 1 or self.gamma <= 0.0:
+            raise ValueError("exposure_ns/gamma inválidos")
 
 
 @dataclass(frozen=True)
@@ -98,15 +110,17 @@ class RoiRect:
 @dataclass
 class FrameMeasurement:
     ts_ns: int
+    prev_ts_ns: int            # timestamp do quadro de referência (c - lag), medido
     delta_full: float          # ΔY_f do enunciado (faixa inteira) contra o quadro de referência (lag)
     delta_core: float          # média das colunas centrais (gatilho)
     delta_background: float    # diferença contra a referência de fundo (confirmação)
-    row_core: List[float]      # por linha da banda: média |Y_f - Y_ref| nas colunas centrais
     strip_prev: List[int]      # faixa inteira (W x H, linha a linha) do quadro de referência (c - lag)
     strip_cur: List[int]       # faixa inteira do quadro atual
     strip_bg: List[float]      # faixa inteira da referência de fundo (da mesma paridade, se lag 2)
     delta_full_lag2: Optional[float] = None   # ΔY contra o quadro c-2 (para detectar flicker); None se indisponível
     lag: int = 1               # atraso de referência usado nesta medição
+    # Nos portes nativos as três faixas são REFERÊNCIAS aos buffers rotativos do differencer, válidas
+    # só até o próximo process(); o engine copia ao criar o candidato (CrossingInput).
 
 
 class StripDifferencer:
@@ -124,12 +138,16 @@ class StripDifferencer:
         self.lag = 1
         self.prev1: Optional[List[int]] = None            # quadro c-1
         self.prev2: Optional[List[int]] = None            # quadro c-2
+        self.prev1_ts = 0
+        self.prev2_ts = 0
         self.background: List[Optional[List[float]]] = [None, None]   # por paridade
         self.frame_index = 0                              # quadros processados desde o reset
 
     def reset(self) -> None:
         self.prev1 = None
         self.prev2 = None
+        self.prev1_ts = 0
+        self.prev2_ts = 0
         self.background = [None, None]
         self.frame_index = 0
 
@@ -160,10 +178,13 @@ class StripDifferencer:
         if self.background[bi] is None:
             self.background[bi] = [float(v) for v in cur]
         ref = self.prev1 if self.lag == 1 else self.prev2
+        ref_ts = self.prev1_ts if self.lag == 1 else self.prev2_ts
         if ref is None:
             # Quadro-semente: não há medida (1 semente com lag 1, 2 sementes com lag 2).
             self.prev2 = self.prev1
+            self.prev2_ts = self.prev1_ts
             self.prev1 = cur
+            self.prev1_ts = ts_ns
             return None
         r = self.roi
         w, h, cw = r.width, r.height, self.core_width
@@ -173,7 +194,6 @@ class StripDifferencer:
         sum_full = 0
         sum_core = 0
         sum_bg = 0.0
-        row_core: List[float] = []
         for row in range(h):
             o = row * w
             row_sum_core = 0
@@ -189,7 +209,6 @@ class StripDifferencer:
                     d = -d
                 row_sum_core += d
             sum_core += row_sum_core
-            row_core.append(row_sum_core / cw)
         lag2: Optional[float] = None
         if self.lag == 1 and self.prev2 is not None:
             p2 = self.prev2
@@ -201,15 +220,17 @@ class StripDifferencer:
                 s2 += d
             lag2 = s2 / (w * h)
         strip_prev = ref
-        strip_bg = list(bg)
+        strip_bg = bg
         self.prev2 = self.prev1
+        self.prev2_ts = self.prev1_ts
         self.prev1 = cur
+        self.prev1_ts = ts_ns
         return FrameMeasurement(
             ts_ns=ts_ns,
+            prev_ts_ns=ref_ts,
             delta_full=sum_full / (w * h),
             delta_core=sum_core / (cw * h),
             delta_background=sum_bg / (w * h),
-            row_core=row_core,
             strip_prev=strip_prev,
             strip_cur=cur,
             strip_bg=strip_bg,
@@ -308,6 +329,7 @@ class CrossingEstimate:
     bound_count: int
     lower_ns: Optional[int]
     upper_ns: Optional[int]
+    textured_columns: int = 0   # colunas cuja dispersão de tempos excede o ruído (textura/inclinação)
 
 
 MEAN_ABS_DIFF_TO_SIGMA = 1.1283791670955126   # E|X-Y| = 2*sigma/sqrt(pi) para X,Y ~ N(., sigma)
@@ -322,9 +344,32 @@ def _median(values: List[float]) -> float:
     return (v[n // 2 - 1] + v[n // 2]) / 2.0
 
 
+@dataclass
+class CrossingInput:
+    """Dados do candidato usados pelo estimador (cópias feitas ao criar o candidato)."""
+    ts_ns: int                      # quadro candidato c
+    prev_ts_ns: int                 # quadro de referência c-lag (medido, não nominal)
+    strip_prev: List[int]
+    strip_cur: List[int]
+    strip_bg: List[float]
+    lag: int
+    next_ts_ns: Optional[int] = None        # quadro c+lag
+    next_strip: Optional[List[int]] = None
+    plateau_ts_ns: Optional[int] = None     # quadro c+2·lag (faixa coberta: referência O)
+    plateau_strip: Optional[List[int]] = None
+
+
+def linearize(v: float, gamma: float) -> float:
+    """Desfaz a curva de tom (gamma) para que V seja linear em f; gamma == 1 desliga."""
+    if gamma == 1.0:
+        return v
+    if v <= 0.0:
+        return 0.0
+    return 255.0 * math.pow(v / 255.0, gamma)
+
+
 def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
-                      cand: FrameMeasurement, next_strip: Optional[List[int]],
-                      plateau_strip: Optional[List[int]], noise_sigma_px: float) -> CrossingEstimate:
+                      inp: CrossingInput, noise_sigma_px: float) -> CrossingEstimate:
     """
     Modelo físico: cada pixel integra a luz durante [t_ini, t_ini + E]. Se o bordo do objeto
     (luma O) cobre o pixel (fundo B) no instante t_x dentro dessa janela, o valor medido é
@@ -333,15 +378,22 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
     O bordo se move a velocidade constante, logo t_x(coluna) = t_c + s * dx, onde dx é a
     distância (px) da coluna ao plano central da faixa e s = ±1/v (s/px). Um ajuste linear
     ponderado (peso (O-B)^2) sobre as MEDIANAS por coluna dos pixels "interiores" de TRÊS quadros
-    (c-lag, c, c+lag) devolve t_c — o instante em que o bordo cruzou o PLANO CENTRAL — e a
-    velocidade, cancelando o viés de direção (largada e chegada cruzam a mesma linha em sentidos
-    opostos).
+    (c-lag, c, c+lag; deslocamentos de tempo MEDIDOS pelos timestamps, não nominais) devolve t_c —
+    o instante em que o bordo cruzou o PLANO CENTRAL — e a velocidade, cancelando o viés de direção
+    (largada e chegada cruzam a mesma linha em sentidos opostos).
 
-    Passo 1 seleciona os pixels interiores pelo valor OBSERVADO (m < f < 1-m). Essa seleção é
-    correlacionada com o sinal do ruído perto dos cortes e enviesa a mediana; por isso o passo 2
-    reseleciona pelo valor PREVISTO pelo ajuste (f_prev dentro da banda) e usa o f observado sem
-    corte, o que é não enviesado. A incerteza (3 sigma) é propagada do ruído por pixel através do
-    ajuste; se for pequena (<= P/8) o resultado é qualidade 2, senão vira um intervalo (qualidade 1).
+    Passo 1 seleciona os pixels interiores pelo valor OBSERVADO (m < f < 1-m) usando como O o
+    platô (quadro c+2·lag). Essa seleção é correlacionada com o sinal do ruído perto dos cortes e
+    enviesa a mediana; por isso o passo 2 reseleciona pelo valor PREVISTO pelo ajuste e usa o f
+    observado sem corte. No passo 2, O passa a ser LOCAL: a mediana dos pixels da mesma linha e do
+    mesmo quadro nas 3 colunas logo atrás do bordo (previstas já cobertas) — em objetos com textura
+    (pelagem, sela) o platô 40 px atrás do bordo não representa a luma que cobriu o pixel.
+
+    A incerteza (3 sigma) é propagada do ruído por pixel através do ajuste, usando por coluna o
+    MAIOR entre a variância do modelo de ruído e a variância amostral dos tempos (textura,
+    inclinação do bordo e outros efeitos não modelados aparecem aí). Colunas cuja dispersão excede
+    o que o ruído explica são contadas como "texturizadas". Se a incerteza é pequena (<= P/8) o
+    resultado é qualidade 2; senão vira um intervalo (qualidade 1).
 
     Pixels já cobertos (f >= 1-m) ou ainda descobertos (f <= m) fornecem apenas limites (só as
     colunas centrais). A margem m depende do ruído por pixel medido na calibração; se m for
@@ -357,27 +409,60 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
     mid_row_offset = 0
     if cfg.skew_ns is not None:
         mid_row_offset = ((roi.y0 + roi.height // 2) * cfg.skew_ns) // plane_height
-    none = CrossingEstimate(0, cand.ts_ns + mid_row_offset + cfg.exposure_ns // 2, P // 2, 0, 0, None, None)
-    n = len(cand.strip_cur)
+    none = CrossingEstimate(0, inp.ts_ns + mid_row_offset + cfg.exposure_ns // 2, P // 2, 0, 0, None, None, 0)
+    n = len(inp.strip_cur)
+    plateau_strip = inp.plateau_strip
     if n == 0 or plateau_strip is None or len(plateau_strip) != n \
-            or len(cand.strip_prev) != n or len(cand.strip_bg) != n:
+            or len(inp.strip_prev) != n or len(inp.strip_bg) != n:
         return none
     h, w = roi.height, roi.width
     if w * h != n:
         return none
     E = float(cfg.exposure_ns)
-    lag = cand.lag
+    gamma = cfg.gamma
     k_sig = cfg.fraction_margin_sigmas
     noise_term = k_sig * math.sqrt(2.0) * noise_sigma_px
     center = (w - 1) / 2.0
-    frames: List[Tuple[List[int], float]] = [(cand.strip_prev, -float(lag * P)), (cand.strip_cur, 0.0)]
-    if next_strip is not None and len(next_strip) == n:
-        frames.append((next_strip, float(lag * P)))
+    frames: List[Tuple[List[int], float]] = [(inp.strip_prev, float(inp.prev_ts_ns - inp.ts_ns)),
+                                             (inp.strip_cur, 0.0)]
+    if inp.next_strip is not None and len(inp.next_strip) == n and inp.next_ts_ns is not None:
+        frames.append((inp.next_strip, float(inp.next_ts_ns - inp.ts_ns)))
     s_min = 1e9 / cfg.speed_px_per_s_max     # ns por px (bordo rápido)
     s_max = 1e9 / cfg.speed_px_per_s_min     # ns por px (bordo lento)
     min_rows = max(1, cfg.min_interior_rows_per_column, int(math.ceil(cfg.min_interior_rows_fraction * h)))
     unc_floor = max(1, int(E) // 50)
     unc_q2_max = P // 8                      # acima disso o ajuste vira intervalo (qualidade 1)
+
+    def row_time(row: int) -> int:
+        if cfg.skew_ns is not None:
+            return inp.ts_ns + ((roi.y0 + row) * cfg.skew_ns) // plane_height
+        return inp.ts_ns
+
+    # fundo e platô linearizados uma vez
+    bg_lin: List[float] = [linearize(v, gamma) for v in inp.strip_bg]
+    plateau_lin: List[float] = [linearize(float(v), gamma) for v in plateau_strip]
+    # Textura do objeto: variancia espacial do plato ao longo das colunas (mediana das linhas), alem
+    # do ruido. Uma luma O incerta em A_tex desloca t em ate E*A_tex/C de forma COERENTE entre as
+    # linhas (nao cai com sqrt(n)): entra como variancia adicional por coluna.
+    row_vars: List[float] = []
+    for row in range(h):
+        o = row * w
+        mean_p = 0.0
+        for i in range(w):
+            mean_p += plateau_lin[o + i]
+        mean_p = mean_p / float(w)
+        ss_p = 0.0
+        for i in range(w):
+            d = plateau_lin[o + i] - mean_p
+            ss_p += d * d
+        row_vars.append(ss_p / float(w))
+    tex_var_px = _median(row_vars) - noise_sigma_px * noise_sigma_px
+    a_tex = math.sqrt(tex_var_px) if tex_var_px > 0.0 else 0.0
+    # A textura tambem limita a classificacao coberto/interior de cada pixel: a margem passa a ser o
+    # maior entre o ruido (k*sqrt2*sigma) e o pico da textura (~1,5*a_tex); com margem > maxima o pixel
+    # so da limites, e >= 0,5 nao serve nem para isso (resultado honesto: tempo do quadro).
+    tex_term = 1.5 * a_tex
+    margin_term = noise_term if noise_term >= tex_term else tex_term
 
     interior = 0
     bounds = 0
@@ -391,14 +476,11 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
     col_s2: Dict[int, float] = {}            # soma das variancias de t por pixel (ruido -> tempo)
     col_n: Dict[int, int] = {}
     for row in range(h):
-        if cfg.skew_ns is not None:
-            t_row = cand.ts_ns + ((roi.y0 + row) * cfg.skew_ns) // plane_height
-        else:
-            t_row = cand.ts_ns
+        t_row = row_time(row)
         for i in range(w):
             idx = row * w + i
-            B = cand.strip_bg[idx]
-            O = float(plateau_strip[idx])
+            B = bg_lin[idx]
+            O = plateau_lin[idx]
             contrast = O - B
             C = contrast if contrast >= 0.0 else -contrast
             if C < cfg.min_contrast:
@@ -409,7 +491,7 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
             # uma folga de |dx|·s_max.
             is_center_col = abs(dx) <= 0.5
             center_slack = abs(dx) * s_max
-            m = noise_term / C
+            m = margin_term / C
             if m < cfg.fraction_margin_min:
                 m = cfg.fraction_margin_min
             if m >= 0.5:
@@ -423,7 +505,7 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
             wgt = contrast * contrast
             st = E * m / k_sig                # sigma de t deste pixel (E * sqrt2 * sigma_px / C)
             for k, (strip, t_off) in enumerate(frames):
-                f = (float(strip[idx]) - B) / contrast
+                f = (linearize(float(strip[idx]), gamma) - B) / contrast
                 t_ini = float(t_row) + t_off
                 if lo < f < hi:
                     if usable_interior:
@@ -449,16 +531,20 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
                             lower = lw
     lower_i = None if lower is None else int(math.floor(lower + 0.5))
     upper_i = None if upper is None else int(math.floor(upper + 0.5))
+    textured_cols = 0
 
     def interval_result(lo_ns: Optional[int], hi_ns: Optional[int], quality: int) -> Optional[CrossingEstimate]:
         if lo_ns is None or hi_ns is None:
             return None
-        a, b = (lo_ns, hi_ns) if lo_ns <= hi_ns else (hi_ns, lo_ns)
+        if lo_ns > hi_ns:
+            # limites contraditorios (classificacao corrompida, p.ex. textura): sem informacao honesta
+            return None
+        a, b = lo_ns, hi_ns
         if (b - a) // 2 > P // 2:
             # intervalo pior que a incerteza do próprio quadro: não ajuda
             return None
         mid = (a + b) // 2
-        return CrossingEstimate(quality, mid, (b - a) // 2, interior, bounds, a, b)
+        return CrossingEstimate(quality, mid, (b - a) // 2, interior, bounds, a, b, textured_cols)
 
     def fitted_result(t_est: float, var_t: float) -> Optional[CrossingEstimate]:
         """Qualidade 2 se a incerteza (3 sigma) propagada do ajuste e pequena; senao intervalo."""
@@ -467,7 +553,7 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
             unc = unc_floor
         refined = int(math.floor(t_est + 0.5))
         if unc <= unc_q2_max:
-            return CrossingEstimate(2, refined, unc, interior, bounds, lower_i, upper_i)
+            return CrossingEstimate(2, refined, unc, interior, bounds, lower_i, upper_i, textured_cols)
         a0, b0 = refined - unc, refined + unc
         a, b = a0, b0
         if lower_i is not None and lower_i > a:
@@ -479,18 +565,52 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
         return interval_result(a, b, 1)
 
     def column_stats(sum_w: Dict[int, float], times: Dict[int, List[float]], s2: Dict[int, float],
-                     cnt: Dict[int, int]) -> Tuple[List[int], Dict[int, float], Dict[int, float]]:
-        """Colunas confiáveis (>= min_rows pixels), mediana e variância da mediana por coluna."""
+                     cnt: Dict[int, int]) -> Tuple[List[int], Dict[int, float], Dict[int, float], int, Dict[int, float]]:
+        """
+        Colunas confiáveis (>= min_rows pixels), mediana, variância da mediana por coluna, número de
+        colunas "texturizadas" (dispersão dos tempos maior do que o ruído explica) e contraste RMS.
+        """
         good = sorted(c for c in sum_w if cnt.get(c, 0) >= min_rows)
         # Tempo por coluna = MEDIANA dos t_x dos pixels interiores: um unico pixel saturado que o ruido
         # classificou como interior (erro ~P) nao desloca a coluna, ao contrario da media ponderada.
         col_t = {c: _median(times[c]) for c in times}
-        # variancia da mediana da coluna ~ (pi/2) * variancia da media
-        col_var = {c: (math.pi / 2.0) * s2[c] / (float(cnt[c]) * float(cnt[c])) for c in s2}
-        return good, col_t, col_var
+        col_var: Dict[int, float] = {}
+        col_crms: Dict[int, float] = {}
+        textured = 0
+        for c in sorted(times):
+            nc = cnt[c]
+            fn = float(nc)
+            # variancia da mediana da coluna ~ (pi/2) * variancia da media (modelo de ruido)
+            var_model = (math.pi / 2.0) * s2[c] / (fn * fn)
+            # variancia amostral dos tempos da coluna (dois passos, ordem de insercao)
+            ts_list = times[c]
+            mean = 0.0
+            for t in ts_list:
+                mean += t
+            mean = mean / fn
+            ss = 0.0
+            for t in ts_list:
+                d = t - mean
+                ss += d * d
+            var_s = ss / (fn - 1.0) if nc >= 2 else 0.0
+            var_emp = (math.pi / 2.0) * var_s / fn
+            col_var[c] = var_model if var_model >= var_emp else var_emp
+            # contraste RMS da coluna (sum_w = soma de contrast^2), para o termo coerente de textura
+            col_crms[c] = math.sqrt(sum_w[c] / fn)
+            if nc >= min_rows:
+                sigma_model_px = math.sqrt(s2[c] / fn)
+                if math.sqrt(var_s) > 3.0 * sigma_model_px + E / 10.0:
+                    textured += 1
+        return good, col_t, col_var, textured, col_crms
+
+    def tex_var(crms: float) -> float:
+        """Variancia COERENTE (nao cai com o numero de pixels/colunas) de t causada pela textura do objeto."""
+        t_tex = E * a_tex / crms
+        return t_tex * t_tex
 
     def fit_line(good: List[int], sum_w: Dict[int, float], col_t: Dict[int, float],
-                 col_var: Dict[int, float]) -> Optional[Tuple[float, float, float]]:
+                 col_var: Dict[int, float], textured: int,
+                 col_crms: Dict[int, float]) -> Optional[Tuple[float, float, float]]:
         """
         Ajuste linear ponderado sobre as medianas por coluna, com rejeição de colunas cujo resíduo é
         fisicamente impossível (> E + P/4). Devolve (t_c, inclinação, variância de t_c) ou None.
@@ -522,63 +642,116 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
             if worst_res <= E + P / 4.0 and s_min <= abs(slope) <= s_max:
                 # propagacao: t_c = sum_c a_c * t_col(c), a_c = w_c/gw - gx*w_c*(gw*dx_c - gx)/(denom*gw)
                 var_t = 0.0
+                chi2 = 0.0
+                res_ss = 0.0
                 for c in fit_cols:
                     wc = sum_w[c]
                     dxc = c - center
                     a_c = wc / gw - gx * wc * (gw * dxc - gx) / (denom * gw)
                     var_t += a_c * a_c * col_var[c]
+                    res = col_t[c] - (t_c + slope * dxc)
+                    chi2 += res * res / col_var[c] if col_var[c] > 0.0 else 0.0
+                    res_ss += res * res
+                # residuos entre colunas maiores do que as variancias explicam (textura, inclinacao):
+                # escala a variancia pelo chi-quadrado reduzido
+                dof = len(fit_cols) - 2
+                if dof >= 1:
+                    chi2r = chi2 / float(dof)
+                    if chi2r > 1.0:
+                        var_t = var_t * chi2r
+                # com colunas texturizadas os erros sao COERENTES (nao caem com o numero de colunas):
+                # a incerteza nao pode ser menor que a dispersao residual entre colunas
+                if textured > 0:
+                    res_ms2 = res_ss / float(len(fit_cols))
+                    if res_ms2 > var_t:
+                        var_t = res_ms2
+                # textura do objeto: erro coerente, somado DEPOIS da propagacao (nao e reduzido pelo ajuste)
+                crms = 0.0
+                for c in fit_cols:
+                    crms += col_crms[c]
+                crms = crms / float(len(fit_cols))
+                var_t += tex_var(crms)
                 return t_c, slope, var_t
             return None
         return None
 
-    good_cols, col_t, col_var = column_stats(col_sum_w, col_times, col_s2, col_n)
+    good_cols, col_t, col_var, textured_cols, col_crms = column_stats(col_sum_w, col_times, col_s2, col_n)
+    if textured_cols > 0 or tex_term > noise_term:
+        # os limites foram classificados com o plato como O: com textura (detectada no plato ou na
+        # dispersao das colunas) nao sao confiaveis
+        lower_i = None
+        upper_i = None
     if good_cols:
-        fit = fit_line(good_cols, col_sum_w, col_t, col_var)
-        # ---- passo 2 (duas iterações): reseleção pelo valor PREVISTO ---------------------------
+        fit = fit_line(good_cols, col_sum_w, col_t, col_var, textured_cols, col_crms)
+        # ---- passo 2 (duas iterações): reseleção pelo valor PREVISTO, O local ------------------
         for _ in range(2):
             if fit is None:
                 break
             t_c1, slope1, _v = fit
+            behind = -1 if slope1 > 0.0 else 1     # bordo vindo da esquerda (s > 0): atras = colunas menores
             sum_w2: Dict[int, float] = {}
             times2: Dict[int, List[float]] = {}
             s2_2: Dict[int, float] = {}
             n2: Dict[int, int] = {}
             for row in range(h):
-                if cfg.skew_ns is not None:
-                    t_row = cand.ts_ns + ((roi.y0 + row) * cfg.skew_ns) // plane_height
-                else:
-                    t_row = cand.ts_ns
+                t_row = row_time(row)
                 for i in range(w):
                     idx = row * w + i
-                    B = cand.strip_bg[idx]
-                    O = float(plateau_strip[idx])
-                    contrast = O - B
-                    C = contrast if contrast >= 0.0 else -contrast
-                    if C < cfg.min_contrast:
-                        continue
-                    m = noise_term / C
-                    if m < cfg.fraction_margin_min:
-                        m = cfg.fraction_margin_min
-                    if m > cfg.fraction_margin_max:
-                        continue
+                    B = bg_lin[idx]
                     t_pred = t_c1 + slope1 * (i - center)
-                    wgt = contrast * contrast
-                    st = E * m / k_sig
                     for strip, t_off in frames:
                         t_ini = float(t_row) + t_off
                         f_pred = (t_ini + E - t_pred) / E
-                        if m < f_pred < 1.0 - m:
-                            f = (float(strip[idx]) - B) / contrast
-                            t = t_ini + E * (1.0 - f)
-                            sum_w2[i] = sum_w2.get(i, 0.0) + wgt
-                            times2.setdefault(i, []).append(t)
-                            s2_2[i] = s2_2.get(i, 0.0) + st * st
-                            n2[i] = n2.get(i, 0) + 1
-            good2, col_t2, col_var2 = column_stats(sum_w2, times2, s2_2, n2)
-            fit2 = fit_line(good2, sum_w2, col_t2, col_var2) if good2 else None
+                        if not (0.0 < f_pred < 1.0):
+                            continue
+                        # O local: mediana das ate 3 colunas logo atras do bordo, mesma linha e quadro,
+                        # previstas totalmente cobertas (t_x(j) <= t_ini); senao o plato.
+                        neigh: List[float] = []
+                        for d in (1, 2, 3):
+                            j = i + behind * d
+                            if j < 0 or j >= w:
+                                break
+                            t_pred_j = t_c1 + slope1 * (j - center)
+                            if t_pred_j > t_ini:
+                                continue
+                            # vizinho tem de estar coberto tambem na OBSERVACAO (o bordo pode estar
+                            # inclinado: a previsao e a media das linhas)
+                            vj = linearize(float(strip[row * w + j]), gamma)
+                            Bj = bg_lin[row * w + j]
+                            Cj = plateau_lin[row * w + j] - Bj
+                            if Cj == 0.0:
+                                continue
+                            mj = margin_term / (Cj if Cj >= 0.0 else -Cj)
+                            if mj < cfg.fraction_margin_min:
+                                mj = cfg.fraction_margin_min
+                            if (vj - Bj) / Cj >= 1.0 - mj:
+                                neigh.append(vj)
+                        O = _median(neigh) if neigh else plateau_lin[idx]
+                        contrast = O - B
+                        C = contrast if contrast >= 0.0 else -contrast
+                        if C < cfg.min_contrast:
+                            continue
+                        m = margin_term / C
+                        if m < cfg.fraction_margin_min:
+                            m = cfg.fraction_margin_min
+                        if m > cfg.fraction_margin_max:
+                            continue
+                        if not (m < f_pred < 1.0 - m):
+                            continue
+                        f = (linearize(float(strip[idx]), gamma) - B) / contrast
+                        t = t_ini + E * (1.0 - f)
+                        wgt = contrast * contrast
+                        st = E * m / k_sig
+                        sum_w2[i] = sum_w2.get(i, 0.0) + wgt
+                        times2.setdefault(i, []).append(t)
+                        s2_2[i] = s2_2.get(i, 0.0) + st * st
+                        n2[i] = n2.get(i, 0) + 1
+            good2, col_t2, col_var2, textured2, col_crms2 = column_stats(sum_w2, times2, s2_2, n2)
+            fit2 = fit_line(good2, sum_w2, col_t2, col_var2, textured2, col_crms2) if good2 else None
             if fit2 is None:
                 break
             fit = fit2
+            textured_cols = textured2
         if fit is not None:
             r = fitted_result(fit[0], fit[2])
             if r is not None:
@@ -588,7 +761,7 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
         dx0 = col - center
         t_int = col_t[col]
         if abs(dx0) < 0.5:
-            r = fitted_result(t_int, col_var[col])
+            r = fitted_result(t_int, col_var[col] + tex_var(col_crms[col]))
             if r is not None:
                 return r
         # sentido: colunas já cobertas no candidato ficam do lado de onde o bordo veio
@@ -599,9 +772,13 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
             cands += [t_int - dx0 * s_min, t_int - dx0 * s_max]     # bordo vindo da esquerda (s > 0)
         if right_cov or not left_cov:
             cands += [t_int + dx0 * s_min, t_int + dx0 * s_max]     # bordo vindo da direita (s < 0)
-        # incerteza da média da coluna: ±E·m/sqrt(n) (ruído por pixel em unidades de tempo)
+        # incerteza da coluna: o maior entre ±E·m/sqrt(n) (ruído por pixel) e 3 sigma da variância da
+        # coluna (inclui textura/dispersão amostral)
         m_col = noise_term / max(cfg.min_contrast, 1.0)
         col_unc = E * min(m_col, 0.5) / math.sqrt(max(1, col_n.get(col, 1)))
+        col_unc3 = 3.0 * math.sqrt(col_var[col] + tex_var(col_crms[col]))
+        if col_unc3 > col_unc:
+            col_unc = col_unc3
         a0 = int(math.floor(min(cands) - col_unc + 0.5))
         b0 = int(math.floor(max(cands) + col_unc + 0.5))
         a, b = a0, b0
@@ -646,6 +823,7 @@ class TriggerInfo:
     uncertainty_ns: int
     interior_count: int
     degraded: bool
+    textured_columns: int = 0
 
 
 @dataclass
@@ -662,12 +840,10 @@ class RunResult:
 
 @dataclass
 class Candidate:
-    meas: FrameMeasurement
+    inp: CrossingInput          # cópias das faixas do candidato (os buffers do differencer rotacionam)
     seen: int = 0
     confirmed: int = 0
     degraded: bool = False
-    next_strip: Optional[List[int]] = None  # faixa do quadro c+lag (ainda com o bordo dentro da faixa)
-    plateau: Optional[List[int]] = None     # faixa do quadro c+2·lag (faixa coberta: referência O)
 
 
 class PhotocellEngine:
@@ -679,6 +855,7 @@ class PhotocellEngine:
     """
 
     def __init__(self, cfg: PhotocellConfig, roi: RoiRect, plane_height: int):
+        cfg.validate()
         self.cfg = cfg
         self.roi = roi
         self.plane_height = plane_height
@@ -699,6 +876,7 @@ class PhotocellEngine:
         self.last_frame_ts: Optional[int] = None
         self.drops = 0
         self.last_drop_ts: Optional[int] = None
+        self.drop_pending = False     # a plataforma avisou de quadros perdidos sem timestamp
         self.effects: List[str] = []
         self.transitions: List[str] = []
 
@@ -747,12 +925,32 @@ class PhotocellEngine:
         self.error_reason = None
         self.drops = 0
         self.last_drop_ts = None
+        self.drop_pending = False
         self.last_frame_ts = None
         self._go(IDLE)
 
     def capture_interrupted(self) -> None:
         if self.state in ACTIVE_STATES or self.state == CALIBRATING:
             self._fail("captureInterrupted")
+
+    def frames_dropped(self) -> None:
+        """
+        A plataforma soube de quadros perdidos (TN2445 'Discontinuity', ImageReader estourado) sem
+        conhecer os timestamps: o candidato em confirmação perde a base de tempo e é descartado, o
+        próximo quadro conta como drop (passada 'degradada' se estiver perto do gatilho) e a
+        referência do differencer é ressemeada.
+        """
+        self.drops += 1
+        self.drop_pending = True
+        self.last_frame_ts = None
+        if self.state == CONFIRMING_START:
+            self.candidate = None
+            self._go(ARMED)
+        elif self.state == CONFIRMING_FINISH:
+            self.candidate = None
+            self._go(AWAITING_FINISH)
+        if self.state in (CALIBRATING, ARMED, AWAITING_FINISH):
+            self._emit("resetDifferencer")
 
     def _fail(self, reason: str) -> None:
         self._cancel_wakeups()
@@ -822,10 +1020,13 @@ class PhotocellEngine:
 
     def _track_gaps(self, ts_ns: int) -> None:
         cfg = self.cfg
+        if self.drop_pending:
+            self.drop_pending = False
+            self.last_drop_ts = ts_ns
         if self.last_frame_ts is not None:
             gap = ts_ns - self.last_frame_ts
             if gap > cfg.drop_gap_factor * cfg.frame_period_ns:
-                missed = int(round(gap / cfg.frame_period_ns)) - 1
+                missed = int(math.floor(gap / cfg.frame_period_ns + 0.5)) - 1
                 if missed > 0:
                     self.drops += missed
                     self.last_drop_ts = ts_ns
@@ -836,6 +1037,9 @@ class PhotocellEngine:
         if m.delta_full_lag2 is not None:
             self.calibrator_lag2.add_sample(m.delta_full_lag2)
         r = self.calibrator.add_sample(m.delta_full)
+        if r == "restarted":
+            # as duas janelas precisam cobrir as mesmas amostras para a decisão de flicker valer
+            self.calibrator_lag2.reset()
         if r == "done":
             stats = self.calibrator.stats
             threshold = self.calibrator.threshold
@@ -858,7 +1062,9 @@ class PhotocellEngine:
         if m.delta_core > self.threshold:
             degraded = self.last_drop_ts is not None and \
                 abs(m.ts_ns - self.last_drop_ts) < self.cfg.degraded_drop_window_ns
-            self.candidate = Candidate(meas=m, degraded=degraded)
+            inp = CrossingInput(ts_ns=m.ts_ns, prev_ts_ns=m.prev_ts_ns, strip_prev=list(m.strip_prev),
+                                strip_cur=list(m.strip_cur), strip_bg=list(m.strip_bg), lag=m.lag)
+            self.candidate = Candidate(inp=inp, degraded=degraded)
             self._go(confirming_state)
         elif m.delta_full <= self.threshold:
             self._emit("updateBackground")
@@ -869,17 +1075,19 @@ class PhotocellEngine:
         assert c is not None and self.threshold is not None
         c.seen += 1
         if c.seen == self.lag:
-            c.next_strip = list(m.strip_cur)
+            c.inp.next_strip = list(m.strip_cur)
+            c.inp.next_ts_ns = m.ts_ns
         if c.seen == 2 * self.lag:
-            c.plateau = list(m.strip_cur)
+            c.inp.plateau_strip = list(m.strip_cur)
+            c.inp.plateau_ts_ns = m.ts_ns
         if m.delta_background > self.threshold * cfg.background_threshold_multiplier:
             c.confirmed += 1
         if c.confirmed >= cfg.confirm_required and c.seen >= 2 * self.lag:
-            est = estimate_crossing(cfg, self.roi, self.plane_height, c.meas, c.next_strip,
-                                    c.plateau, self.noise_sigma_px)
-            info = TriggerInfo(raw_ts_ns=c.meas.ts_ns, refined_ts_ns=est.refined_ts_ns,
+            est = estimate_crossing(cfg, self.roi, self.plane_height, c.inp, self.noise_sigma_px)
+            info = TriggerInfo(raw_ts_ns=c.inp.ts_ns, refined_ts_ns=est.refined_ts_ns,
                                quality=est.quality, uncertainty_ns=est.uncertainty_ns,
-                               interior_count=est.interior_count, degraded=c.degraded)
+                               interior_count=est.interior_count, degraded=c.degraded,
+                               textured_columns=est.textured_columns)
             self.candidate = None
             if is_start:
                 self._trigger_start(info)

@@ -26,6 +26,7 @@ struct HistoryView: View {
                 .onDelete { store.delete(at: $0) }
             }
             .navigationTitle("Histórico (\(store.records.count))")
+            .onChange(of: store.records.count) { _ in csvURL = nil }   // novo registro: gerar o CSV de novo
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Fechar") { dismiss() } }
                 ToolbarItem(placement: .primaryAction) {

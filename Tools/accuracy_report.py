@@ -21,7 +21,7 @@ import gen_test_vectors as G  # noqa: E402
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "validacao-numerica.md")
 
 
-def run_case(speed, expo, noise, d, frac, obj, flick, seed, W=15):
+def run_case(speed, expo, noise, d, frac, obj, flick, seed, W=15, texture=0.0):
     cfg = PhotocellConfig(calibration_samples=32, calibration_min_samples_for_outlier=8, skew_ns=3_200_000, exposure_ns=expo)
     period = cfg.frame_period_ns
     pw, stride, ph = 32, 40, 720
@@ -33,7 +33,8 @@ def run_case(speed, expo, noise, d, frac, obj, flick, seed, W=15):
     t_cross = t0 + c * period + int(frac * period)
     scene = G.Scene(plane_width=pw, stride=stride, plane_height=ph, roi=roi, skew_ns=3_200_000, exposure_ns=expo,
                     period_ns=period, direction=d, speed_px_per_s=speed_px, t_cross_center_ns=t_cross,
-                    rows_a=312, rows_b=383, obj_level=obj, noise_sigma=noise, flicker_amp=flick, seed=seed)
+                    rows_a=312, rows_b=383, obj_level=obj, noise_sigma=noise, flicker_amp=flick, seed=seed,
+                    texture_amp=texture)
     frames = [scene.frame_bytes(t0 + i * period) for i in range(c + 10)]
     ts = [t0 + i * period for i in range(c + 10)]
     eng, _, _ = G.run_strip(cfg, roi, pw, ph, stride, frames, ts, {0: "user_arm"})
@@ -41,7 +42,7 @@ def run_case(speed, expo, noise, d, frac, obj, flick, seed, W=15):
     if st is None:
         return None
     return {"raw": (st.raw_ts_ns - t_cross) / 1e6, "ref": (st.refined_ts_ns - t_cross) / 1e6,
-            "q": st.quality, "unc": st.uncertainty_ns / 1e6, "lag": eng.lag}
+            "q": st.quality, "unc": st.uncertainty_ns / 1e6, "lag": eng.lag, "tex": st.textured_columns}
 
 
 def main() -> None:
@@ -53,13 +54,14 @@ def main() -> None:
         for expo, ename in ((4_166_666, "1/240"), (2_083_333, "1/480"), (500_000, "1/2000")):
             for noise in (0.5, 1.5, 3.0):
                 for flick in (0.0, 0.12):
-                    conds.append((speed, expo, ename, noise, flick))
-    for speed, expo, ename, noise, flick in conds:
+                    for tex in (0.0, 30.0):
+                        conds.append((speed, expo, ename, noise, flick, tex))
+    for speed, expo, ename, noise, flick, tex in conds:
         results = []
         for d in (1, -1):
             for frac in (0.1, 0.5, 0.9):
                 seed += 1
-                r = run_case(speed, expo, noise, d, frac, 184, flick, seed)
+                r = run_case(speed, expo, noise, d, frac, 184, flick, seed, texture=tex)
                 if r:
                     results.append(r)
         q2 = [abs(r["ref"]) for r in results if r["q"] == 2]
@@ -68,13 +70,13 @@ def main() -> None:
         raw = [abs(r["raw"]) for r in results]
         q1_ok = sum(1 for r in q1 if abs(r["ref"]) <= r["unc"] + 0.1)
         rows.append({
-            "speed": speed, "expo": ename, "noise": noise, "flick": flick, "n": len(results),
+            "speed": speed, "expo": ename, "noise": noise, "flick": flick, "tex": tex, "n": len(results),
             "raw_mean": mean(raw) if raw else 0, "q2": len(q2), "q2_mean": mean(q2) if q2 else None,
             "q2_max": max(q2) if q2 else None, "q1": len(q1), "q1_ok": q1_ok,
             "q1_unc": mean(r["unc"] for r in q1) if q1 else None, "q0": len(q0),
             "lag2": sum(1 for r in results if r["lag"] == 2),
         })
-        print(f"  v={speed:4.1f} E={ename:6s} σ={noise:3.1f} flicker={flick:.2f}: q2={len(q2)} (|erro| médio {mean(q2) if q2 else 0:.3f} ms) q1={len(q1)} q0={len(q0)}")
+        print(f"  v={speed:4.1f} E={ename:6s} σ={noise:3.1f} flicker={flick:.2f} tex={tex:.0f}: q2={len(q2)} (|erro| médio {mean(q2) if q2 else 0:.3f} ms) q1={len(q1)} ({q1_ok} dentro) q0={len(q0)}")
 
     all_q2 = [r for r in rows if r["q2_mean"] is not None]
     lines = ["# Validação numérica do estimador sub-quadro", "",
@@ -84,15 +86,21 @@ def main() -> None:
              "(dois sentidos × três fases do quadro). A varredura completa (~1.900 cenários, inclusive contraste baixo) roda nos",
              "testes `PhysicsSweepTest` (Kotlin) e `PhysicsSweepTests` (Swift).", "",
              "Qualidade 2 = ajuste completo (erro comparado ao tempo por quadro); 1 = intervalo honesto (conta quantos contêm a",
-             "verdade); 0 = meio da janela de exposição (±2,08 ms).", "",
-             "| Velocidade | Exposição | Ruído σ | Flicker | Erro por quadro (médio) | Q2: n / erro médio / máx | Q1: n / dentro | Q0 |",
-             "|---|---|---|---|---|---|---|---|"]
+             "verdade); 0 = meio da janela de exposição (±2,08 ms). A coluna 'textura' simula pelagem/sela: variação de luma",
+             "±30 níveis presa ao objeto (senoide de ~7 px), o efeito real que mais degrada o estimador; com textura o resultado",
+             "deve cair para intervalo ou tempo do quadro, nunca para um número falso.", "",
+             "| Velocidade | Exposição | Ruído σ | Flicker | Textura | Erro por quadro (médio) | Q2: n / erro médio / máx | Q1: n / dentro | Q0 |",
+             "|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         q2s = f"{r['q2']} / {r['q2_mean']:.3f} ms / {r['q2_max']:.3f} ms" if r["q2_mean"] is not None else f"{r['q2']}"
         q1s = f"{r['q1']} / {r['q1_ok']} (±{r['q1_unc']:.2f} ms)" if r["q1"] else "0"
-        lines.append(f"| {r['speed']:.0f} m/s | {r['expo']} s | {r['noise']:.1f} | {'120 Hz' if r['flick'] else '—'} | {r['raw_mean']:.2f} ms | {q2s} | {q1s} | {r['q0']} |")
+        lines.append(f"| {r['speed']:.0f} m/s | {r['expo']} s | {r['noise']:.1f} | {'120 Hz' if r['flick'] else '—'} | {'±30' if r['tex'] else '—'} | {r['raw_mean']:.2f} ms | {q2s} | {q1s} | {r['q0']} |")
     overall = [v for r in all_q2 for v in [r["q2_mean"]]]
-    lines += ["", f"Erro médio (qualidade 2) sobre todas as condições: **{mean(overall):.3f} ms**; tempo por quadro: "
+    clean = [r["q2_mean"] for r in all_q2 if not r["tex"]]
+    q1_total = sum(r["q1"] for r in rows)
+    q1_in = sum(r["q1_ok"] for r in rows)
+    lines += ["", f"Erro médio (qualidade 2) sobre todas as condições: **{mean(overall):.3f} ms** (sem textura: "
+              f"**{mean(clean):.3f} ms**); intervalos de qualidade 1 que contêm a verdade: **{q1_in}/{q1_total}**; tempo por quadro: "
               f"**{mean(r['raw_mean'] for r in rows):.2f} ms**. Tempo de geração: {time.time() - t_start:.0f} s.", "",
               "Leitura: exposições mais longas dão mais pixels \"interiores\" (mais qualidade 2); com exposição curta e cavalo",
               "lento só uma coluna vê o bordo e o resultado cai para um intervalo (qualidade 1) que usa a faixa de velocidades",

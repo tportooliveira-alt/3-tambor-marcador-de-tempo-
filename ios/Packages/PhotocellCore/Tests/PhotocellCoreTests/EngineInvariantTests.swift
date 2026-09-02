@@ -6,21 +6,23 @@ final class EngineInvariantTests: XCTestCase {
     private var cfg: PhotocellConfig = {
         var c = PhotocellConfig()
         c.calibrationSamples = 24; c.calibrationMinSamplesForOutlier = 6
-        c.frameResumeNs = 800_000_000; c.finishArmNs = 1_000_000_000
+        c.frameResumeNs = 800_000_000; c.finishArmNs = 1_300_000_000
         c.startLockoutNs = 300_000_000; c.finishLockoutNs = 200_000_000
         return c
     }()
     private let roi = RoiRect(x: 8, width: 9, y0: 300, y1: 396)
 
     private func meas(_ ts: Int64, _ full: Double, _ core: Double, _ bg: Double) -> FrameMeasurement {
-        FrameMeasurement(tsNs: ts, deltaFull: full, deltaCore: core, deltaBackground: bg, rowCore: [], stripPrev: [], stripCur: [], stripBg: [], deltaFullLag2: nil, lag: 1)
+        FrameMeasurement(tsNs: ts, prevTsNs: ts - cfg.framePeriodNs, deltaFull: full, deltaCore: core, deltaBackground: bg,
+                         stripPrev: UnsafeBufferPointer(start: nil, count: 0), stripCur: UnsafeBufferPointer(start: nil, count: 0),
+                         stripBg: UnsafeBufferPointer(start: nil, count: 0), deltaFullLag2: nil, lag: 1)
     }
 
-    func testRandomSequencesKeepInvariants() {
+    func testRandomSequencesKeepInvariants() throws {
         var rng = Rng(seed: 4242)
         var finishedRuns = 0
         for seq in 0..<300 {
-            let eng = PhotocellEngine(cfg: cfg, roi: roi, planeHeight: 720)
+            let eng = try PhotocellEngine(cfg: cfg, roi: roi, planeHeight: 720)
             var ts: Int64 = 10_000_000_000
             let period = cfg.framePeriodNs
             var pending: [Int64] = []
@@ -69,8 +71,8 @@ final class EngineInvariantTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(finishedRuns, 5, "poucas provas completas: \(finishedRuns)")
     }
 
-    func testDuplicateAndEarlyWakeupsAreNoOps() {
-        let eng = PhotocellEngine(cfg: cfg, roi: roi, planeHeight: 720)
+    func testDuplicateAndEarlyWakeupsAreNoOps() throws {
+        let eng = try PhotocellEngine(cfg: cfg, roi: roi, planeHeight: 720)
         eng.userArm(); eng.effects.removeAll()
         var ts: Int64 = 5_000_000_000
         let p = cfg.framePeriodNs
@@ -93,22 +95,35 @@ final class EngineInvariantTests: XCTestCase {
         XCTAssertEqual(eng.state, .awaitingFinish)
     }
 
-    func testResumeAfterArmStillReenablesFrames() {
+    func testInvalidWindowsAreRejectedUpFront() {
+        // retomada antes do fim do bloqueio: o engine nunca religaria os quadros e a prova travaria
+        var c1 = cfg
+        c1.frameResumeNs = cfg.startLockoutNs + 100_000_000
+        XCTAssertThrowsError(try PhotocellEngine(cfg: c1, roi: roi, planeHeight: 720))
+        // chegada armada antes da retomada dos quadros: idem
         var c2 = cfg
         c2.frameResumeNs = 1_500_000_000; c2.finishArmNs = 1_000_000_000
-        let eng = PhotocellEngine(cfg: c2, roi: roi, planeHeight: 720)
+        XCTAssertThrowsError(try PhotocellEngine(cfg: c2, roi: roi, planeHeight: 720))
+    }
+
+    func testFramesDroppedDiscardsCandidateAndMarksDegraded() throws {
+        let eng = try PhotocellEngine(cfg: cfg, roi: roi, planeHeight: 720)
         eng.userArm(); eng.effects.removeAll()
         var ts: Int64 = 5_000_000_000
-        let p = c2.framePeriodNs
+        let p = cfg.framePeriodNs
         eng.frame(nil, tsNs: ts)
-        for _ in 0..<c2.calibrationSamples { ts += p; eng.frame(meas(ts, 1.2, 1.1, 0.9)) }
-        ts += p; eng.frame(meas(ts, 20, 30, 25)); let start = ts
+        for _ in 0..<cfg.calibrationSamples { ts += p; eng.frame(meas(ts, 1.2, 1.1, 0.9)) }
+        XCTAssertEqual(eng.state, .armed)
+        ts += p; eng.frame(meas(ts, 20, 30, 25))
+        XCTAssertEqual(eng.state, .confirmingStart)
+        eng.effects.removeAll()
+        eng.framesDropped()                       // TN2445 "Discontinuity" no meio da confirmação
+        XCTAssertEqual(eng.state, .armed, "candidato sem base de tempo tem de ser descartado")
+        XCTAssertTrue(eng.effects.contains(.resetDifferencer))
+        XCTAssertEqual(eng.drops, 1)
+        ts += p; eng.frame(meas(ts, 20, 30, 25))
         for _ in 0..<2 { ts += p; eng.frame(meas(ts, 18, 22, 40)) }
-        eng.effects.removeAll()
-        eng.wakeup(nowNs: start + c2.startLockoutNs); eng.wakeup(nowNs: start + c2.finishArmNs)
-        XCTAssertEqual(eng.state, .awaitingFinish)
-        eng.effects.removeAll()
-        eng.wakeup(nowNs: start + c2.frameResumeNs)
-        XCTAssertTrue(eng.effects.contains(.setFrameDelivery(true)), "retomada precisa reativar os quadros mesmo depois de armar a chegada")
+        XCTAssertEqual(eng.state, .debounceStart)
+        XCTAssertTrue(eng.start?.degraded ?? false, "gatilho a < 50 ms de um drop precisa ser degradado")
     }
 }

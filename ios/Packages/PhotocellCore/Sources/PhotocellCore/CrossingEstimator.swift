@@ -10,6 +10,8 @@ public struct CrossingEstimate: Equatable, Sendable {
     public var boundCount: Int
     public var lowerNs: Nanos?
     public var upperNs: Nanos?
+    /// Colunas cuja dispersão de tempos excede o que o ruído explica (textura/inclinação).
+    public var texturedColumns: Int = 0
 }
 
 /// Estimador sub-quadro por fração de exposição (porte fiel de Tools/photocell_reference.py).
@@ -17,20 +19,23 @@ public struct CrossingEstimate: Equatable, Sendable {
 /// Cada pixel integra a luz durante [t_ini, t_ini + E]; se o bordo (luma O) cobre o pixel (fundo B)
 /// em t_x dentro da janela, V = B + (O − B)·f com f = (t_ini + E − t_x)/E ⇒ t_x = t_ini + E·(1 − f).
 /// O bordo se move a velocidade constante: t_x(coluna) = t_c + s·dx. Um ajuste linear ponderado
-/// sobre as MEDIANAS por coluna dos pixels "interiores" de três quadros (c−lag, c, c+lag) devolve
-/// t_c (cruzamento do plano central) e a velocidade, cancelando o viés de direção.
+/// sobre as MEDIANAS por coluna dos pixels "interiores" de três quadros (c−lag, c, c+lag; deslocamentos
+/// de tempo MEDIDOS pelos timestamps) devolve t_c (cruzamento do plano central) e a velocidade.
 ///
-/// Passo 1 seleciona os pixels interiores pelo valor OBSERVADO (m < f < 1−m); como essa seleção é
-/// correlacionada com o sinal do ruído perto dos cortes, o passo 2 reseleciona pelo valor PREVISTO
-/// pelo ajuste e usa o f observado sem corte (não enviesado). A incerteza (3σ) é propagada do ruído
-/// por pixel através do ajuste: pequena (≤ P/8) ⇒ qualidade 2; senão intervalo (qualidade 1).
-/// Pixels saturados só dão limites; colunas com poucas linhas não entram; inclinação implausível ou
-/// coluna única ⇒ intervalo (qualidade 1) pela faixa de velocidades.
+/// Passo 1 seleciona os pixels interiores pelo valor OBSERVADO usando o platô (c+2·lag) como O; o
+/// passo 2 reseleciona pelo valor PREVISTO pelo ajuste (sem viés de seleção) e usa um O LOCAL: a
+/// mediana das 3 colunas logo atrás do bordo, na mesma linha e quadro (textura do objeto). A incerteza
+/// (3σ) é propagada do ruído por pixel, usando por coluna o maior entre a variância do modelo e a
+/// amostral, mais um termo de textura (variância espacial do platô) e a dispersão residual entre
+/// colunas quando há colunas "texturizadas". Incerteza ≤ P/8 ⇒ qualidade 2; senão intervalo (1); sem
+/// informação ⇒ tempo do quadro (0).
 public enum CrossingEstimator {
     private struct ColumnStats {
         var good: [Int]
-        var t: [Int: Double]
-        var variance: [Int: Double]
+        var t: [Double]
+        var variance: [Double]
+        var textured: Int
+        var crms: [Double]
     }
     private struct LineFit {
         var tc: Double
@@ -38,89 +43,125 @@ public enum CrossingEstimator {
         var varT: Double
     }
 
+    /// Desfaz a curva de tom (gamma) para que V seja linear em f; gamma == 1 desliga.
+    public static func linearize(_ v: Double, gamma: Double) -> Double {
+        if gamma == 1.0 { return v }
+        if v <= 0.0 { return 0.0 }
+        return 255.0 * pow(v / 255.0, gamma)
+    }
+
     public static func estimate(cfg: PhotocellConfig, roi: RoiRect, planeHeight: Int,
-                                cand: FrameMeasurement, nextStrip: [UInt8]?, plateauStrip: [UInt8]?,
-                                noiseSigmaPx: Double) -> CrossingEstimate {
+                                input inp: CrossingInput, noiseSigmaPx: Double) -> CrossingEstimate {
         let p = cfg.framePeriodNs
         // Sem refinamento possível, a melhor estimativa é o meio da janela de exposição da banda.
         var midRowOffset: Int64 = 0
         if let skew = cfg.skewNs { midRowOffset = floorDiv(Int64(roi.y0 + roi.height / 2) * skew, Int64(planeHeight)) }
-        let none = CrossingEstimate(quality: 0, refinedTsNs: cand.tsNs + midRowOffset + cfg.exposureNs / 2, uncertaintyNs: p / 2,
-                                    interiorCount: 0, boundCount: 0, lowerNs: nil, upperNs: nil)
-        let n = cand.stripCur.count
-        guard n > 0, let plateau = plateauStrip, plateau.count == n,
-              cand.stripPrev.count == n, cand.stripBg.count == n else { return none }
+        let none = CrossingEstimate(quality: 0, refinedTsNs: inp.tsNs + midRowOffset + cfg.exposureNs / 2, uncertaintyNs: p / 2,
+                                    interiorCount: 0, boundCount: 0, lowerNs: nil, upperNs: nil, texturedColumns: 0)
+        let n = inp.stripCur.count
+        guard n > 0, let plateauStrip = inp.plateauStrip, plateauStrip.count == n,
+              inp.stripPrev.count == n, inp.stripBg.count == n else { return none }
         let h = roi.height
         let w = roi.width
         if w * h != n { return none }
         let e = Double(cfg.exposureNs)
-        let lag = Int64(cand.lag)
+        let gamma = cfg.gamma
         let kSig = cfg.fractionMarginSigmas
         let noiseTerm = kSig * (2.0).squareRoot() * noiseSigmaPx
         let center = Double(w - 1) / 2.0
-        var frames: [([UInt8], Double)] = [(cand.stripPrev, -Double(lag * p)), (cand.stripCur, 0.0)]
-        if let nx = nextStrip, nx.count == n { frames.append((nx, Double(lag * p))) }
+        var frameStrips: [[UInt8]] = [inp.stripPrev, inp.stripCur]
+        var frameOffsets: [Double] = [Double(inp.prevTsNs - inp.tsNs), 0.0]
+        if let nx = inp.nextStrip, nx.count == n, let nxTs = inp.nextTsNs {
+            frameStrips.append(nx)
+            frameOffsets.append(Double(nxTs - inp.tsNs))
+        }
+        let nFrames = frameStrips.count
         let sMin = 1e9 / cfg.speedPxPerSMax
         let sMax = 1e9 / cfg.speedPxPerSMin
         let minRows = max(max(1, cfg.minInteriorRowsPerColumn), Int((cfg.minInteriorRowsFraction * Double(h)).rounded(.up)))
         let uncFloor = max(1, cfg.exposureNs / 50)
         let uncQ2Max = p / 8                      // acima disso o ajuste vira intervalo (qualidade 1)
         func rowTime(_ row: Int) -> Int64 {
-            if let skew = cfg.skewNs { return cand.tsNs + floorDiv(Int64(roi.y0 + row) * skew, Int64(planeHeight)) }
-            return cand.tsNs
+            if let skew = cfg.skewNs { return inp.tsNs + floorDiv(Int64(roi.y0 + row) * skew, Int64(planeHeight)) }
+            return inp.tsNs
         }
+
+        // fundo e platô linearizados uma vez
+        var bgLin = [Double](repeating: 0, count: n)
+        var plateauLin = [Double](repeating: 0, count: n)
+        for i in 0..<n {
+            bgLin[i] = linearize(inp.stripBg[i], gamma: gamma)
+            plateauLin[i] = linearize(Double(plateauStrip[i]), gamma: gamma)
+        }
+        // Textura do objeto: variância espacial do platô ao longo das colunas (mediana das linhas), além
+        // do ruído. Entra como variância adicional COERENTE por coluna (não cai com sqrt(n)).
+        var rowVars = [Double](repeating: 0, count: h)
+        for row in 0..<h {
+            let o = row * w
+            var meanP = 0.0
+            for i in 0..<w { meanP += plateauLin[o + i] }
+            meanP = meanP / Double(w)
+            var ssP = 0.0
+            for i in 0..<w {
+                let d = plateauLin[o + i] - meanP
+                ssP += d * d
+            }
+            rowVars[row] = ssP / Double(w)
+        }
+        let texVarPx = median(rowVars, count: h) - noiseSigmaPx * noiseSigmaPx
+        let aTex = texVarPx > 0.0 ? texVarPx.squareRoot() : 0.0
+        // A textura também limita a classificação coberto/interior: margem = maior entre ruído e ~1,5·aTex
+        let texTerm = 1.5 * aTex
+        let marginTerm = noiseTerm >= texTerm ? noiseTerm : texTerm
 
         var interior = 0
         var bounds = 0
         var lower: Double? = nil
         var upper: Double? = nil
-        var coveredColsCand = Set<Int>()
+        var coveredColsCand = [Bool](repeating: false, count: w)
+        let maxPerCol = h * nFrames
 
         // ---- passo 1: seleção pelo valor observado + limites --------------------------------
-        var colSumW: [Int: Double] = [:]
-        var colTimes: [Int: [Double]] = [:]   // t_x por coluna (mediana resiste a pixels espúrios)
-        var colS2: [Int: Double] = [:]        // soma das variâncias de t por pixel
-        var colN: [Int: Int] = [:]
+        var colSumW = [Double](repeating: 0, count: w)
+        var colTimes = [[Double]](repeating: [Double](repeating: 0, count: maxPerCol), count: w)
+        var colS2 = [Double](repeating: 0, count: w)
+        var colN = [Int](repeating: 0, count: w)
         for row in 0..<h {
             let tRow = rowTime(row)
             for i in 0..<w {
                 let idx = row * w + i
-                let b = cand.stripBg[idx]
-                let o = Double(plateau[idx])
+                let b = bgLin[idx]
+                let o = plateauLin[idx]
                 let contrast = o - b
                 let c = contrast >= 0.0 ? contrast : -contrast
                 if c < cfg.minContrast { continue }
                 let dx = Double(i) - center
-                // Limites só da coluna central (dx = 0): em outra coluna o limite valeria para t_x(dx),
-                // não para t_c. Com largura par (dx = ±0,5) aplica-se uma folga de |dx|·s_max.
                 let isCenterCol = abs(dx) <= 0.5
                 let centerSlack = abs(dx) * sMax
-                var m = noiseTerm / c
+                var m = marginTerm / c
                 if m < cfg.fractionMarginMin { m = cfg.fractionMarginMin }
                 if m >= 0.5 { continue }
                 let usableInterior = m <= cfg.fractionMarginMax
                 let lo = m
                 let hi = 1.0 - m
-                // Limites: f_obs >= 1-m com ruído até m implica f >= 1-2m, logo t_x <= t_ini + 2mE
-                // (e simetricamente t_x >= t_ini + E(1-2m) para f_obs <= m).
                 let upOff = e * 2.0 * m
                 let loOff = e * (1.0 - 2.0 * m)
                 let wgt = contrast * contrast
-                let st = e * m / kSig                  // σ de t deste pixel (E·√2·σ_px/C)
-                for k in 0..<frames.count {
-                    let f = (Double(frames[k].0[idx]) - b) / contrast
-                    let tIni = Double(tRow) + frames[k].1
+                let st = e * m / kSig
+                for k in 0..<nFrames {
+                    let f = (linearize(Double(frameStrips[k][idx]), gamma: gamma) - b) / contrast
+                    let tIni = Double(tRow) + frameOffsets[k]
                     if f > lo && f < hi {
                         if usableInterior {
                             let t = tIni + e * (1.0 - f)
-                            colSumW[i, default: 0.0] += wgt
-                            colTimes[i, default: []].append(t)
-                            colS2[i, default: 0.0] += st * st
-                            colN[i, default: 0] += 1
+                            colSumW[i] += wgt
+                            colTimes[i][colN[i]] = t
+                            colS2[i] += st * st
+                            colN[i] += 1
                             interior += 1
                         }
                     } else if f >= hi {
-                        if k == 1 { coveredColsCand.insert(i) }
+                        if k == 1 { coveredColsCand[i] = true }
                         if isCenterCol {
                             bounds += 1
                             let u = tIni + upOff + centerSlack
@@ -136,17 +177,21 @@ public enum CrossingEstimator {
                 }
             }
         }
-        let lowerI: Int64? = lower.map { Int64(($0 + 0.5).rounded(.down)) }
-        let upperI: Int64? = upper.map { Int64(($0 + 0.5).rounded(.down)) }
+        var lowerI: Int64? = lower.map { Int64(($0 + 0.5).rounded(.down)) }
+        var upperI: Int64? = upper.map { Int64(($0 + 0.5).rounded(.down)) }
+        var texturedCols = 0
 
         func intervalResult(_ loNs: Int64?, _ hiNs: Int64?, _ quality: Int) -> CrossingEstimate? {
             guard let lo = loNs, let hi = hiNs else { return nil }
-            let a = lo <= hi ? lo : hi
-            let bb = lo <= hi ? hi : lo
+            // limites contraditórios (classificação corrompida, p.ex. textura): sem informação honesta
+            if lo > hi { return nil }
+            let a = lo
+            let bb = hi
             if floorDiv(bb - a, 2) > p / 2 { return nil }
             let mid = floorDiv(a + bb, 2)
             return CrossingEstimate(quality: quality, refinedTsNs: mid, uncertaintyNs: floorDiv(bb - a, 2),
-                                    interiorCount: interior, boundCount: bounds, lowerNs: a, upperNs: bb)
+                                    interiorCount: interior, boundCount: bounds, lowerNs: a, upperNs: bb,
+                                    texturedColumns: texturedCols)
         }
 
         /// Qualidade 2 se a incerteza (3σ) propagada do ajuste é pequena; senão intervalo.
@@ -156,7 +201,7 @@ public enum CrossingEstimator {
             let refined = Int64((tEst + 0.5).rounded(.down))
             if unc <= uncQ2Max {
                 return CrossingEstimate(quality: 2, refinedTsNs: refined, uncertaintyNs: unc, interiorCount: interior,
-                                        boundCount: bounds, lowerNs: lowerI, upperNs: upperI)
+                                        boundCount: bounds, lowerNs: lowerI, upperNs: upperI, texturedColumns: texturedCols)
             }
             let a0 = refined - unc
             let b0 = refined + unc
@@ -168,28 +213,58 @@ public enum CrossingEstimator {
             return intervalResult(a, bb, 1)
         }
 
-        /// Colunas confiáveis (≥ minRows pixels), mediana e variância da mediana por coluna.
-        func columnStats(_ sumW: [Int: Double], _ times: [Int: [Double]], _ s2: [Int: Double], _ cnt: [Int: Int]) -> ColumnStats {
-            let good = sumW.keys.filter { (cnt[$0] ?? 0) >= minRows }.sorted()
-            // Tempo por coluna = MEDIANA dos t_x dos pixels interiores: um único pixel saturado que o ruído
-            // classificou como interior (erro ~P) não desloca a coluna, ao contrário da média ponderada.
-            var t: [Int: Double] = [:]
-            for (c, list) in times { t[c] = median(list) }
-            // variância da mediana da coluna ~ (π/2) · variância da média
-            var variance: [Int: Double] = [:]
-            for (c, v) in s2 { variance[c] = (Double.pi / 2.0) * v / (Double(cnt[c]!) * Double(cnt[c]!)) }
-            return ColumnStats(good: good, t: t, variance: variance)
+        /// Colunas confiáveis, mediana, variância da mediana por coluna e número de colunas texturizadas.
+        func columnStats(_ sumW: [Double], _ times: [[Double]], _ s2: [Double], _ cnt: [Int]) -> ColumnStats {
+            var good: [Int] = []
+            for c in 0..<w where cnt[c] > 0 && cnt[c] >= minRows { good.append(c) }
+            var t = [Double](repeating: 0, count: w)
+            var variance = [Double](repeating: 0, count: w)
+            var crms = [Double](repeating: 0, count: w)
+            var textured = 0
+            for c in 0..<w {
+                let nc = cnt[c]
+                if nc == 0 { continue }
+                let fn = Double(nc)
+                t[c] = median(times[c], count: nc)
+                // variância da mediana da coluna ~ (π/2) · variância da média (modelo de ruído)
+                let varModel = (Double.pi / 2.0) * s2[c] / (fn * fn)
+                // variância amostral dos tempos da coluna (dois passos, ordem de inserção)
+                var mean = 0.0
+                for k in 0..<nc { mean += times[c][k] }
+                mean = mean / fn
+                var ss = 0.0
+                for k in 0..<nc {
+                    let d = times[c][k] - mean
+                    ss += d * d
+                }
+                let varS = nc >= 2 ? ss / (fn - 1.0) : 0.0
+                let varEmp = (Double.pi / 2.0) * varS / fn
+                variance[c] = varModel >= varEmp ? varModel : varEmp
+                // contraste RMS da coluna (sumW = soma de contrast²), para o termo coerente de textura
+                crms[c] = (sumW[c] / fn).squareRoot()
+                if nc >= minRows {
+                    let sigmaModelPx = (s2[c] / fn).squareRoot()
+                    if varS.squareRoot() > 3.0 * sigmaModelPx + e / 10.0 { textured += 1 }
+                }
+            }
+            return ColumnStats(good: good, t: t, variance: variance, textured: textured, crms: crms)
+        }
+
+        /// Variância COERENTE (não cai com o número de pixels/colunas) de t causada pela textura do objeto.
+        func texVar(_ crms: Double) -> Double {
+            let tTex = e * aTex / crms
+            return tTex * tTex
         }
 
         /// Ajuste linear ponderado sobre as medianas por coluna, com rejeição de colunas cujo resíduo é
         /// fisicamente impossível (> E + P/4). Devolve (t_c, inclinação, variância de t_c) ou nil.
-        func fitLine(_ good: [Int], _ sumW: [Int: Double], _ colT: [Int: Double], _ colVar: [Int: Double]) -> LineFit? {
+        func fitLine(_ good: [Int], _ sumW: [Double], _ colT: [Double], _ colVar: [Double], _ textured: Int, _ colCrms: [Double]) -> LineFit? {
             var fitCols = good
             for _ in 0..<3 {
                 var gw = 0.0, gx = 0.0, gt = 0.0, gxx = 0.0, gxt = 0.0
                 for col in fitCols {
-                    let wc = sumW[col]!
-                    let tc = colT[col]!
+                    let wc = sumW[col]
+                    let tc = colT[col]
                     let dxc = Double(col) - center
                     gw += wc; gx += wc * dxc; gt += wc * tc; gxx += wc * dxc * dxc; gxt += wc * dxc * tc
                 }
@@ -201,7 +276,7 @@ public enum CrossingEstimator {
                 var worst: Int? = nil
                 var worstRes = 0.0
                 for col in fitCols {
-                    let res = abs(colT[col]! - (tc + slope * (Double(col) - center)))
+                    let res = abs(colT[col] - (tc + slope * (Double(col) - center)))
                     if res > worstRes { worstRes = res; worst = col }
                 }
                 if let wcol = worst, worstRes > e + Double(p) / 4.0, fitCols.count > 2 {
@@ -211,12 +286,33 @@ public enum CrossingEstimator {
                 if worstRes <= e + Double(p) / 4.0 && abs(slope) >= sMin && abs(slope) <= sMax {
                     // propagação: t_c = Σ a_c·t_col(c), a_c = w_c/gw − gx·w_c·(gw·dx_c − gx)/(denom·gw)
                     var varT = 0.0
+                    var chi2 = 0.0
+                    var resSs = 0.0
                     for col in fitCols {
-                        let wc = sumW[col]!
+                        let wc = sumW[col]
                         let dxc = Double(col) - center
                         let ac = wc / gw - gx * wc * (gw * dxc - gx) / (denom * gw)
-                        varT += ac * ac * colVar[col]!
+                        varT += ac * ac * colVar[col]
+                        let res = colT[col] - (tc + slope * dxc)
+                        chi2 += colVar[col] > 0.0 ? res * res / colVar[col] : 0.0
+                        resSs += res * res
                     }
+                    // resíduos entre colunas maiores do que as variâncias explicam: escala pelo χ² reduzido
+                    let dof = fitCols.count - 2
+                    if dof >= 1 {
+                        let chi2r = chi2 / Double(dof)
+                        if chi2r > 1.0 { varT = varT * chi2r }
+                    }
+                    // com colunas texturizadas os erros são coerentes: incerteza ≥ dispersão residual
+                    if textured > 0 {
+                        let resMs2 = resSs / Double(fitCols.count)
+                        if resMs2 > varT { varT = resMs2 }
+                    }
+                    // textura do objeto: erro coerente, somado DEPOIS da propagação (não é reduzido pelo ajuste)
+                    var crms = 0.0
+                    for col in fitCols { crms += colCrms[col] }
+                    crms = crms / Double(fitCols.count)
+                    varT += texVar(crms)
                     return LineFit(tc: tc, slope: slope, varT: varT)
                 }
                 return nil
@@ -228,65 +324,98 @@ public enum CrossingEstimator {
         let goodCols = stats1.good
         let colT = stats1.t
         let colVar = stats1.variance
+        texturedCols = stats1.textured
+        if texturedCols > 0 || texTerm > noiseTerm {
+            // os limites foram classificados com o platô como O: com textura (detectada no platô ou na
+            // dispersão das colunas) não são confiáveis
+            lowerI = nil
+            upperI = nil
+        }
         if !goodCols.isEmpty {
-            var fit = fitLine(goodCols, colSumW, colT, colVar)
-            // ---- passo 2 (duas iterações): reseleção pelo valor PREVISTO ----------------------
+            var fit = fitLine(goodCols, colSumW, colT, colVar, texturedCols, stats1.crms)
+            // ---- passo 2 (duas iterações): reseleção pelo valor PREVISTO, O local ------------------
             for _ in 0..<2 {
                 guard let f1 = fit else { break }
-                var sumW2: [Int: Double] = [:]
-                var times2: [Int: [Double]] = [:]
-                var s22: [Int: Double] = [:]
-                var n2: [Int: Int] = [:]
+                let behind = f1.slope > 0.0 ? -1 : 1     // bordo vindo da esquerda (s > 0): atrás = colunas menores
+                var sumW2 = [Double](repeating: 0, count: w)
+                var times2 = [[Double]](repeating: [Double](repeating: 0, count: maxPerCol), count: w)
+                var s22 = [Double](repeating: 0, count: w)
+                var n2 = [Int](repeating: 0, count: w)
+                var neigh = [Double](repeating: 0, count: 3)
                 for row in 0..<h {
                     let tRow = rowTime(row)
                     for i in 0..<w {
                         let idx = row * w + i
-                        let b = cand.stripBg[idx]
-                        let o = Double(plateau[idx])
-                        let contrast = o - b
-                        let c = contrast >= 0.0 ? contrast : -contrast
-                        if c < cfg.minContrast { continue }
-                        var m = noiseTerm / c
-                        if m < cfg.fractionMarginMin { m = cfg.fractionMarginMin }
-                        if m > cfg.fractionMarginMax { continue }
+                        let b = bgLin[idx]
                         let tPred = f1.tc + f1.slope * (Double(i) - center)
-                        let wgt = contrast * contrast
-                        let st = e * m / kSig
-                        for k in 0..<frames.count {
-                            let tIni = Double(tRow) + frames[k].1
+                        for k in 0..<nFrames {
+                            let strip = frameStrips[k]
+                            let tIni = Double(tRow) + frameOffsets[k]
                             let fPred = (tIni + e - tPred) / e
-                            if fPred > m && fPred < 1.0 - m {
-                                let f = (Double(frames[k].0[idx]) - b) / contrast
-                                let t = tIni + e * (1.0 - f)
-                                sumW2[i, default: 0.0] += wgt
-                                times2[i, default: []].append(t)
-                                s22[i, default: 0.0] += st * st
-                                n2[i, default: 0] += 1
+                            if !(fPred > 0.0 && fPred < 1.0) { continue }
+                            // O local: mediana das até 3 colunas logo atrás do bordo, mesma linha e quadro,
+                            // previstas E observadas totalmente cobertas; senão o platô.
+                            var nNeigh = 0
+                            for d in 1...3 {
+                                let j = i + behind * d
+                                if j < 0 || j >= w { break }
+                                let tPredJ = f1.tc + f1.slope * (Double(j) - center)
+                                if tPredJ > tIni { continue }
+                                let vj = linearize(Double(strip[row * w + j]), gamma: gamma)
+                                let bj = bgLin[row * w + j]
+                                let cj = plateauLin[row * w + j] - bj
+                                if cj == 0.0 { continue }
+                                var mj = marginTerm / (cj >= 0.0 ? cj : -cj)
+                                if mj < cfg.fractionMarginMin { mj = cfg.fractionMarginMin }
+                                if (vj - bj) / cj >= 1.0 - mj { neigh[nNeigh] = vj; nNeigh += 1 }
                             }
+                            let o = nNeigh > 0 ? median(neigh, count: nNeigh) : plateauLin[idx]
+                            let contrast = o - b
+                            let c = contrast >= 0.0 ? contrast : -contrast
+                            if c < cfg.minContrast { continue }
+                            var m = marginTerm / c
+                            if m < cfg.fractionMarginMin { m = cfg.fractionMarginMin }
+                            if m > cfg.fractionMarginMax { continue }
+                            if !(fPred > m && fPred < 1.0 - m) { continue }
+                            let f = (linearize(Double(strip[idx]), gamma: gamma) - b) / contrast
+                            let t = tIni + e * (1.0 - f)
+                            let wgt = contrast * contrast
+                            let st = e * m / kSig
+                            sumW2[i] += wgt
+                            times2[i][n2[i]] = t
+                            s22[i] += st * st
+                            n2[i] += 1
                         }
                     }
                 }
                 let stats2 = columnStats(sumW2, times2, s22, n2)
-                let fit2 = stats2.good.isEmpty ? nil : fitLine(stats2.good, sumW2, stats2.t, stats2.variance)
+                let fit2 = stats2.good.isEmpty ? nil : fitLine(stats2.good, sumW2, stats2.t, stats2.variance, stats2.textured, stats2.crms)
                 guard let f2 = fit2 else { break }
                 fit = f2
+                texturedCols = stats2.textured
             }
             if let f = fit, let r = fittedResult(f.tc, f.varT) { return r }
             // uma coluna dominante (ou inclinação implausível): usa a coluna com mais peso
             var col = goodCols[0]
-            for c2 in goodCols where colSumW[c2]! > colSumW[col]! { col = c2 }
+            for c2 in goodCols where colSumW[c2] > colSumW[col] { col = c2 }
             let dx0 = Double(col) - center
-            let tInt = colT[col]!
-            if abs(dx0) < 0.5, let r = fittedResult(tInt, colVar[col]!) { return r }
+            let tInt = colT[col]
+            if abs(dx0) < 0.5, let r = fittedResult(tInt, colVar[col] + texVar(stats1.crms[col])) { return r }
             // sentido: colunas já cobertas no candidato ficam do lado de onde o bordo veio
-            let leftCov = coveredColsCand.contains { $0 < col }
-            let rightCov = coveredColsCand.contains { $0 > col }
+            var leftCov = false
+            var rightCov = false
+            for c2 in 0..<w where coveredColsCand[c2] {
+                if c2 < col { leftCov = true }
+                if c2 > col { rightCov = true }
+            }
             var cands: [Double] = []
             if leftCov || !rightCov { cands += [tInt - dx0 * sMin, tInt - dx0 * sMax] }
             if rightCov || !leftCov { cands += [tInt + dx0 * sMin, tInt + dx0 * sMax] }
-            // incerteza da média da coluna: ±E·m/sqrt(n)
+            // incerteza da coluna: maior entre ±E·m/sqrt(n) e 3σ da variância da coluna
             let mCol = noiseTerm / max(cfg.minContrast, 1.0)
-            let colUnc = e * min(mCol, 0.5) / Double(max(1, colN[col] ?? 1)).squareRoot()
+            var colUnc = e * min(mCol, 0.5) / Double(max(1, colN[col])).squareRoot()
+            let colUnc3 = 3.0 * (colVar[col] + texVar(stats1.crms[col])).squareRoot()
+            if colUnc3 > colUnc { colUnc = colUnc3 }
             let a0 = Int64((cands.min()! - colUnc + 0.5).rounded(.down))
             let b0 = Int64((cands.max()! + colUnc + 0.5).rounded(.down))
             var a = a0
@@ -299,10 +428,9 @@ public enum CrossingEstimator {
         return intervalResult(lowerI, upperI, 1) ?? none
     }
 
-    /// Mediana determinística (n par: média dos dois centrais) — mesma definição em Python/Kotlin.
-    private static func median(_ values: [Double]) -> Double {
-        let v = values.sorted()
-        let n = v.count
-        return n % 2 == 1 ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2.0
+    /// Mediana determinística dos primeiros `count` valores (n par: média dos dois centrais).
+    private static func median(_ values: [Double], count: Int) -> Double {
+        let v = Array(values[0..<count]).sorted()
+        return count % 2 == 1 ? v[count / 2] : (v[count / 2 - 1] + v[count / 2]) / 2.0
     }
 }

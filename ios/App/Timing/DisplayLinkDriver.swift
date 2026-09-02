@@ -20,7 +20,9 @@ final class DisplayLinkDriver {
     func start() {
         guard link == nil else { return }
         let l = CADisplayLink(target: self, selector: #selector(tick))
-        l.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
+        // ProMotion: 120 Hz; em telas de 60 Hz um mínimo de 80 seria insatisfazível
+        let maxFps = Float(UIScreen.main.maximumFramesPerSecond)
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: min(30, maxFps), maximum: maxFps, preferred: maxFps)
         l.add(to: .main, forMode: .common)
         link = l
     }

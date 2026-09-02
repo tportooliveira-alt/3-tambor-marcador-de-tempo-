@@ -50,6 +50,8 @@ data class TriggerInfo(
     val uncertaintyNs: Nanos,
     val interiorCount: Int,
     val degraded: Boolean,
+    /** Colunas cuja dispersão de tempos excede o ruído (textura/inclinação do bordo). */
+    val texturedColumns: Int = 0,
 )
 
 data class RunResult(
@@ -63,25 +65,27 @@ data class RunResult(
     val thresholdFinish: Double,
 )
 
-private class Candidate(val meas: FrameMeasurement, val degraded: Boolean) {
+private class Candidate(val inp: CrossingInput, val degraded: Boolean) {
     var seen = 0
     var confirmed = 0
-    var nextStrip: IntArray? = null   // faixa do quadro c+lag (bordo ainda dentro da faixa)
-    var plateau: IntArray? = null     // faixa do quadro c+2·lag (faixa coberta: referência O)
 }
 
 /**
  * Dono único da máquina de estados. Deve ser acionado sempre da MESMA fila/thread
  * (a do processamento de quadros); o display link/Choreographer apenas lê o snapshot.
  *
- * Eventos: [userCalibrate], [userArm], [userReset], [frame], [wakeup], [captureInterrupted].
- * Após cada evento, execute e limpe [effects].
+ * Eventos: [userCalibrate], [userArm], [userReset], [frame], [wakeup], [captureInterrupted],
+ * [framesDropped]. Após cada evento, execute e limpe [effects].
  */
 class PhotocellEngine(
     val cfg: PhotocellConfig,
     val roi: RoiRect,
     val planeHeight: Int,
 ) {
+    init {
+        cfg.validate()
+    }
+
     var state: PhotocellState = PhotocellState.IDLE
         private set
     var errorReason: String? = null
@@ -113,6 +117,7 @@ class PhotocellEngine(
     private val wakeups: MutableList<Nanos> = ArrayList()
     private var lastFrameTs: Nanos? = null
     private var lastDropTs: Nanos? = null
+    private var dropPending = false   // a plataforma avisou de quadros perdidos sem timestamp
 
     // ---- utilitários ----------------------------------------------------------
     private fun emit(e: Effect) { effects.add(e) }
@@ -166,12 +171,35 @@ class PhotocellEngine(
         errorReason = null
         drops = 0
         lastDropTs = null
+        dropPending = false
         lastFrameTs = null
         go(PhotocellState.IDLE)
     }
 
     fun captureInterrupted() {
         if (state.isActive || state == PhotocellState.CALIBRATING) fail("captureInterrupted")
+    }
+
+    /**
+     * A plataforma soube de quadros perdidos (TN2445 "Discontinuity", ImageReader estourado) sem
+     * conhecer os timestamps: o candidato em confirmação perde a base de tempo e é descartado, o
+     * próximo quadro conta como drop (passada "degradada" se estiver perto do gatilho) e a
+     * referência do differencer é ressemeada.
+     */
+    fun framesDropped() {
+        drops += 1
+        dropPending = true
+        lastFrameTs = null
+        if (state == PhotocellState.CONFIRMING_START) {
+            candidate = null
+            go(PhotocellState.ARMED)
+        } else if (state == PhotocellState.CONFIRMING_FINISH) {
+            candidate = null
+            go(PhotocellState.AWAITING_FINISH)
+        }
+        if (state == PhotocellState.CALIBRATING || state == PhotocellState.ARMED || state == PhotocellState.AWAITING_FINISH) {
+            emit(Effect.ResetDifferencer)
+        }
     }
 
     private fun fail(reason: String) {
@@ -238,11 +266,15 @@ class PhotocellEngine(
     }
 
     private fun trackGaps(tsNs: Nanos) {
+        if (dropPending) {
+            dropPending = false
+            lastDropTs = tsNs
+        }
         val last = lastFrameTs
         if (last != null) {
             val gap = tsNs - last
             if (gap > cfg.dropGapFactor * cfg.framePeriodNs) {
-                val missed = Math.round(gap.toDouble() / cfg.framePeriodNs).toInt() - 1
+                val missed = Math.floor(gap.toDouble() / cfg.framePeriodNs + 0.5).toInt() - 1
                 if (missed > 0) {
                     drops += missed
                     lastDropTs = tsNs
@@ -255,6 +287,10 @@ class PhotocellEngine(
     private fun calibrationFrame(m: FrameMeasurement) {
         m.deltaFullLag2?.let { calibratorLag2.addSample(it) }
         when (calibrator.addSample(m.deltaFull)) {
+            CalibrationStep.RESTARTED -> {
+                // as duas janelas precisam cobrir as mesmas amostras para a decisão de flicker valer
+                calibratorLag2.reset()
+            }
             CalibrationStep.DONE -> {
                 var stats = calibrator.stats
                 var th = calibrator.threshold!!
@@ -282,7 +318,12 @@ class PhotocellEngine(
         if (m.deltaCore > th) {
             val ld = lastDropTs
             val degraded = ld != null && Math.abs(m.tsNs - ld) < cfg.degradedDropWindowNs
-            candidate = Candidate(m, degraded)
+            // cópias: os buffers do differencer rotacionam no próximo quadro
+            val inp = CrossingInput(
+                tsNs = m.tsNs, prevTsNs = m.prevTsNs, stripPrev = m.stripPrev.copyOf(),
+                stripCur = m.stripCur.copyOf(), stripBg = m.stripBg.copyOf(), lag = m.lag,
+            )
+            candidate = Candidate(inp, degraded)
             go(confirming)
         } else if (m.deltaFull <= th) {
             emit(Effect.UpdateBackground)
@@ -293,14 +334,21 @@ class PhotocellEngine(
         val c = candidate ?: return
         val th = threshold ?: return
         c.seen += 1
-        if (c.seen == lag) c.nextStrip = m.stripCur.copyOf()
-        if (c.seen == 2 * lag) c.plateau = m.stripCur.copyOf()
+        if (c.seen == lag) {
+            c.inp.nextStrip = m.stripCur.copyOf()
+            c.inp.nextTsNs = m.tsNs
+        }
+        if (c.seen == 2 * lag) {
+            c.inp.plateauStrip = m.stripCur.copyOf()
+            c.inp.plateauTsNs = m.tsNs
+        }
         if (m.deltaBackground > th * cfg.backgroundThresholdMultiplier) c.confirmed += 1
         if (c.confirmed >= cfg.confirmRequired && c.seen >= 2 * lag) {
-            val est = CrossingEstimator.estimate(cfg, roi, planeHeight, c.meas, c.nextStrip, c.plateau, noiseSigmaPx)
+            val est = CrossingEstimator.estimate(cfg, roi, planeHeight, c.inp, noiseSigmaPx)
             val info = TriggerInfo(
-                rawTsNs = c.meas.tsNs, refinedTsNs = est.refinedTsNs, quality = est.quality,
+                rawTsNs = c.inp.tsNs, refinedTsNs = est.refinedTsNs, quality = est.quality,
                 uncertaintyNs = est.uncertaintyNs, interiorCount = est.interiorCount, degraded = c.degraded,
+                texturedColumns = est.texturedColumns,
             )
             candidate = null
             if (isStart) triggerStart(info) else triggerFinish(info)

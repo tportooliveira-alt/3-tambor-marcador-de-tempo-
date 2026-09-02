@@ -4,7 +4,9 @@ import Foundation
 ///
 /// Mantém apenas as duas últimas faixas (c−1 e c−2) e as referências de fundo — nunca o quadro
 /// inteiro. Os buffers são alocados uma vez no `init` e liberados no `deinit`; o caminho quente
-/// usa ponteiros crus e aritmética de stride: Endereço(x, y) = base + y*stride + x.
+/// usa ponteiros crus e aritmética de stride: Endereço(x, y) = base + y*stride + x. NÃO há alocação
+/// por quadro: a `FrameMeasurement` devolvida referencia os buffers rotativos (válidos até o próximo
+/// `process()`); quem precisa guardar as faixas copia (o engine, no candidato).
 ///
 /// Com `lag == 2` (flicker de 120 Hz a 240 FPS) a comparação é feita com o quadro de mesma fase
 /// de iluminação e a referência de fundo é separada por paridade do quadro.
@@ -24,6 +26,8 @@ public final class StripDifferencer {
     private var nextBuf = 0
     private var prev1: UnsafeMutablePointer<UInt8>? = nil
     private var prev2: UnsafeMutablePointer<UInt8>? = nil
+    private var prev1Ts: Nanos = 0
+    private var prev2Ts: Nanos = 0
     private var background: [UnsafeMutablePointer<Double>?] = [nil, nil]
     private var frameIndex = 0
 
@@ -51,6 +55,8 @@ public final class StripDifferencer {
     public func reset() {
         prev1 = nil
         prev2 = nil
+        prev1Ts = 0
+        prev2Ts = 0
         for i in 0..<2 {
             background[i]?.deallocate()
             background[i] = nil
@@ -81,7 +87,7 @@ public final class StripDifferencer {
 
     /// Processa o plano Y de um quadro. `plane` é o endereço base do plano 0 e `stride` os bytes por
     /// linha (`CVPixelBufferGetBytesPerRowOfPlane(_, 0)`). Retorna nil para quadros-semente
-    /// (1 com lag 1, 2 com lag 2).
+    /// (1 com lag 1, 2 com lag 2). As faixas da medição são vistas sobre os buffers internos.
     public func process(plane: UnsafePointer<UInt8>, stride: Int, tsNs: Nanos) -> FrameMeasurement? {
         let cur = takeBuffer()
         // extração da faixa: Endereço(x, y) = base + y*stride + x
@@ -102,16 +108,18 @@ public final class StripDifferencer {
             background[bi] = bg
         }
         let refOpt = lag == 1 ? prev1 : prev2
+        let refTs = lag == 1 ? prev1Ts : prev2Ts
         guard let ref = refOpt else {
             prev2 = prev1
+            prev2Ts = prev1Ts
             prev1 = cur
+            prev1Ts = tsNs
             return nil
         }
         let bg = background[bi]!
         var sumFull: Int = 0
         var sumCore: Int = 0
         var sumBg: Double = 0.0
-        var rowCore = [Double](repeating: 0, count: h)
         for row in 0..<h {
             let o = row * w
             var rowSumCore = 0
@@ -127,7 +135,6 @@ public final class StripDifferencer {
                 rowSumCore += d
             }
             sumCore += rowSumCore
-            rowCore[row] = Double(rowSumCore) / Double(coreWidth)
         }
         var lag2: Double? = nil
         if lag == 1, let p2 = prev2 {
@@ -141,18 +148,20 @@ public final class StripDifferencer {
         }
         let m = FrameMeasurement(
             tsNs: tsNs,
+            prevTsNs: refTs,
             deltaFull: Double(sumFull) / Double(n),
             deltaCore: Double(sumCore) / Double(coreWidth * h),
             deltaBackground: sumBg / Double(n),
-            rowCore: rowCore,
-            stripPrev: Array(UnsafeBufferPointer(start: ref, count: n)),
-            stripCur: Array(UnsafeBufferPointer(start: cur, count: n)),
-            stripBg: Array(UnsafeBufferPointer(start: bg, count: n)),
+            stripPrev: UnsafeBufferPointer(start: ref, count: n),
+            stripCur: UnsafeBufferPointer(start: cur, count: n),
+            stripBg: UnsafeBufferPointer(start: bg, count: n),
             deltaFullLag2: lag2,
             lag: lag
         )
         prev2 = prev1
+        prev2Ts = prev1Ts
         prev1 = cur
+        prev1Ts = tsNs
         return m
     }
 

@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
+import br.com.tportooliveira.fotocelula.core.RoiRect
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -20,10 +21,19 @@ import java.nio.ByteOrder
  * preview/gravação, não ImageReader). Recebe os quadros num SurfaceTexture próprio; a cada quadro:
  *   1. `updateTexImage()` (textura externa OES) e `getTimestamp()` (= SENSOR_TIMESTAMP);
  *   2. renderiza SOMENTE a região da faixa num FBO minúsculo (largura × altura da banda), com o
- *      shader convertendo para luminância (Y = 0.299R + 0.587G + 0.114B);
+ *      shader convertendo para luminância em faixa de vídeo (Y' = 16 + 219·(0.299R + 0.587G + 0.114B)),
+ *      a mesma escala do plano Y do ImageReader e do iOS;
  *   3. `glReadPixels` do FBO (poucos KB) e entrega ao [StripSink];
  *   4. a cada N quadros desenha o quadro inteiro na superfície de preview (60 Hz na tela).
- * Tudo numa HandlerThread própria com contexto EGL; nenhuma alocação por quadro.
+ *
+ * A sessão restrita recebe UMA única superfície (esta). Pelo código do framework
+ * (`CameraConstrainedHighSpeedCaptureSessionImpl.createHighSpeedRequestList`), com uma só saída
+ * todos os pedidos do lote a têm como alvo — a taxa cheia chega aqui; com duas saídas a de preview
+ * receberia só 1 quadro por lote (30 FPS). Mesmo assim a taxa REAL é medida aqui ([measuredFps]) e o
+ * controlador cai para a sessão normal quando ela não bate com a prometida.
+ *
+ * A ROI em pixels vem do serviço (única fonte da verdade), só quando ele a aceita (em IDLE); nunca é
+ * derivada por quadro. Tudo roda numa HandlerThread própria com contexto EGL; nenhuma alocação por quadro.
  */
 class GlStripReader(
     private val sensorWidth: Int,
@@ -42,8 +52,7 @@ class GlStripReader(
     private var pbufferSurface: EGLSurface = EGL14.EGL_NO_SURFACE
     private var previewEglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
     private var previewSurface: Surface? = null
-    private var previewW = 0
-    private var previewH = 0
+    private val eglQuery = IntArray(1)
 
     private var oesTexture = 0
     private var fbo = 0
@@ -55,13 +64,24 @@ class GlStripReader(
     private val texMatrix = FloatArray(16)
     private var quadVbo = 0
 
-    lateinit var surfaceTexture: SurfaceTexture
+    private var surfaceTexture: SurfaceTexture? = null
+    private var cameraSurface: Surface? = null
+    @Volatile private var released = false
+
+    @Volatile var enabled = true
+
+    /** Taxa real medida nos timestamps da SurfaceTexture (janela de 1 s). */
+    @Volatile var measuredFps = 0.0
         private set
-    lateinit var cameraSurface: Surface
+    @Volatile var fpsValid = false
+        private set
+    private var fpsWindowStart = 0L
+    private var fpsWindowCount = 0
+    @Volatile var framesReceived = 0L
         private set
 
-    @Volatile var roi = NormalizedRoi()
-    @Volatile var enabled = true
+    /** ROI em pixels do sensor aceita pelo serviço; aplicada no próximo quadro. */
+    @Volatile private var roiRect = RoiRect(0, 1, 0, 1)
     private var roiW = 0
     private var roiH = 0
     private var roiX0 = 0
@@ -70,20 +90,29 @@ class GlStripReader(
     private var lumaBuffer: ByteBuffer = ByteBuffer.allocateDirect(1)
     private var frameCounter = 0L
 
+    fun setRoiRect(r: RoiRect) { roiRect = r }
+
+    /** Zera a janela de medição de taxa (ao religar os quadros). */
+    fun resetFpsWindow() = handler.post { fpsWindowStart = 0L; fpsWindowCount = 0; fpsValid = false }
+
     /** Inicializa EGL/GL na thread própria e devolve o Surface para a câmera (bloqueante); null em falha. */
     fun start(): Surface? {
         val lock = Object()
         var ready = false
         var failure: Throwable? = null
+        var result: Surface? = null
         handler.post {
             try {
                 initEgl()
                 initGl()
-                surfaceTexture = SurfaceTexture(oesTexture).apply {
+                val st = SurfaceTexture(oesTexture).apply {
                     setDefaultBufferSize(sensorWidth, sensorHeight)
                     setOnFrameAvailableListener({ onFrameAvailable() }, handler)
                 }
-                cameraSurface = Surface(surfaceTexture)
+                surfaceTexture = st
+                val s = Surface(st)
+                cameraSurface = s
+                result = s
             } catch (t: Throwable) {
                 failure = t
             }
@@ -94,32 +123,50 @@ class GlStripReader(
             Log.e(TAG, "Falha ao iniciar GL: ${failure?.message}")
             return null
         }
-        return cameraSurface
+        return result
     }
 
-    fun setPreviewSurface(surface: Surface?, width: Int, height: Int) {
+    /** Superfície de preview (TextureView). O tamanho é consultado ao EGL a cada desenho. */
+    fun setPreviewSurface(surface: Surface?) {
         handler.post {
+            if (released) return@post
             if (previewEglSurface != EGL14.EGL_NO_SURFACE) {
                 EGL14.eglDestroySurface(eglDisplay, previewEglSurface)
                 previewEglSurface = EGL14.EGL_NO_SURFACE
             }
             previewSurface = surface
-            previewW = width; previewH = height
             if (surface != null) {
-                previewEglSurface = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0)
+                val s = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0)
+                if (s == EGL14.EGL_NO_SURFACE) Log.w(TAG, "eglCreateWindowSurface falhou: ${EGL14.eglGetError()}")
+                else previewEglSurface = s
             }
             EGL14.eglMakeCurrent(eglDisplay, pbufferSurface, pbufferSurface, eglContext)
         }
     }
 
     fun release() {
+        released = true
         handler.post {
-            try { surfaceTexture.release() } catch (_: Exception) {}
-            if (previewEglSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, previewEglSurface)
-            if (pbufferSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, pbufferSurface)
-            EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-            EGL14.eglDestroyContext(eglDisplay, eglContext)
-            EGL14.eglTerminate(eglDisplay)
+            try { surfaceTexture?.setOnFrameAvailableListener(null) } catch (_: Exception) {}
+            try { cameraSurface?.release() } catch (_: Exception) {}
+            try { surfaceTexture?.release() } catch (_: Exception) {}
+            cameraSurface = null; surfaceTexture = null
+            if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
+                if (eglContext != EGL14.EGL_NO_CONTEXT) {
+                    EGL14.eglMakeCurrent(eglDisplay, pbufferSurface, pbufferSurface, eglContext)
+                    val ids = intArrayOf(fbo); GLES30.glDeleteFramebuffers(1, ids, 0)
+                    val texs = intArrayOf(fboTexture, oesTexture); GLES30.glDeleteTextures(2, texs, 0)
+                    val vbos = intArrayOf(quadVbo); GLES30.glDeleteBuffers(1, vbos, 0)
+                    if (program != 0) GLES30.glDeleteProgram(program)
+                }
+                if (previewEglSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, previewEglSurface)
+                if (pbufferSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, pbufferSurface)
+                EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+                if (eglContext != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(eglDisplay, eglContext)
+                EGL14.eglTerminate(eglDisplay)
+            }
+            previewEglSurface = EGL14.EGL_NO_SURFACE; pbufferSurface = EGL14.EGL_NO_SURFACE
+            eglContext = EGL14.EGL_NO_CONTEXT; eglDisplay = EGL14.EGL_NO_DISPLAY
             thread.quitSafely()
         }
     }
@@ -178,10 +225,10 @@ class GlStripReader(
     }
 
     private fun ensureRoiBuffers() {
-        val px = roi.toPixels(sensorWidth, sensorHeight)
-        val w = px.width
-        val h = px.height
-        roiX0 = px.x; roiY0 = px.y0
+        val px = roiRect
+        val w = px.width.coerceIn(1, sensorWidth)
+        val h = px.height.coerceIn(1, sensorHeight)
+        roiX0 = px.x.coerceIn(0, sensorWidth - w); roiY0 = px.y0.coerceIn(0, sensorHeight - h)
         if (w != roiW || h != roiH) {
             roiW = w; roiH = h
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, fboTexture)
@@ -198,16 +245,36 @@ class GlStripReader(
 
     private fun onFrameAvailable() {
         // Chamado na nossa HandlerThread (listener registrado com o handler).
-        surfaceTexture.updateTexImage()
-        val ts = surfaceTexture.timestamp   // = SENSOR_TIMESTAMP do quadro
-        surfaceTexture.getTransformMatrix(texMatrix)
+        if (released) return
+        val st = surfaceTexture ?: return
+        try {
+            st.updateTexImage()
+        } catch (e: Exception) {
+            Log.w(TAG, "updateTexImage: ${e.message}")
+            return
+        }
+        val ts = st.timestamp   // = SENSOR_TIMESTAMP do quadro
+        st.getTransformMatrix(texMatrix)
         frameCounter++
+        framesReceived = frameCounter
+        trackFps(ts)
         if (enabled) {
             ensureRoiBuffers()
             renderStrip()
             readStrip(ts)
         }
-        if (previewSurface != null && frameCounter % previewEveryN == 0L) renderPreview()
+        if (previewEglSurface != EGL14.EGL_NO_SURFACE && frameCounter % previewEveryN == 0L) renderPreview()
+    }
+
+    private fun trackFps(ts: Long) {
+        if (fpsWindowStart == 0L) { fpsWindowStart = ts; fpsWindowCount = 0; return }
+        fpsWindowCount++   // o quadro inicial abre a janela e não conta
+        val span = ts - fpsWindowStart
+        if (span >= 1_000_000_000L) {
+            measuredFps = fpsWindowCount * 1e9 / span
+            fpsValid = true
+            fpsWindowStart = ts; fpsWindowCount = 0
+        }
     }
 
     private fun drawQuad(x0: Float, y0: Float, x1: Float, y1: Float, luma: Boolean) {
@@ -242,7 +309,6 @@ class GlStripReader(
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         // RGBA -> só o canal R (já é a luminância calculada no shader). glReadPixels devolve linhas
         // de baixo para cima: invertemos para manter a convenção "linha 0 = topo".
-        val n = roiW * roiH
         for (row in 0 until roiH) {
             val src = (roiH - 1 - row) * roiW
             val dst = row * roiW
@@ -255,14 +321,18 @@ class GlStripReader(
 
     private fun renderPreview() {
         if (!EGL14.eglMakeCurrent(eglDisplay, previewEglSurface, previewEglSurface, eglContext)) return
-        GLES30.glViewport(0, 0, previewW, previewH)
-        drawQuad(0f, 0f, 1f, 1f, luma = false)
-        EGL14.eglSwapBuffers(eglDisplay, previewEglSurface)
+        // tamanho real da superfície (o TextureView pode mudar de tamanho a qualquer momento)
+        EGL14.eglQuerySurface(eglDisplay, previewEglSurface, EGL14.EGL_WIDTH, eglQuery, 0)
+        val w = eglQuery[0]
+        EGL14.eglQuerySurface(eglDisplay, previewEglSurface, EGL14.EGL_HEIGHT, eglQuery, 0)
+        val h = eglQuery[0]
+        if (w > 0 && h > 0) {
+            GLES30.glViewport(0, 0, w, h)
+            drawQuad(0f, 0f, 1f, 1f, luma = false)
+            EGL14.eglSwapBuffers(eglDisplay, previewEglSurface)
+        }
         EGL14.eglMakeCurrent(eglDisplay, pbufferSurface, pbufferSurface, eglContext)
     }
-
-    /** Coordenadas do último recorte (para o serviço montar a ROI em coordenadas do sensor). */
-    fun currentRoiRect(): IntArray = intArrayOf(roiX0, roiW, roiY0, roiY0 + roiH)
 
     private fun buildProgram(vs: String, fs: String): Int {
         fun compile(type: Int, src: String): Int {
@@ -291,7 +361,7 @@ class GlStripReader(
         in vec2 aPos;
         uniform mat4 uTexMatrix;
         uniform vec4 uRegion;   // x0, y0, x1, y1 em coordenadas de textura (0..1)
-        out vec2 vTex;
+        out highp vec2 vTex;
         void main() {
             vec2 uv = (aPos + 1.0) * 0.5;
             vec2 region = mix(uRegion.xy, uRegion.zw, uv);
@@ -300,18 +370,20 @@ class GlStripReader(
         }
     """.trimIndent()
 
+    // Luma em faixa de vídeo (BT.601 limitado: 16..235), como o plano Y do YUV_420_888 — assim a
+    // sessão de alta velocidade e a normal (e o iOS) medem contraste na mesma escala.
     private val FRAGMENT = """
         #version 300 es
         #extension GL_OES_EGL_image_external_essl3 : require
-        precision mediump float;
-        in vec2 vTex;
+        precision highp float;
+        in highp vec2 vTex;
         uniform samplerExternalOES uTex;
         uniform int uLuma;
         out vec4 fragColor;
         void main() {
             vec4 c = texture(uTex, vTex);
             if (uLuma == 1) {
-                float y = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+                float y = dot(c.rgb, vec3(0.299, 0.587, 0.114)) * (219.0 / 255.0) + (16.0 / 255.0);
                 fragColor = vec4(y, y, y, 1.0);
             } else {
                 fragColor = c;

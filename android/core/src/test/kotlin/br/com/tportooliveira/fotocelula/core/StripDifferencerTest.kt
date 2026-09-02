@@ -32,7 +32,7 @@ class StripDifferencerTest {
         assertEquals(10.0, m!!.deltaFull, 1e-12)
         assertEquals(10.0, m.deltaCore, 1e-12)
         assertEquals(10.0, m.deltaBackground, 1e-12)
-        assertEquals(roi.height, m.rowCore.size)
+        assertEquals(0L, m.prevTsNs, "timestamp do quadro de referência")
     }
 
     @Test

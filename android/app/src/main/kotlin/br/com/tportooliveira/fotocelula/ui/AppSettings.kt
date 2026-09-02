@@ -10,6 +10,7 @@ data class AppSettings(
     val lineXFraction: Float = 0.5f,
     val bandTopFraction: Float = 0.25f,
     val bandBottomFraction: Float = 0.75f,
+    /** Exposição DESEJADA; a aplicada é lida da câmera após a trava e é ela que entra no estimador. */
     val exposureNs: Long = 2_083_333L,
     val startLockoutMs: Int = 1500,
     val frameResumeS: Float = 8.0f,
@@ -19,9 +20,34 @@ data class AppSettings(
     val flickerAuto: Boolean = true,
     val feedbackSound: Boolean = true,
     val feedbackFlash: Boolean = true,
+    /** Curva de tom a desfazer antes da fração de exposição (1,0 = desligado; 2,2 para vídeo padrão). */
+    val gamma: Float = 1.0f,
 ) {
-    fun makeConfig(fps: Int, appliedExposureNs: Long): PhotocellConfig = PhotocellConfig(
-        frameRateHz = fps,
+    /**
+     * Valores coerentes: faixa 5..40 px com núcleo ≤ faixa; linha e banda dentro da tela; janelas
+     * na ordem exigida por [PhotocellConfig.validate] (retomada ≥ bloqueio + 0,5 s; chegada ≥ retomada + 0,5 s).
+     */
+    fun fix(): AppSettings {
+        val strip = stripWidthPx.coerceIn(5, 40)
+        val core = coreWidth.coerceIn(1, minOf(5, strip))
+        val lineX = lineXFraction.coerceIn(0.02f, 0.98f)
+        var top = bandTopFraction.coerceIn(0f, 0.97f)
+        var bottom = bandBottomFraction.coerceIn(0.03f, 1f)
+        if (bottom < top + 0.03f) { bottom = (top + 0.03f).coerceAtMost(1f); top = bottom - 0.03f }
+        val expo = exposureNs.coerceIn(100_000L, 33_333_333L)
+        val lockout = startLockoutMs.coerceIn(500, 5000)
+        val finishLock = finishLockoutMs.coerceIn(500, 5000)
+        val resume = frameResumeS.coerceIn(lockout / 1000f + 0.5f, 60f)
+        val arm = finishArmS.coerceIn(resume + 0.5f, 60f)
+        val confirm = confirmRequired.coerceIn(1, 4)
+        val g = if (gamma > 0f) gamma.coerceIn(0.5f, 3f) else 1f
+        return copy(stripWidthPx = strip, coreWidth = core, lineXFraction = lineX, bandTopFraction = top, bandBottomFraction = bottom,
+            exposureNs = expo, startLockoutMs = lockout, frameResumeS = resume, finishArmS = arm, finishLockoutMs = finishLock,
+            confirmRequired = confirm, gamma = g)
+    }
+
+    fun makeConfig(fps: Int, appliedExposureNs: Long, skewNs: Long? = null): PhotocellConfig = PhotocellConfig(
+        frameRateHz = fps.coerceAtLeast(1),
         startLockoutNs = startLockoutMs * 1_000_000L,
         frameResumeNs = (frameResumeS * 1e9).toLong(),
         finishArmNs = (finishArmS * 1e9).toLong(),
@@ -30,7 +56,9 @@ data class AppSettings(
         flickerAuto = flickerAuto,
         coreWidth = coreWidth,
         exposureNs = if (appliedExposureNs > 0) appliedExposureNs else exposureNs,
-        calibrationSamples = fps,          // 1 s de amostras em qualquer taxa
+        calibrationSamples = fps.coerceAtLeast(1),          // 1 s de amostras em qualquer taxa
+        skewNs = skewNs?.takeIf { it > 0 },
+        gamma = gamma.toDouble(),
     )
 
     companion object {
@@ -60,7 +88,8 @@ data class AppSettings(
                 flickerAuto = p.getBoolean("flickerAuto", d.flickerAuto),
                 feedbackSound = p.getBoolean("feedbackSound", d.feedbackSound),
                 feedbackFlash = p.getBoolean("feedbackFlash", d.feedbackFlash),
-            )
+                gamma = p.getFloat("gamma", d.gamma),
+            ).fix()
         }
     }
 
@@ -72,6 +101,7 @@ data class AppSettings(
             .putFloat("frameResumeS", frameResumeS).putFloat("finishArmS", finishArmS).putInt("finishLockoutMs", finishLockoutMs)
             .putInt("confirmRequired", confirmRequired).putBoolean("flickerAuto", flickerAuto)
             .putBoolean("feedbackSound", feedbackSound).putBoolean("feedbackFlash", feedbackFlash)
+            .putFloat("gamma", gamma)
             .apply()
     }
 }

@@ -21,10 +21,10 @@ final class PhotocellViewModel: ObservableObject {
     @Published var infoMessage: String? = nil
     @Published var settings: AppSettings = AppSettings.load() {
         didSet {
-            // a retomada dos quadros precisa acontecer antes de armar a chegada
-            if settings.frameResumeS > settings.finishArmS - 0.5 {
-                settings.frameResumeS = max(1.0, settings.finishArmS - 0.5)
-            }
+            // janelas coerentes (retomada ≥ bloqueio + 0,5 s; chegada ≥ retomada + 0,5 s): sem isso a FSM
+            // nunca religaria os quadros e a prova travaria
+            let fixed = settings.clamped()
+            if fixed != settings { settings = fixed; return }
             settings.save()
             applySettings()
         }
@@ -40,6 +40,10 @@ final class PhotocellViewModel: ObservableObject {
     private var displayLink: DisplayLinkDriver!
     private let feedback = TriggerFeedback()
     private var cancellables: Set<AnyCancellable> = []
+    /// Última ROI mapeada pelo preview (para reenviar quando a largura da faixa muda nos ajustes).
+    private var lastROI: (centerX: Double, top: Double, bottom: Double)? = nil
+    /// Estado da FSM na última publicação (para detectar o fim da calibração).
+    private var lastState: PhotocellState = .idle
 
     init() {
         session = PhotocellSession(camera: camera, config: settings.makeConfig())
@@ -62,11 +66,26 @@ final class PhotocellViewModel: ObservableObject {
         }
         camera.onRuntimeError = { [weak self] err in
             DispatchQueue.main.async {
-                self?.session.captureInterrupted()
-                self?.errorMessage = "Erro da câmera: \(err.localizedDescription)"
+                guard let self = self else { return }
+                self.session.captureInterrupted()
+                let ns = err as NSError
+                if ns.domain == AVFoundationErrorDomain && ns.code == AVError.Code.mediaServicesWereReset.rawValue {
+                    // os serviços de mídia foram reiniciados: a sessão precisa ser reconstruída
+                    self.errorMessage = "Serviços de câmera reiniciados pelo sistema. Reconfigurando..."
+                    self.configured = false
+                    self.startCamera()
+                } else {
+                    self.errorMessage = "Erro da câmera: \(err.localizedDescription)"
+                }
             }
         }
-        camera.$activeInfo.receive(on: DispatchQueue.main).assign(to: &$captureInfo)
+        camera.$activeInfo.receive(on: DispatchQueue.main).sink { [weak self] info in
+            guard let self = self else { return }
+            let exposureChanged = info.exposureNs != self.captureInfo.exposureNs
+            self.captureInfo = info
+            // a exposição REAL aplicada alimenta o estimador (E): reenvia a configuração quando muda
+            if exposureChanged && info.locked { self.applySettings() }
+        }.store(in: &cancellables)
         camera.$systemPressure.receive(on: DispatchQueue.main).assign(to: &$systemPressure)
         NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)
             .receive(on: DispatchQueue.main)
@@ -95,6 +114,7 @@ final class PhotocellViewModel: ObservableObject {
                 guard let self = self else { return }
                 self.permission = ok ? .granted : .denied
                 guard ok else { return }
+                UIApplication.shared.isIdleTimerDisabled = true
                 self.camera.configure(delegate: self.session) { err in
                     DispatchQueue.main.async {
                         if let err = err {
@@ -109,7 +129,6 @@ final class PhotocellViewModel: ObservableObject {
                 }
             }
         }
-        UIApplication.shared.isIdleTimerDisabled = true
     }
 
     func stopCamera() {
@@ -120,31 +139,39 @@ final class PhotocellViewModel: ObservableObject {
 
     private func applySettings() {
         camera.suspendStrategy = settings.suspendStrategy
-        camera.desiredExposureNs = settings.exposureNs
-        session.updateConfig(settings.makeConfig())
+        if camera.desiredExposureNs != settings.exposureNs { camera.desiredExposureNs = settings.exposureNs }
+        let applied = captureInfo.locked ? captureInfo.exposureNs : 0
+        session.updateConfig(settings.makeConfig(appliedExposureNs: applied))
+        // a largura da faixa faz parte da ROI: reenviar a última ROI mapeada
+        if let r = lastROI {
+            session.updateROI(NormalizedROI(centerX: r.centerX, top: r.top, bottom: r.bottom, widthPx: settings.stripWidthPx))
+        }
     }
 
     /// Chamado pelo preview quando a ROI é mapeada para coordenadas do buffer.
     func roiMapped(centerX: Double, top: Double, bottom: Double) {
+        lastROI = (centerX, top, bottom)
         session.updateROI(NormalizedROI(centerX: centerX, top: top, bottom: bottom, widthPx: settings.stripWidthPx))
     }
 
     // MARK: - Ações
     var canCalibrate: Bool { snapshot.state == .idle || snapshot.state == .finished || snapshot.state == .error }
-    var canArm: Bool { (snapshot.state == .idle || snapshot.state == .finished) && captureInfo.locked }
+    var canArm: Bool { (snapshot.state == .idle || snapshot.state == .finished) && captureInfo.locked && frameRateOk }
     var thermalBlocked: Bool { systemPressure == .critical || systemPressure == .shutdown || thermalState == .critical }
-    /// A taxa medida durante a calibração precisa ter se mantido em 240 FPS (a exposição travada
-    /// não pode ter alongado o quadro). 0 = ainda não medida.
-    var frameRateOk: Bool { diagnostics.measuredFps == 0 || diagnostics.measuredFps >= captureInfo.fps - 2.5 }
+    /// A taxa medida (ΔPTS) desde a última calibração precisa ter se mantido em 240 FPS: a exposição
+    /// travada não pode ter alongado o quadro. Exige uma medição válida (janela de 1 s fechada).
+    var frameRateOk: Bool { diagnostics.fpsMeasurementValid && diagnostics.measuredFps >= captureInfo.fps - 2.5 }
     /// Motivo (em pt-BR) pelo qual não é seguro armar agora; nil quando está tudo certo.
     var armBlockReason: String? {
         if lowPowerMode { return "Modo Pouca Energia ligado: desligue em Ajustes > Bateria antes de armar." }
         if thermalBlocked { return "Aparelho quente demais para armar com segurança. Aguarde esfriar." }
+        if !captureInfo.locked { return "Calibre primeiro (exposição, foco e branco precisam estar travados)." }
+        if !diagnostics.fpsMeasurementValid { return "Taxa de quadros ainda não medida: calibre primeiro." }
         if !frameRateOk { return String(format: "A câmera está entregando %.1f FPS, não %.0f. Reduza a exposição (Ajustes) e calibre de novo.", diagnostics.measuredFps, captureInfo.fps) }
         return nil
     }
 
-    /// Calibrar = convergir e travar AE/AF/WB no centro da ROI + calibração de ruído.
+    /// Calibrar = convergir e travar AE/AF/WB no centro da ROI + calibração de ruído (que também mede a taxa).
     func calibrate() {
         guard canCalibrate else { return }
         isCalibratingCamera = true
@@ -157,6 +184,8 @@ final class PhotocellViewModel: ObservableObject {
                 if let err = err {
                     self.errorMessage = err.localizedDescription
                 }
+                // exposição real -> E do estimador, ANTES de calibrar o ruído
+                self.applySettings()
                 self.session.calibrate()
             }
         }
@@ -191,6 +220,13 @@ final class PhotocellViewModel: ObservableObject {
         if s.state == .error, let reason = s.errorReason {
             errorMessage = Self.describe(reason)
         }
+        // fim da calibração de ruído: a taxa medida durante ela decide se é seguro armar
+        if lastState == .calibrating && (s.state == .idle || s.state == .armed) {
+            if diagnostics.fpsMeasurementValid && !frameRateOk {
+                errorMessage = String(format: "A câmera manteve %.1f FPS com esta exposição, não %.0f. Reduza a exposição em Ajustes e calibre de novo.", diagnostics.measuredFps, captureInfo.fps)
+            }
+        }
+        lastState = s.state
     }
 
     private func handleFeedback(_ kind: Effect.FeedbackKind) {

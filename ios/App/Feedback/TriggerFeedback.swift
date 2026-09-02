@@ -7,18 +7,37 @@ import PhotocellCore
 final class TriggerFeedback {
     private var single: AVAudioPlayer?
     private var double: AVAudioPlayer?
+    private var interruptionToken: NSObjectProtocol?
 
     init() {
-        try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
-        try? AVAudioSession.sharedInstance().setActive(true)
+        activateAudioSession()
         single = Self.player(for: Self.makeBeepWav(frequency: 1500, beeps: 1))
         double = Self.player(for: Self.makeBeepWav(frequency: 1500, beeps: 2))
+        // uma ligação/Siri desativa a sessão de áudio: reativar quando a interrupção terminar
+        interruptionToken = NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification,
+                                                                   object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw), type == .ended else { return }
+            self?.activateAudioSession()
+        }
+    }
+
+    deinit {
+        if let t = interruptionToken { NotificationCenter.default.removeObserver(t) }
+    }
+
+    private func activateAudioSession() {
+        try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
+        try? AVAudioSession.sharedInstance().setActive(true)
     }
 
     func play(_ kind: Effect.FeedbackKind) {
         let p = (kind == .start) ? single : double
         p?.currentTime = 0
-        p?.play()
+        if p?.play() != true {
+            activateAudioSession()
+            p?.play()
+        }
     }
 
     private static func player(for data: Data) -> AVAudioPlayer? {

@@ -66,6 +66,8 @@ public struct TriggerInfo: Equatable, Sendable {
     public var uncertaintyNs: Nanos
     public var interiorCount: Int
     public var degraded: Bool
+    /// Colunas cuja dispersão de tempos excede o ruído (textura/inclinação do bordo).
+    public var texturedColumns: Int = 0
 }
 
 public struct RunResult: Equatable, Sendable {
@@ -80,12 +82,10 @@ public struct RunResult: Equatable, Sendable {
 }
 
 private struct Candidate {
-    let meas: FrameMeasurement
+    var inp: CrossingInput      // cópias das faixas do candidato (os buffers do differencer rotacionam)
     let degraded: Bool
     var seen = 0
     var confirmed = 0
-    var nextStrip: [UInt8]? = nil   // faixa do quadro c+lag (bordo ainda dentro da faixa)
-    var plateau: [UInt8]? = nil     // faixa do quadro c+2·lag (faixa coberta: referência O)
 }
 
 /// Dono único da máquina de estados. Deve ser acionado sempre da MESMA fila (a do processamento
@@ -119,8 +119,11 @@ public final class PhotocellEngine {
     private var wakeups: [Nanos] = []
     private var lastFrameTs: Nanos? = nil
     private var lastDropTs: Nanos? = nil
+    private var dropPending = false   // a plataforma avisou de quadros perdidos sem timestamp
 
-    public init(cfg: PhotocellConfig, roi: RoiRect, planeHeight: Int) {
+    /// Lança `PhotocellConfig.ValidationError` se as janelas forem incoerentes (a prova travaria).
+    public init(cfg: PhotocellConfig, roi: RoiRect, planeHeight: Int) throws {
+        try cfg.validate()
         self.cfg = cfg
         self.roi = roi
         self.planeHeight = planeHeight
@@ -180,12 +183,33 @@ public final class PhotocellEngine {
         errorReason = nil
         drops = 0
         lastDropTs = nil
+        dropPending = false
         lastFrameTs = nil
         go(.idle)
     }
 
     public func captureInterrupted() {
         if state.isActive || state == .calibrating { fail("captureInterrupted") }
+    }
+
+    /// A plataforma soube de quadros perdidos (TN2445 "Discontinuity", ImageReader estourado) sem
+    /// conhecer os timestamps: o candidato em confirmação perde a base de tempo e é descartado, o
+    /// próximo quadro conta como drop (passada "degradada" se estiver perto do gatilho) e a
+    /// referência do differencer é ressemeada.
+    public func framesDropped() {
+        drops += 1
+        dropPending = true
+        lastFrameTs = nil
+        if state == .confirmingStart {
+            candidate = nil
+            go(.armed)
+        } else if state == .confirmingFinish {
+            candidate = nil
+            go(.awaitingFinish)
+        }
+        if state == .calibrating || state == .armed || state == .awaitingFinish {
+            emit(.resetDifferencer)
+        }
     }
 
     private func fail(_ reason: String) {
@@ -250,10 +274,14 @@ public final class PhotocellEngine {
     }
 
     private func trackGaps(_ tsNs: Nanos) {
+        if dropPending {
+            dropPending = false
+            lastDropTs = tsNs
+        }
         if let last = lastFrameTs {
             let gap = tsNs - last
             if Double(gap) > cfg.dropGapFactor * Double(cfg.framePeriodNs) {
-                let missed = Int((Double(gap) / Double(cfg.framePeriodNs)).rounded()) - 1
+                let missed = Int((Double(gap) / Double(cfg.framePeriodNs) + 0.5).rounded(.down)) - 1
                 if missed > 0 {
                     drops += missed
                     lastDropTs = tsNs
@@ -266,6 +294,9 @@ public final class PhotocellEngine {
     private func calibrationFrame(_ m: FrameMeasurement) {
         if let l2 = m.deltaFullLag2 { _ = calibratorLag2.addSample(l2) }
         switch calibrator.addSample(m.deltaFull) {
+        case .restarted:
+            // as duas janelas precisam cobrir as mesmas amostras para a decisão de flicker valer
+            calibratorLag2.reset()
         case .done:
             var stats = calibrator.stats
             var th = calibrator.threshold ?? 0
@@ -293,7 +324,10 @@ public final class PhotocellEngine {
         if m.deltaCore > th {
             var degraded = false
             if let ld = lastDropTs { degraded = abs(m.tsNs - ld) < cfg.degradedDropWindowNs }
-            candidate = Candidate(meas: m, degraded: degraded)
+            // cópias: os buffers do differencer rotacionam no próximo quadro
+            let inp = CrossingInput(tsNs: m.tsNs, prevTsNs: m.prevTsNs, stripPrev: Array(m.stripPrev),
+                                    stripCur: Array(m.stripCur), stripBg: Array(m.stripBg), lag: m.lag)
+            candidate = Candidate(inp: inp, degraded: degraded)
             go(confirming)
         } else if m.deltaFull <= th {
             emit(.updateBackground)
@@ -303,15 +337,21 @@ public final class PhotocellEngine {
     private func confirmingFrame(_ m: FrameMeasurement, back: PhotocellState, isStart: Bool) {
         guard var c = candidate, let th = threshold else { return }
         c.seen += 1
-        if c.seen == lag { c.nextStrip = m.stripCur }
-        if c.seen == 2 * lag { c.plateau = m.stripCur }
+        if c.seen == lag {
+            c.inp.nextStrip = Array(m.stripCur)
+            c.inp.nextTsNs = m.tsNs
+        }
+        if c.seen == 2 * lag {
+            c.inp.plateauStrip = Array(m.stripCur)
+            c.inp.plateauTsNs = m.tsNs
+        }
         if m.deltaBackground > th * cfg.backgroundThresholdMultiplier { c.confirmed += 1 }
         if c.confirmed >= cfg.confirmRequired && c.seen >= 2 * lag {
-            let est = CrossingEstimator.estimate(cfg: cfg, roi: roi, planeHeight: planeHeight, cand: c.meas,
-                                                 nextStrip: c.nextStrip, plateauStrip: c.plateau, noiseSigmaPx: noiseSigmaPx)
-            let info = TriggerInfo(rawTsNs: c.meas.tsNs, refinedTsNs: est.refinedTsNs, quality: est.quality,
+            let est = CrossingEstimator.estimate(cfg: cfg, roi: roi, planeHeight: planeHeight, input: c.inp,
+                                                 noiseSigmaPx: noiseSigmaPx)
+            let info = TriggerInfo(rawTsNs: c.inp.tsNs, refinedTsNs: est.refinedTsNs, quality: est.quality,
                                    uncertaintyNs: est.uncertaintyNs, interiorCount: est.interiorCount,
-                                   degraded: c.degraded)
+                                   degraded: c.degraded, texturedColumns: est.texturedColumns)
             candidate = nil
             if isStart { triggerStart(info) } else { triggerFinish(info) }
         } else if c.seen >= cfg.confirmWindow {

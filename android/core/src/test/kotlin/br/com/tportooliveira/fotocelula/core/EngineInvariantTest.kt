@@ -2,6 +2,7 @@ package br.com.tportooliveira.fotocelula.core
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -12,11 +13,11 @@ import org.junit.jupiter.api.Test
  */
 class EngineInvariantTest {
     private val cfg = PhotocellConfig(calibrationSamples = 24, calibrationMinSamplesForOutlier = 6,
-        frameResumeNs = 800_000_000L, finishArmNs = 1_000_000_000L, startLockoutNs = 300_000_000L, finishLockoutNs = 200_000_000L)
+        frameResumeNs = 800_000_000L, finishArmNs = 1_300_000_000L, startLockoutNs = 300_000_000L, finishLockoutNs = 200_000_000L)
     private val roi = RoiRect(8, 9, 300, 396)
 
     private fun meas(ts: Long, full: Double, core: Double, bg: Double) =
-        FrameMeasurement(ts, full, core, bg, DoubleArray(0), IntArray(0), IntArray(0), DoubleArray(0), null, 1)
+        FrameMeasurement(ts, ts - cfg.framePeriodNs, full, core, bg, IntArray(0), IntArray(0), DoubleArray(0), null, 1)
 
     @Test
     fun randomSequencesKeepInvariants() {
@@ -118,20 +119,36 @@ class EngineInvariantTest {
     }
 
     @Test
-    fun resumeAfterArmStillReenablesFrames() {
-        val c2 = cfg.copy(frameResumeNs = 1_500_000_000L, finishArmNs = 1_000_000_000L)
-        val eng = PhotocellEngine(c2, roi, 720)
+    fun invalidWindowsAreRejectedUpFront() {
+        // retomada antes do fim do bloqueio: o engine nunca religaria os quadros e a prova travaria
+        assertThrows(IllegalArgumentException::class.java) {
+            PhotocellEngine(cfg.copy(frameResumeNs = cfg.startLockoutNs + 100_000_000L), roi, 720)
+        }
+        // chegada armada antes da retomada dos quadros: idem
+        assertThrows(IllegalArgumentException::class.java) {
+            PhotocellEngine(cfg.copy(frameResumeNs = 1_500_000_000L, finishArmNs = 1_000_000_000L), roi, 720)
+        }
+    }
+
+    @Test
+    fun framesDroppedDiscardsCandidateAndMarksDegraded() {
+        val eng = PhotocellEngine(cfg, roi, 720)
         eng.userArm(); eng.effects.clear()
-        var ts = 5_000_000_000L; val p = c2.framePeriodNs
+        var ts = 5_000_000_000L; val p = cfg.framePeriodNs
         eng.frame(null, ts)
-        repeat(c2.calibrationSamples) { ts += p; eng.frame(meas(ts, 1.2, 1.1, 0.9)) }
-        ts += p; eng.frame(meas(ts, 20.0, 30.0, 25.0)); val start = ts
+        repeat(cfg.calibrationSamples) { ts += p; eng.frame(meas(ts, 1.2, 1.1, 0.9)) }
+        assertEquals(PhotocellState.ARMED, eng.state)
+        ts += p; eng.frame(meas(ts, 20.0, 30.0, 25.0))
+        assertEquals(PhotocellState.CONFIRMING_START, eng.state)
+        eng.effects.clear()
+        eng.framesDropped()                       // TN2445 "Discontinuity" no meio da confirmação
+        assertEquals(PhotocellState.ARMED, eng.state, "candidato sem base de tempo tem de ser descartado")
+        assertTrue(eng.effects.contains(Effect.ResetDifferencer))
+        assertEquals(1, eng.drops)
+        // o próximo gatilho, logo depois do drop, sai marcado como degradado
+        ts += p; eng.frame(meas(ts, 20.0, 30.0, 25.0))
         repeat(2) { ts += p; eng.frame(meas(ts, 18.0, 22.0, 40.0)) }
-        eng.effects.clear()
-        eng.wakeup(start + c2.startLockoutNs); eng.wakeup(start + c2.finishArmNs)
-        assertEquals(PhotocellState.AWAITING_FINISH, eng.state)
-        eng.effects.clear()
-        eng.wakeup(start + c2.frameResumeNs)
-        assertTrue(eng.effects.contains(Effect.SetFrameDelivery(true)), "retomada precisa reativar os quadros mesmo depois de armar a chegada")
+        assertEquals(PhotocellState.DEBOUNCE_START, eng.state)
+        assertTrue(eng.start!!.degraded, "gatilho a < 50 ms de um drop precisa ser degradado")
     }
 }

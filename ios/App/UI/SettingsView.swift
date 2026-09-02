@@ -18,9 +18,9 @@ struct SettingsView: View {
                 }
                 Section("Exposição (travada na calibração)") {
                     Picker("Duração", selection: $vm.settings.exposureNs) {
-                        ForEach(AppSettings.exposureChoices, id: \.ns) { Text($0.label).tag($0.ns) }
+                        ForEach(AppSettings.exposureChoices) { Text($0.label).tag($0.ns) }
                     }
-                    Text("Mais curta = menos blur e menos ISO disponível. A 240 FPS o máximo físico é 1/240 s. O refinamento sub-quadro funciona em qualquer valor.")
+                    Text("Mais curta = menos blur e menos ISO disponível. A 240 FPS o máximo físico é 1/240 s e alguns iPhones não aceitam menos que isso no formato de 240 FPS; o estimador usa sempre a exposição REAL aplicada (mostrada nos diagnósticos) e funciona em qualquer valor.")
                         .font(.caption).foregroundColor(.secondary)
                 }
                 Section("Máquina de estados") {
