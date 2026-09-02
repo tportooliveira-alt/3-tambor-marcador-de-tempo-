@@ -11,6 +11,14 @@ struct RunRecord: Codable, Identifiable, Equatable {
     var elapsedRefinedNs: Int64
     var barrelsKnocked: Int = 0
     var noTime: Bool = false
+    /// Vínculo opcional com a prova (nulo em passada avulsa). Opcionais de propósito: o histórico
+    /// gravado antes do modo evento continua decodificando (o Codable sintetizado usa
+    /// `decodeIfPresent` só para opcionais).
+    var eventId: UUID?
+    var entryId: UUID?
+    /// Copiados da inscrição ao salvar: a classificação sobrevive a apagar a inscrição.
+    var category: String?
+    var entryOrder: Int?
     var degraded: Bool
     var drops: Int
     var startQuality: Int
@@ -27,7 +35,7 @@ struct RunRecord: Codable, Identifiable, Equatable {
     var fps: Double
     var notes: String = ""
 
-    static let penaltyPerBarrelNs: Int64 = 5_000_000_000
+    static let penaltyPerBarrelNs: Int64 = EventScoring.penaltyPerBarrelNs
 
     var penaltyNs: Int64 { Int64(barrelsKnocked) * Self.penaltyPerBarrelNs }
     var finalRawNs: Int64 { elapsedRawNs + penaltyNs }
@@ -35,6 +43,13 @@ struct RunRecord: Codable, Identifiable, Equatable {
 
     var finalText: String {
         noTime ? "SAT" : TimeFormatter.formatElapsed(finalRefinedNs)
+    }
+
+    /// Converte para o mínimo que a regra de classificação precisa (núcleo compartilhado).
+    var scoringRun: EventScoring.Run {
+        EventScoring.Run(entryOrder: entryOrder ?? 0, elapsedRefinedNs: elapsedRefinedNs,
+                         elapsedRawNs: elapsedRawNs, barrelsKnocked: barrelsKnocked,
+                         noTime: noTime, category: category ?? "")
     }
 
     init(result: RunResult, capture: ActiveCaptureInfo, lag: Int) {

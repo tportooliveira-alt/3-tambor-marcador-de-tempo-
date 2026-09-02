@@ -41,6 +41,7 @@ class SharedVectorTest {
                     "calibration" -> runCalibration(v)
                     "fsm" -> runFsm(v)
                     "format" -> runFormat(v)
+                    "ranking" -> runRanking(v)
                     else -> error("tipo desconhecido")
                 }
             }
@@ -273,6 +274,35 @@ class SharedVectorTest {
     }
 
     // ------------------------------------------------------------------ formatação
+    /** Classificação da prova: a regra do evento tem de bater com a referência Python, item a item. */
+    private fun runRanking(v: JSONObject) {
+        assertEquals(v.getLong("penaltyPerBarrelNs"), EventScoring.PENALTY_PER_BARREL_NS, "penalidade por tambor")
+        val runsJson = v.getJSONArray("runs")
+        val runs = (0 until runsJson.length()).map { i ->
+            val r = runsJson.getJSONObject(i)
+            EventScoring.Run(
+                entryOrder = r.getInt("entryOrder"),
+                elapsedRefinedNs = r.getLong("elapsedRefinedNs"),
+                elapsedRawNs = r.getLong("elapsedRawNs"),
+                barrelsKnocked = r.getInt("barrelsKnocked"),
+                noTime = r.getBoolean("noTime"),
+                category = r.getString("category"),
+            )
+        }
+        val got = EventScoring.rankByCategory(runs)
+        val expected = v.getJSONArray("expected")
+        assertEquals(expected.length(), got.size, "quantidade de colocações")
+        for (i in 0 until expected.length()) {
+            val e = expected.getJSONObject(i)
+            val g = got[i]
+            assertEquals(e.getInt("entryOrder"), g.entryOrder, "ordem de largada na posição $i")
+            if (e.isNull("place")) assertNull(g.place, "SAT sem colocação (#${g.entryOrder})")
+            else assertEquals(e.getInt("place"), g.place, "colocação de #${g.entryOrder}")
+            assertEquals(e.getLong("finalNs"), g.finalNs, "tempo final de #${g.entryOrder}")
+            assertEquals(e.getLong("penaltyNs"), g.penaltyNs, "penalidade de #${g.entryOrder}")
+        }
+    }
+
     private fun runFormat(v: JSONObject) {
         val cases = v.getJSONArray("cases")
         for (i in 0 until cases.length()) {

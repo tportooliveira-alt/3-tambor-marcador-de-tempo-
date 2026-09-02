@@ -28,6 +28,7 @@ from photocell_reference import (  # noqa: E402
     IDLE, ARMED, FINISHED,
 )
 
+from event_scoring import PENALTY_PER_BARREL_NS, Run, rank_by_category  # noqa: E402
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared", "test-vectors")
 SENTINEL = 0xEE
 
@@ -556,6 +557,34 @@ def main() -> None:
                               "Janelas mínimas: lockout 1,5 s, retomada 2,0 s, chegada armada 2,5 s",
                               cfg_short, build_full_run(cfg_short, with_drop=False,
                                                         interrupted=False, reject_first=False)))
+
+    # --- classificação da prova -------------------------------------------------
+    # Passadas de uma prova com duas categorias, cobrindo: penalidade decidindo a colocação, SAT no
+    # fim, empate no tempo final resolvido pelo bruto e empate total resolvido pela ordem de largada.
+    runs = [
+        Run(entry_order=1, elapsed_refined_ns=17_412_300_000, elapsed_raw_ns=17_413_000_000, category="A", rider="Ana"),
+        Run(entry_order=2, elapsed_refined_ns=16_980_100_000, elapsed_raw_ns=16_981_000_000, barrels_knocked=1, category="A", rider="Bruno"),
+        Run(entry_order=3, elapsed_refined_ns=17_412_300_000, elapsed_raw_ns=17_412_900_000, category="A", rider="Carla"),
+        Run(entry_order=4, elapsed_refined_ns=15_004_000_000, elapsed_raw_ns=15_004_500_000, no_time=True, category="A", rider="Davi"),
+        Run(entry_order=5, elapsed_refined_ns=17_412_300_000, elapsed_raw_ns=17_412_900_000, category="A", rider="Elis"),
+        Run(entry_order=6, elapsed_refined_ns=18_100_000_000, elapsed_raw_ns=18_101_000_000, category="B", rider="Fabio"),
+        Run(entry_order=7, elapsed_refined_ns=18_099_000_000, elapsed_raw_ns=18_100_000_000, barrels_knocked=2, category="B", rider="Gil"),
+    ]
+    placings = rank_by_category(runs)
+    vectors.append({"kind": "ranking", "name": "event_ranking",
+                    "description": "tempo final = refinado + 5 s por tambor; SAT por último; empate pelo bruto e pela ordem",
+                    "penaltyPerBarrelNs": PENALTY_PER_BARREL_NS,
+                    "runs": [{"entryOrder": r.entry_order, "elapsedRefinedNs": r.elapsed_refined_ns,
+                              "elapsedRawNs": r.elapsed_raw_ns, "barrelsKnocked": r.barrels_knocked,
+                              "noTime": r.no_time, "category": r.category, "rider": r.rider} for r in runs],
+                    "expected": [{"entryOrder": p.entry_order, "place": p.place, "finalNs": p.final_ns,
+                                  "penaltyNs": p.penalty_ns} for p in placings]})
+    print("Classificação da prova:")
+    for p in placings:
+        who = next(r for r in runs if r.entry_order == p.entry_order)
+        print(f"  cat {who.category} #{p.entry_order} {who.rider:<6} "
+              f"{'SAT' if p.place is None else str(p.place) + 'º'} {p.final_ns/1e9:.4f} s "
+              f"(+{p.penalty_ns//1_000_000_000} s)")
 
     # --- formatação ------------------------------------------------------------
     cases = [0, 999_999, 1_000_000, 12_345_000_000, 12_344_500_000, 12_344_499_999,

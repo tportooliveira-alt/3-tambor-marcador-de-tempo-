@@ -22,6 +22,8 @@ data class AppSettings(
     val feedbackFlash: Boolean = true,
     /** Curva de tom a desfazer antes da fração de exposição (1,0 = desligado; 2,2 para vídeo padrão). */
     val gamma: Float = 1.0f,
+    /** Pasta escolhida pelo usuário para a cópia automática do histórico (SAF; vazio = desligado). */
+    val backupTreeUri: String = "",
 ) {
     /**
      * Valores coerentes: faixa 5..40 px com núcleo ≤ faixa; linha e banda dentro da tela; janelas
@@ -89,6 +91,7 @@ data class AppSettings(
                 feedbackSound = p.getBoolean("feedbackSound", d.feedbackSound),
                 feedbackFlash = p.getBoolean("feedbackFlash", d.feedbackFlash),
                 gamma = p.getFloat("gamma", d.gamma),
+                backupTreeUri = p.getString("backupTreeUri", d.backupTreeUri) ?: d.backupTreeUri,
             ).fix()
         }
     }
@@ -101,7 +104,7 @@ data class AppSettings(
             .putFloat("frameResumeS", frameResumeS).putFloat("finishArmS", finishArmS).putInt("finishLockoutMs", finishLockoutMs)
             .putInt("confirmRequired", confirmRequired).putBoolean("flickerAuto", flickerAuto)
             .putBoolean("feedbackSound", feedbackSound).putBoolean("feedbackFlash", feedbackFlash)
-            .putFloat("gamma", gamma)
+            .putFloat("gamma", gamma).putString("backupTreeUri", backupTreeUri)
             .apply()
     }
 }

@@ -7,6 +7,8 @@ struct ContentView: View {
     @StateObject private var vm = PhotocellViewModel()
     @State private var showHistory = false
     @State private var showSettings = false
+    @State private var showEvent = false
+    @State private var showAssign = false
     @Environment(\.scenePhase) private var scenePhase
 
     private var roiLocked: Bool { vm.snapshot.state != .idle && vm.snapshot.state != .finished && vm.snapshot.state != .error }
@@ -33,6 +35,8 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showHistory) { HistoryView(store: vm.history) }
         .sheet(isPresented: $showSettings) { SettingsView(vm: vm) }
+        .sheet(isPresented: $showEvent) { EventView(vm: vm, events: vm.events, history: vm.history) }
+        .sheet(isPresented: $showAssign) { AssignEntryView(vm: vm, events: vm.events) }
     }
 
     private var cameraContent: some View {
@@ -47,6 +51,8 @@ struct ContentView: View {
                                bandBottom: $vm.settings.bandBottomFraction, stripWidthPx: vm.settings.stripWidthPx,
                                mmPerPx: nil, locked: roiLocked)
                 VStack {
+                    // faixa "Próximo" sobre o preview: é o que o operador olha entre uma passada e outra
+                    HStack { NextEntryBanner(vm: vm, events: vm.events, history: vm.history); Spacer() }
                     Spacer()
                     if let msg = vm.errorMessage {
                         banner(msg, color: .red)
@@ -69,7 +75,7 @@ struct ContentView: View {
             Divider().background(Color.white.opacity(0.3))
             StopwatchView(model: vm.timerText)
             if let rec = Binding($vm.pendingResult) {
-                ScrollView { ResultView(vm: vm, record: rec) }
+                ScrollView { ResultView(vm: vm, record: rec, onAssign: { showAssign = true }) }
             } else {
                 Spacer()
             }
@@ -84,6 +90,8 @@ struct ContentView: View {
                     .buttonStyle(.borderedProminent).tint(.red)
             }
             HStack {
+                Button { showEvent = true } label: { Label("Prova", systemImage: "flag.checkered") }
+                Spacer()
                 Button { showHistory = true } label: { Label("Histórico", systemImage: "list.bullet") }
                 Spacer()
                 Button { showSettings = true } label: { Label("Ajustes", systemImage: "gearshape") }

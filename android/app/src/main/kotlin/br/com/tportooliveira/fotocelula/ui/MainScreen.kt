@@ -53,21 +53,28 @@ import kotlin.math.abs
 fun MainScreen(vm: PhotocellViewModel, displayRotation: Int) {
     var showHistory by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showEvent by remember { mutableStateOf(false) }
+    var showAssign by remember { mutableStateOf(false) }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         Row(Modifier.fillMaxSize()) {
             Box(Modifier.weight(1f).fillMaxHeight()) {
                 PreviewWithRoi(vm, displayRotation)
+                // faixa "Próximo" sobre o preview: é o que o operador olha entre uma passada e outra
+                NextEntryBanner(vm, Modifier.align(Alignment.TopCenter).padding(8.dp))
                 Column(Modifier.align(Alignment.BottomCenter).padding(8.dp)) {
                     vm.errorMessage?.let { Banner(it, Color(0xCCB00020)) }
                         ?: vm.infoMessage?.let { Banner(it, Color(0xCC1E5AA8)) }
                 }
             }
-            SidePanel(vm, onHistory = { showHistory = true }, onSettings = { showSettings = true })
+            SidePanel(vm, onHistory = { showHistory = true }, onSettings = { showSettings = true },
+                onEvent = { showEvent = true }, onAssign = { showAssign = true })
         }
         if (vm.flashVisible) Box(Modifier.fillMaxSize().background(Color.White))
         if (showHistory) HistoryDialog(vm) { showHistory = false }
         if (showSettings) SettingsDialog(vm) { showSettings = false }
+        if (showEvent) EventDialog(vm) { showEvent = false }
+        if (showAssign) AssignEntryDialog(vm) { showAssign = false }
     }
 }
 
@@ -159,7 +166,8 @@ private fun RoiOverlay(vm: PhotocellViewModel, geometry: PreviewGeometry) {
 }
 
 @Composable
-private fun SidePanel(vm: PhotocellViewModel, onHistory: () -> Unit, onSettings: () -> Unit) {
+private fun SidePanel(vm: PhotocellViewModel, onHistory: () -> Unit, onSettings: () -> Unit,
+                      onEvent: () -> Unit, onAssign: () -> Unit) {
     val snap = vm.snapshot
     Column(
         Modifier.width(360.dp).fillMaxHeight().background(Color(0xE6111111)).padding(12.dp),
@@ -169,7 +177,7 @@ private fun SidePanel(vm: PhotocellViewModel, onHistory: () -> Unit, onSettings:
         Stopwatch(vm)
         val pending = vm.pendingResult
         if (pending != null) {
-            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { ResultCard(vm, pending) }
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { ResultCard(vm, pending, onAssign) }
         } else {
             Spacer(Modifier.weight(1f))
         }
@@ -182,6 +190,7 @@ private fun SidePanel(vm: PhotocellViewModel, onHistory: () -> Unit, onSettings:
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB00020)), modifier = Modifier.weight(1f)) { Text("Reset") }
         }
         Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = onEvent, enabled = !vm.roiLocked) { Text("Prova") }
             OutlinedButton(onClick = onHistory, enabled = !vm.roiLocked) { Text("Histórico") }
             OutlinedButton(onClick = onSettings, enabled = !vm.roiLocked) { Text("Ajustes") }
         }
@@ -262,8 +271,12 @@ private fun Stopwatch(vm: PhotocellViewModel) {
 }
 
 @Composable
-private fun ResultCard(vm: PhotocellViewModel, r: br.com.tportooliveira.fotocelula.results.RunRecord) {
+private fun ResultCard(vm: PhotocellViewModel, r: br.com.tportooliveira.fotocelula.results.RunRecord, onAssign: () -> Unit) {
     Column(Modifier.fillMaxWidth().background(Color(0xFF1F1F1F), RoundedCornerShape(12.dp)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        // quem correu vem antes do número: é o que o operador confere antes de salvar
+        val who = if (r.entryId != null) "#${r.entryOrder} ${r.rider}" + (if (r.horse.isNotBlank()) " / ${r.horse}" else "") +
+            (if (r.category.isNotBlank()) " — ${r.category}" else "") else "Sem competidor"
+        Text(who, color = if (r.entryId != null) Color(0xFF9FD3B0) else Color.Gray, fontSize = 16.sp, fontWeight = FontWeight.Bold)
         Text("Tempo final", color = Color.White, fontWeight = FontWeight.Bold)
         Text(r.finalText, color = if (r.noTime) Color.Red else Color(0xFF39D353), fontSize = 44.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
         val small = MaterialTheme.typography.bodySmall.copy(color = Color.LightGray, fontSize = 11.sp)
@@ -275,6 +288,11 @@ private fun ResultCard(vm: PhotocellViewModel, r: br.com.tportooliveira.fotocelu
             OutlinedButton(onClick = { vm.pendingResult = r.copy(barrelsKnocked = (r.barrelsKnocked + 1).coerceAtMost(3)); vm.savePendingResult() }) { Text("+") }
             OutlinedButton(onClick = { vm.pendingResult = r.copy(noTime = !r.noTime); vm.savePendingResult() }) { Text(if (r.noTime) "SAT ✓" else "SAT") }
         }
-        Button(onClick = { vm.savePendingResult(); vm.reset() }) { Text("Salvar e Reset") }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Button(onClick = { vm.savePendingResult(); vm.reset() }, modifier = Modifier.weight(1f)) {
+                Text(if (r.entryId != null) "Salvar para #${r.entryOrder}" else "Salvar e Reset")
+            }
+            if (vm.events.currentEventId != null) OutlinedButton(onClick = onAssign) { Text("Trocar") }
+        }
     }
 }

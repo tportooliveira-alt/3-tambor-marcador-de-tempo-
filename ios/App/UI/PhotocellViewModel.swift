@@ -33,9 +33,12 @@ final class PhotocellViewModel: ObservableObject {
     @Published var flashVisible = false
     @Published var pendingResult: RunRecord? = nil
     @Published var isCalibratingCamera = false
+    /// Último erro do backup em pasta (pasta apagada, permissão perdida); nil quando está tudo certo.
+    @Published var backupError: String? = nil
 
     let camera = CameraManager()
     let history = RunHistoryStore()
+    let events = EventStore()
     let timerText = TimerTextModel()
     private(set) var session: PhotocellSession!
     private var displayLink: DisplayLinkDriver!
@@ -246,13 +249,81 @@ final class PhotocellViewModel: ObservableObject {
 
     private func handleFinished(_ r: RunResult) {
         guard pendingResult == nil else { return }
-        let rec = RunRecord(result: r, capture: captureInfo, lag: snapshot.lag)
+        var rec = RunRecord(result: r, capture: captureInfo, lag: snapshot.lag)
+        // já sai preenchida com o próximo da lista: na arena o operador confirma, não digita
+        if let e = nextEntry {
+            rec.eventId = e.eventId
+            rec.entryId = e.id
+            rec.category = e.category
+            rec.entryOrder = e.order
+            rec.rider = e.rider
+            rec.horse = e.horse
+        }
         pendingResult = rec
         history.add(rec)
+        writeBackup()
     }
 
     func savePendingResult() {
         if let r = pendingResult { history.update(r) }
+        writeBackup()
+    }
+
+    // MARK: - Prova (modo evento)
+    /// Próxima inscrição a largar (menor ordem ainda sem passada). Nil fora do modo evento.
+    var nextEntry: Entry? {
+        guard let ev = events.currentEventId else { return nil }
+        return events.nextEntry(of: ev, records: history.records)
+    }
+
+    /// Atribui a passada em aberto a uma inscrição (ou a nenhuma) e regrava o histórico.
+    func assignPending(to entry: Entry?) {
+        guard var r = pendingResult else { return }
+        if let e = entry {
+            r.eventId = e.eventId
+            r.entryId = e.id
+            r.category = e.category
+            r.entryOrder = e.order
+            r.rider = e.rider
+            r.horse = e.horse
+        } else {
+            r.eventId = nil
+            r.entryId = nil
+            r.category = nil
+            r.entryOrder = nil
+        }
+        pendingResult = r
+        history.update(r)
+        writeBackup()
+    }
+
+    /// Guarda a pasta escolhida no seletor e faz a primeira cópia.
+    func setBackupFolder(_ folder: URL) {
+        guard let mark = HistoryBackup.bookmark(for: folder) else {
+            errorMessage = "Não foi possível guardar a permissão dessa pasta."
+            return
+        }
+        settings.backupBookmark = mark
+        backupError = nil
+        writeBackup()
+        infoMessage = "Backup do histórico ligado nesta pasta."
+    }
+
+    func clearBackupFolder() {
+        settings.backupBookmark = nil
+        backupError = nil
+    }
+
+    /// Reescreve as cópias na pasta escolhida (histórico e, havendo prova aberta, a classificação).
+    func writeBackup() {
+        guard let mark = settings.backupBookmark else { return }
+        let csv = CSVExporter.makeCSV(history.records)
+        var err = HistoryBackup.write(csv, name: "fotocelula-historico.csv", bookmark: mark)
+        if err == nil, let ev = events.currentEvent {
+            err = HistoryBackup.write(events.rankingCsv(of: ev.id, records: history.records),
+                                      name: HistoryBackup.eventFileName(ev.name), bookmark: mark)
+        }
+        backupError = err
     }
 
     private static func describe(_ reason: String) -> String {

@@ -22,6 +22,10 @@ import br.com.tportooliveira.fotocelula.engine.Diagnostics
 import br.com.tportooliveira.fotocelula.engine.PhotocellService
 import br.com.tportooliveira.fotocelula.engine.Snapshot
 import br.com.tportooliveira.fotocelula.feedback.TriggerFeedback
+import br.com.tportooliveira.fotocelula.results.Entry
+import br.com.tportooliveira.fotocelula.results.Event
+import br.com.tportooliveira.fotocelula.results.EventStore
+import br.com.tportooliveira.fotocelula.results.HistoryBackup
 import br.com.tportooliveira.fotocelula.results.RunHistoryStore
 import br.com.tportooliveira.fotocelula.results.RunRecord
 import kotlin.math.abs
@@ -43,8 +47,12 @@ class PhotocellViewModel(private val context: Context) {
     var thermalStatus by mutableStateOf(0); private set
     var isCalibratingCamera by mutableStateOf(false); private set
     var historyVersion by mutableStateOf(0); private set
+    /** Muda a cada edição de prova/inscrição (o EventStore não é observável pelo Compose). */
+    var eventVersion by mutableStateOf(0); private set
 
     val history = RunHistoryStore(context)
+    val events = EventStore(context)
+    private val backup = HistoryBackup(context)
     private val feedback = TriggerFeedback()
     private var controller: CameraController? = null
     private var service: PhotocellService? = null
@@ -232,6 +240,78 @@ class PhotocellViewModel(private val context: Context) {
         pendingResult = null
     }
 
+    // ---------------------------------------------------------------- prova (modo evento)
+    val currentEvent: Event? get() = events.event(events.currentEventId)
+
+    /** Próxima inscrição a largar (menor ordem ainda sem passada). Null fora do modo evento. */
+    val nextEntry: Entry? get() = events.currentEventId?.let { events.nextEntry(it, history.records) }
+
+    fun createEvent(name: String, place: String) {
+        events.addEvent(Event(name = name.ifBlank { "Prova" }, place = place))
+        eventVersion++
+    }
+
+    fun selectEvent(id: String?) { events.select(id); eventVersion++ }
+
+    fun removeEvent(id: String) { events.removeEvent(id); eventVersion++ }
+
+    fun addEntry(order: Int, rider: String, horse: String, category: String) {
+        val ev = events.currentEventId ?: return
+        events.addEntry(Entry(eventId = ev, order = order, rider = rider, horse = horse, category = category))
+        eventVersion++
+    }
+
+    fun removeEntry(id: String) { events.removeEntry(id); eventVersion++ }
+
+    /** Importa a lista de largada (CSV escolhido pelo SAF). Devolve quantas inscrições entraram. */
+    fun importEntries(csv: String): Int {
+        val ev = events.currentEventId ?: return 0
+        val n = events.importEntries(ev, csv)
+        eventVersion++
+        if (n == 0) errorMessage = "Nenhuma inscrição reconhecida no arquivo (esperado: ordem;competidor;cavalo;categoria)."
+        else infoMessage = "$n inscrições importadas."
+        return n
+    }
+
+    /** Atribui a passada em aberto a uma inscrição (ou a nenhuma) e regrava o histórico. */
+    fun assignPending(entry: Entry?) {
+        val r = pendingResult ?: return
+        val updated = if (entry == null)
+            r.copy(eventId = null, entryId = null, category = "", entryOrder = 0)
+        else
+            r.copy(eventId = entry.eventId, entryId = entry.id, category = entry.category,
+                entryOrder = entry.order, rider = entry.rider, horse = entry.horse)
+        pendingResult = updated
+        history.update(updated)
+        historyVersion++
+        writeBackup()
+    }
+
+    /** Reescreve as cópias na pasta escolhida (histórico e, havendo prova aberta, a classificação). */
+    fun writeBackup() {
+        val uri = settings.backupTreeUri
+        if (uri.isEmpty()) return
+        backup.write(uri, "fotocelula-historico.csv", history.toCsv())
+        val ev = currentEvent
+        if (ev != null) backup.write(uri, backup.eventFileName(ev.name), events.rankingCsv(ev.id, history.records))
+    }
+
+    /** Guarda a permissão da pasta escolhida em ACTION_OPEN_DOCUMENT_TREE e faz a primeira cópia. */
+    fun setBackupFolder(uri: android.net.Uri?) {
+        if (uri == null) return
+        if (backup.takePermission(uri)) {
+            updateSettings(settings.copy(backupTreeUri = uri.toString()))
+            writeBackup()
+            infoMessage = "Backup do histórico ligado nesta pasta."
+        } else {
+            errorMessage = backupError ?: "Não foi possível usar essa pasta."
+        }
+    }
+
+    fun clearBackupFolder() { updateSettings(settings.copy(backupTreeUri = "")) }
+
+    val backupError: String? get() = backup.lastError
+
     private fun handleSnapshot(s: Snapshot) {
         snapshot = s
         if (s.state == PhotocellState.ERROR) {
@@ -243,10 +323,16 @@ class PhotocellViewModel(private val context: Context) {
         }
         if (s.state == PhotocellState.FINISHED && s.result != null && pendingResult == null) {
             val cap = capability
-            val rec = RunRecord.from(s.result, s.lag, lockState.exposureNs, lockState.iso, cap?.mode?.label ?: "")
+            var rec = RunRecord.from(s.result, s.lag, lockState.exposureNs, lockState.iso, cap?.mode?.label ?: "")
+            // já sai preenchida com o próximo da lista: na arena o operador confirma, não digita
+            nextEntry?.let { e ->
+                rec = rec.copy(eventId = e.eventId, entryId = e.id, category = e.category,
+                    entryOrder = e.order, rider = e.rider, horse = e.horse)
+            }
             pendingResult = rec
             history.add(rec)
             historyVersion++
+            writeBackup()
         }
     }
 
@@ -259,10 +345,10 @@ class PhotocellViewModel(private val context: Context) {
     }
 
     fun savePendingResult() {
-        pendingResult?.let { history.update(it); historyVersion++ }
+        pendingResult?.let { history.update(it); historyVersion++; writeBackup() }
     }
 
-    fun deleteRecord(id: String) { history.remove(id); historyVersion++ }
+    fun deleteRecord(id: String) { history.remove(id); historyVersion++; writeBackup() }
 
     private fun registerThermal() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && thermalListener == null) {

@@ -80,6 +80,50 @@ repetir uma passada a cada poucos segundos em casa) e **Modo prova** (as janelas
 
 A 5–8 m da linha, cada pixel cobre ~4–6 mm em 720p; a faixa padrão tem 15 px (ajustável 5–40).
 
+## Modo prova (evento), backup e onde os dados ficam
+
+O app é um **cronômetro completo de prova, inteiramente offline**: nenhuma linha de código faz rede
+(o manifesto Android pede só `CAMERA`, sem `INTERNET`), não há conta, não há servidor e nada do vídeo
+sai do aparelho. Isso é decisão de projeto: na arena falta sinal, e a cronometragem não pode depender
+de rede nem disputar CPU e calor com ela.
+
+**Como usar numa prova**
+
+1. Botão **Prova** → crie o evento (nome, local).
+2. **Inscrições**: digite (`nº`, competidor, cavalo, categoria) ou **Importe um CSV**
+   `ordem;competidor;cavalo;categoria` (com ou sem cabeçalho; aceita `,` como separador). Android pelo
+   seletor de arquivos do sistema, iPhone pelo app Arquivos.
+3. Na tela principal aparece a faixa **PRÓXIMO: #12 João / Estrela — Categoria A**. Ao terminar a
+   passada, o cartão já vem com esse competidor: **Salvar para #12** (ou **Trocar**, se a ordem mudou
+   na hora, ou "Sem competidor").
+4. **Classificação** por categoria, pela regra da prova: tempo refinado + 5 s por tambor; SAT sempre
+   por último; empate pelo tempo bruto e, persistindo, pela ordem de largada. A regra mora no núcleo
+   compartilhado (`EventScoring`) e é conferida pelo vetor `shared/test-vectors/event_ranking.json` —
+   iPhone e Android classificam **igual**.
+5. **Compartilhar classificação** manda o CSV do evento pelo WhatsApp/e-mail/Drive.
+
+**Banco de dados**: JSON local no armazenamento privado do app — `historico.json` (passadas) e
+`provas.json` (eventos e inscrições), gravados de forma atômica fora da thread principal. Não é
+SQLite/Room de propósito: são dezenas a centenas de registros por evento, e um arquivo legível é mais
+fácil de recuperar e exportar do que um banco.
+
+**Backup (o que substitui a nuvem)**: em **Prova → Backup**, escolha **uma vez** uma pasta (Drive,
+Arquivos, iCloud, cartão). A cada passada salva o app reescreve ali `fotocelula-historico.csv` e, com
+uma prova aberta, a classificação. Se o celular sumir ou o app for desinstalado, a planilha sobrevive.
+A permissão da pasta é persistida (SAF no Android, *security-scoped bookmark* no iOS); o app continua
+sem acesso a qualquer outra coisa do aparelho.
+
+**Hospedagem**: hoje, nenhuma — e isso é suficiente para competir. Quando mais de uma pessoa precisar
+dos mesmos dados (secretaria, locutor, página de resultados), o caminho registrado é **Supabase**
+(Postgres gerenciado, região São Paulo; a camada gratuita cobre um clube). O modelo já é relacional
+— evento → inscrição → passada —, então migrar vira "mesmo esquema, outro armazenamento", com
+sincronização **offline-first** (grava local, envia quando houver sinal) e **nunca** no caminho da
+medição.
+
+**Design**: identidade de arena — verde escuro, vermelho do feixe, areia dos tambores; as mesmas cores
+do ícone (`Tools/gen_app_icon.py`, que gera os ícones das duas plataformas). O cartão de resultado põe
+competidor e tempo em primeiro plano, legíveis a alguns metros; incerteza e qualidade ficam em segundo.
+
 ## Compilar
 
 ### iOS (Mac com Xcode 15+)
@@ -145,7 +189,7 @@ Tools/gen_test_vectors.py      gera shared/test-vectors/*.json
 shared/test-vectors/           vetores compartilhados (Swift e Kotlin precisam bater)
 ios/Packages/PhotocellCore     núcleo Swift + XCTest
 ios/App                        app SwiftUI (Capture, Session, Timing, Results, Feedback, UI)
-android/core                   núcleo Kotlin + JUnit (27 testes passando)
+android/core                   núcleo Kotlin + JUnit (46 testes passando, 30 vetores)
 android/app                    app Compose (camera, engine, results, feedback, ui)
 docs/estudo-tecnico.md         estudo avançado (física, APIs, decisões, fontes)
 ```

@@ -280,6 +280,35 @@ final class SharedVectorTests: XCTestCase {
         }
     }
 
+    // MARK: - classificação da prova
+    func testRankingVectors() throws {
+        for v in try vectors(kind: "ranking") {
+            XCTAssertEqual(int64(v["penaltyPerBarrelNs"]), EventScoring.penaltyPerBarrelNs, "penalidade por tambor")
+            let runs = (v["runs"] as! [[String: Any]]).map { r in
+                EventScoring.Run(entryOrder: int(r["entryOrder"]),
+                                 elapsedRefinedNs: int64(r["elapsedRefinedNs"]),
+                                 elapsedRawNs: int64(r["elapsedRawNs"]),
+                                 barrelsKnocked: int(r["barrelsKnocked"]),
+                                 noTime: bool(r["noTime"]),
+                                 category: r["category"] as! String)
+            }
+            let got = EventScoring.rankByCategory(runs)
+            let expected = v["expected"] as! [[String: Any]]
+            XCTAssertEqual(got.count, expected.count, "quantidade de colocações")
+            for (i, e) in expected.enumerated() where i < got.count {
+                let g = got[i]
+                XCTAssertEqual(g.entryOrder, int(e["entryOrder"]), "ordem de largada na posição \(i)")
+                if isNull(e["place"]) {
+                    XCTAssertNil(g.place, "SAT sem colocação (#\(g.entryOrder))")
+                } else {
+                    XCTAssertEqual(g.place, int(e["place"]), "colocação de #\(g.entryOrder)")
+                }
+                XCTAssertEqual(g.finalNs, int64(e["finalNs"]), "tempo final de #\(g.entryOrder)")
+                XCTAssertEqual(g.penaltyNs, int64(e["penaltyNs"]), "penalidade de #\(g.entryOrder)")
+            }
+        }
+    }
+
     // MARK: - formatação
     func testFormatVectors() throws {
         for v in try vectors(kind: "format") {

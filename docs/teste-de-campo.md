@@ -105,6 +105,29 @@ o refinamento não está entrando (q0) — anote a qualidade que apareceu.
 
 ---
 
+## 4b. Se quiser já testar o modo prova (5 minutos)
+
+Ainda em **Modo teste**, toque em **Prova**:
+
+1. Crie um evento ("Teste de casa").
+2. Em **Inscrições**, adicione 3 linhas (nº 1, 2, 3 com nomes quaisquer e uma categoria "A").
+   Se quiser testar a importação, salve um arquivo `.csv` com:
+   ```
+   1;Ana;Estrela;A
+   2;Bruno;Trovão;A
+   3;Carla;Luna;B
+   ```
+   e use **Importar CSV**.
+3. Volte à tela principal: a faixa **PRÓXIMO: #1 Ana / Estrela — A** aparece em cima do preview.
+4. Faça 3 "passadas" com o braço. Em cada resultado, toque em **Salvar para #n** — a faixa avança
+   sozinha para o próximo. Numa delas, marque 1 tambor; noutra, marque SAT.
+5. Em **Prova → Classificação**, confira: quem derrubou tambor levou +5 s e caiu de posição; o SAT
+   ficou por último sem colocação.
+6. Em **Prova → Backup**, escolha uma pasta do Drive/Arquivos e confira que o arquivo
+   `fotocelula-historico.csv` aparece lá e é reescrito a cada passada salva.
+7. Feche o app pelo gerenciador de tarefas e abra de novo: evento, inscrições e histórico têm de
+   continuar lá.
+
 ## 5. O que anotar para amanhã
 
 Copie estas linhas e preencha:
@@ -122,6 +145,7 @@ Alguma passada DEGRADADA?                 quantas
 Mensagem de bloqueio ao armar (se houve):
 Tempo até sair de "Térmico OK":           min
 LED 1,000 Hz → tempo medido:              s  (qualidade   )
+Modo prova: importação de CSV / faixa "Próximo" / classificação / backup:  ok? o que falhou?
 ```
 
 Com isso eu ajusto o app para a pista: largura da faixa, exposição padrão, altura da banda e os limites

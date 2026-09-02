@@ -5,9 +5,25 @@ import SwiftUI
 struct ResultView: View {
     @ObservedObject var vm: PhotocellViewModel
     @Binding var record: RunRecord
+    /// Abre a lista de inscrições para trocar o competidor desta passada.
+    var onAssign: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // quem correu vem antes do número: é o que o operador confere antes de salvar
+            if vm.events.currentEventId != nil {
+                HStack {
+                    Text(record.entryId != nil
+                         ? "#\(record.entryOrder ?? 0) \(record.rider)"
+                            + (record.horse.isEmpty ? "" : " / \(record.horse)")
+                            + ((record.category ?? "").isEmpty ? "" : " — \(record.category ?? "")")
+                         : "Sem competidor")
+                        .font(.headline)
+                        .foregroundColor(record.entryId != nil ? .green : .secondary)
+                    Spacer()
+                    Button("Trocar", action: onAssign).buttonStyle(.bordered)
+                }
+            }
             HStack {
                 Text("Tempo final").font(.headline)
                 Spacer()
@@ -36,7 +52,10 @@ struct ResultView: View {
             HStack {
                 Button { vm.savePendingResult() } label: { Label("Salvar no histórico", systemImage: "tray.and.arrow.down") }
                     .buttonStyle(.borderedProminent)
-                Button { vm.savePendingResult(); vm.reset() } label: { Label("Salvar e Reset", systemImage: "arrow.counterclockwise") }
+                Button { vm.savePendingResult(); vm.reset() } label: {
+                    Label(record.entryId != nil ? "Salvar para #\(record.entryOrder ?? 0)" : "Salvar e Reset",
+                          systemImage: "arrow.counterclockwise")
+                }
                     .buttonStyle(.bordered)
             }
         }

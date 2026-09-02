@@ -31,6 +31,9 @@ struct AppSettings: Codable, Equatable {
     var gamma: Double = 1.0
     var feedbackSound: Bool = true
     var feedbackFlash: Bool = true
+    /// Marcador (security-scoped bookmark) da pasta de backup do histórico. Opcional de propósito:
+    /// ajustes gravados antes do modo evento continuam decodificando.
+    var backupBookmark: Data? = nil
 
     static let exposureChoices: [ExposureChoice] = [
         ExposureChoice(label: "1/240 s (sem janela cega, mais blur)", ns: 4_166_666),

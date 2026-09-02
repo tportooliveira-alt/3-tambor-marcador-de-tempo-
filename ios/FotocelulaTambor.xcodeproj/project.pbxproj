@@ -16,6 +16,8 @@
 		66A66E7AD53662FF0A07EBF7 /* TriggerFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = 334F933F877B5D8E49FBD36A /* TriggerFeedback.swift */; };
 		C6F559AB9974406367D6E916 /* FotocelulaTamborApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AFEDED71A4FE0A79BD4C587 /* FotocelulaTamborApp.swift */; };
 		4F1E8B5D83BA586B5D849167 /* CSVExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FCEBB39EF810D0D465E61B4 /* CSVExporter.swift */; };
+		05306FD2BD5F947E19929A5A /* EventStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D81C9ABEE873A3A1303621 /* EventStore.swift */; };
+		0805D1A153821E9D0D0C5B16 /* HistoryBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B4EB3E43A574B8C0940EA08 /* HistoryBackup.swift */; };
 		F21D3EB264FA5541D6529CCE /* RunHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B661FC45EC2DA0A1614BFC5 /* RunHistoryStore.swift */; };
 		813DA2D158172034193A516D /* RunRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45B43D42280E012B4A5FA923 /* RunRecord.swift */; };
 		618297BFF1AB344087595267 /* PhotocellSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45FF0703C0B4C5BB6FF9AC48 /* PhotocellSession.swift */; };
@@ -25,6 +27,7 @@
 		275F2CB0E16D97F7E4BE31DB /* CameraPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43281D17193337984C735169 /* CameraPreviewView.swift */; };
 		A1A661D8F4AFC12449587DD8 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 731E0E5DAD44F3C33D64166F /* ContentView.swift */; };
 		0EC174000A23609076BFC624 /* DiagnosticsBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 102F286FF94E80268A593256 /* DiagnosticsBar.swift */; };
+		0292FDEA364D3EEE21DCCFEB /* EventView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7666802758AC3A882DBD9FE0 /* EventView.swift */; };
 		BC467D1892C98E3D6123CB48 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2A50E587BA1D2F24CC8183A /* HistoryView.swift */; };
 		1505625642640C0111112C3D /* PermissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88A9ADD371CFF5E4AA66ED40 /* PermissionView.swift */; };
 		65A261BD80A85602BA82D85B /* PhotocellViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02509032F5223CA8A0FF8925 /* PhotocellViewModel.swift */; };
@@ -50,6 +53,8 @@
 		9AFEDED71A4FE0A79BD4C587 /* FotocelulaTamborApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FotocelulaTamborApp.swift; sourceTree = "<group>"; };
 		D0F98F4159EFDA9A0679BAF3 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		5FCEBB39EF810D0D465E61B4 /* CSVExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CSVExporter.swift; sourceTree = "<group>"; };
+		52D81C9ABEE873A3A1303621 /* EventStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventStore.swift; sourceTree = "<group>"; };
+		0B4EB3E43A574B8C0940EA08 /* HistoryBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryBackup.swift; sourceTree = "<group>"; };
 		1B661FC45EC2DA0A1614BFC5 /* RunHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunHistoryStore.swift; sourceTree = "<group>"; };
 		45B43D42280E012B4A5FA923 /* RunRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunRecord.swift; sourceTree = "<group>"; };
 		45FF0703C0B4C5BB6FF9AC48 /* PhotocellSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotocellSession.swift; sourceTree = "<group>"; };
@@ -59,6 +64,7 @@
 		43281D17193337984C735169 /* CameraPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPreviewView.swift; sourceTree = "<group>"; };
 		731E0E5DAD44F3C33D64166F /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		102F286FF94E80268A593256 /* DiagnosticsBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsBar.swift; sourceTree = "<group>"; };
+		7666802758AC3A882DBD9FE0 /* EventView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventView.swift; sourceTree = "<group>"; };
 		A2A50E587BA1D2F24CC8183A /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
 		88A9ADD371CFF5E4AA66ED40 /* PermissionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionView.swift; sourceTree = "<group>"; };
 		02509032F5223CA8A0FF8925 /* PhotocellViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotocellViewModel.swift; sourceTree = "<group>"; };
@@ -132,6 +138,8 @@
 			isa = PBXGroup;
 			children = (
 				5FCEBB39EF810D0D465E61B4 /* CSVExporter.swift */,
+				52D81C9ABEE873A3A1303621 /* EventStore.swift */,
+				0B4EB3E43A574B8C0940EA08 /* HistoryBackup.swift */,
 				1B661FC45EC2DA0A1614BFC5 /* RunHistoryStore.swift */,
 				45B43D42280E012B4A5FA923 /* RunRecord.swift */,
 			);
@@ -162,6 +170,7 @@
 				43281D17193337984C735169 /* CameraPreviewView.swift */,
 				731E0E5DAD44F3C33D64166F /* ContentView.swift */,
 				102F286FF94E80268A593256 /* DiagnosticsBar.swift */,
+				7666802758AC3A882DBD9FE0 /* EventView.swift */,
 				A2A50E587BA1D2F24CC8183A /* HistoryView.swift */,
 				88A9ADD371CFF5E4AA66ED40 /* PermissionView.swift */,
 				02509032F5223CA8A0FF8925 /* PhotocellViewModel.swift */,
@@ -275,6 +284,8 @@
 				66A66E7AD53662FF0A07EBF7 /* TriggerFeedback.swift in Sources */,
 				C6F559AB9974406367D6E916 /* FotocelulaTamborApp.swift in Sources */,
 				4F1E8B5D83BA586B5D849167 /* CSVExporter.swift in Sources */,
+				05306FD2BD5F947E19929A5A /* EventStore.swift in Sources */,
+				0805D1A153821E9D0D0C5B16 /* HistoryBackup.swift in Sources */,
 				F21D3EB264FA5541D6529CCE /* RunHistoryStore.swift in Sources */,
 				813DA2D158172034193A516D /* RunRecord.swift in Sources */,
 				618297BFF1AB344087595267 /* PhotocellSession.swift in Sources */,
@@ -284,6 +295,7 @@
 				275F2CB0E16D97F7E4BE31DB /* CameraPreviewView.swift in Sources */,
 				A1A661D8F4AFC12449587DD8 /* ContentView.swift in Sources */,
 				0EC174000A23609076BFC624 /* DiagnosticsBar.swift in Sources */,
+				0292FDEA364D3EEE21DCCFEB /* EventView.swift in Sources */,
 				BC467D1892C98E3D6123CB48 /* HistoryView.swift in Sources */,
 				1505625642640C0111112C3D /* PermissionView.swift in Sources */,
 				65A261BD80A85602BA82D85B /* PhotocellViewModel.swift in Sources */,

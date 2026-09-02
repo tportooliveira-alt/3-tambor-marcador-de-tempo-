@@ -169,6 +169,12 @@
       "description": "Janelas mínimas: lockout 1,5 s, retomada 2,0 s, chegada armada 2,5 s"
     },
     {
+      "name": "event_ranking",
+      "kind": "ranking",
+      "file": "event_ranking.json",
+      "description": "tempo final = refinado + 5 s por tambor; SAT por último; empate pelo bruto e pela ordem"
+    },
+    {
       "name": "format_elapsed",
       "kind": "format",
       "file": "format_elapsed.json",
