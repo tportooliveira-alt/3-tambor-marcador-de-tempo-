@@ -118,12 +118,15 @@ public enum CrossingEstimator {
         var bounds = 0
         var lower: Double? = nil
         var upper: Double? = nil
-        var coveredColsCand = [Bool](repeating: false, count: w)
+        // colunas cobertas / descobertas por quadro (contagem de linhas): sentido do bordo no fallback
+        var covCnt = [Int](repeating: 0, count: nFrames * w)
+        var uncCnt = [Int](repeating: 0, count: nFrames * w)
         let maxPerCol = h * nFrames
 
         // ---- passo 1: seleção pelo valor observado + limites --------------------------------
         var colSumW = [Double](repeating: 0, count: w)
         var colTimes = [[Double]](repeating: [Double](repeating: 0, count: maxPerCol), count: w)
+        var devs = [Double](repeating: 0, count: maxPerCol)   // desvios |t − mediana| para a MAD (reutilizado)
         var colS2 = [Double](repeating: 0, count: w)
         var colN = [Int](repeating: 0, count: w)
         for row in 0..<h {
@@ -161,13 +164,14 @@ public enum CrossingEstimator {
                             interior += 1
                         }
                     } else if f >= hi {
-                        if k == 1 { coveredColsCand[i] = true }
+                        covCnt[k * w + i] += 1
                         if isCenterCol {
                             bounds += 1
                             let u = tIni + upOff + centerSlack
                             if upper == nil || u < upper! { upper = u }
                         }
                     } else if f <= lo {
+                        uncCnt[k * w + i] += 1
                         if isCenterCol {
                             bounds += 1
                             let lw = tIni + loOff - centerSlack
@@ -228,16 +232,13 @@ public enum CrossingEstimator {
                 t[c] = median(times[c], count: nc)
                 // variância da mediana da coluna ~ (π/2) · variância da média (modelo de ruído)
                 let varModel = (Double.pi / 2.0) * s2[c] / (fn * fn)
-                // variância amostral dos tempos da coluna (dois passos, ordem de inserção)
-                var mean = 0.0
-                for k in 0..<nc { mean += times[c][k] }
-                mean = mean / fn
-                var ss = 0.0
-                for k in 0..<nc {
-                    let d = times[c][k] - mean
-                    ss += d * d
-                }
-                let varS = nc >= 2 ? ss / (fn - 1.0) : 0.0
+                // dispersão amostral ROBUSTA: (1,4826·MAD)² — pixels espúrios isolados não marcam a coluna
+                // como texturizada nem inflam a incerteza; textura de verdade é coerente e aparece na MAD
+                let medC = t[c]
+                for k in 0..<nc { devs[k] = abs(times[c][k] - medC) }
+                let mad = nc >= 2 ? median(devs, count: nc) : 0.0
+                let sigR = 1.4826 * mad
+                let varS = sigR * sigR
                 let varEmp = (Double.pi / 2.0) * varS / fn
                 variance[c] = varModel >= varEmp ? varModel : varEmp
                 // contraste RMS da coluna (sumW = soma de contrast²), para o termo coerente de textura
@@ -401,12 +402,19 @@ public enum CrossingEstimator {
             let dx0 = Double(col) - center
             let tInt = colT[col]
             if abs(dx0) < 0.5, let r = fittedResult(tInt, colVar[col] + texVar(stats1.crms[col])) { return r }
-            // sentido: colunas já cobertas no candidato ficam do lado de onde o bordo veio
+            // sentido do bordo: no primeiro quadro (c-lag, c, c+lag) em que a cobertura é assimétrica em
+            // torno da coluna interior — cobertas atrás, descobertas à frente (só o candidato não basta:
+            // com bordo rápido ou período longo a faixa inteira já está coberta nele)
             var leftCov = false
             var rightCov = false
-            for c2 in 0..<w where coveredColsCand[c2] {
-                if c2 < col { leftCov = true }
-                if c2 > col { rightCov = true }
+            for k in 0..<nFrames {
+                var lSide = false
+                var rSide = false
+                for c2 in 0..<w {
+                    if covCnt[k * w + c2] >= minRows { if c2 < col { lSide = true } else if c2 > col { rSide = true } }
+                    if uncCnt[k * w + c2] >= minRows { if c2 > col { lSide = true } else if c2 < col { rSide = true } }
+                }
+                if lSide != rSide { leftCov = lSide; rightCov = rSide; break }
             }
             var cands: [Double] = []
             if leftCov || !rightCov { cands += [tInt - dx0 * sMin, tInt - dx0 * sMax] }

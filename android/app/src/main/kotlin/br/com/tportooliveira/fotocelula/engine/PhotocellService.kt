@@ -107,12 +107,16 @@ class PhotocellService(
         return normalizedRoi.toPixels(sensorWidth, sensorHeight)
     }
 
-    /** Mudanças de ROI/config só valem em IDLE; fora disso ficam pendentes até o próximo Reset. */
+    /**
+     * Mudanças de ROI/config só valem com a fotocélula parada (IDLE, FINISHED ou ERROR — o operador
+     * pode mover a linha depois da prova e armar de novo); durante calibração ou prova ficam
+     * pendentes até o próximo Reset.
+     */
     private var rebuildPending = false
 
     private fun rebuildIfIdle() {
         if (released) return
-        engine?.let { if (it.state != PhotocellState.IDLE) { rebuildPending = true; return } }
+        engine?.let { if (it.state.isActive || it.state == PhotocellState.CALIBRATING) { rebuildPending = true; return } }
         rebuildPending = false
         val roi = computeRoi() ?: return
         val cw = requestedConfig.coreWidth.coerceIn(1, roi.width)

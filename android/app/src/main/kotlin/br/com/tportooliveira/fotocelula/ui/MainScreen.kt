@@ -90,7 +90,7 @@ private fun PreviewWithRoi(vm: PhotocellViewModel, displayRotation: Int) {
     }
     val s = vm.settings
     // ROI mapeada para o buffer sempre que a geometria ou a linha mudam (ignorada pelo VM com a ROI travada)
-    LaunchedEffect(geometry, s.lineXFraction, s.bandTopFraction, s.bandBottomFraction, s.stripWidthPx, vm.roiDirty, vm.roiLocked) {
+    LaunchedEffect(geometry, s.lineXFraction, s.bandTopFraction, s.bandBottomFraction, s.stripWidthPx, vm.roiLocked) {
         if (viewSize.first > 0) {
             val cx = geometry.bufferX(s.lineXFraction)
             val a = geometry.bufferY(s.bandTopFraction)

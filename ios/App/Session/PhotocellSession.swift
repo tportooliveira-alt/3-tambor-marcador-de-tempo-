@@ -315,7 +315,11 @@ final class PhotocellSession: NSObject, AVCaptureVideoDataOutputSampleBufferDele
     private func publish() {
         guard let eng = engine else { return }
         let snap = PhotocellSnapshot(engine: eng, lastDeltaFull: diagnostics.lastDeltaFull, lastDeltaCore: diagnostics.lastDeltaCore)
-        snapshotLock.lock(); _snapshot = snap; snapshotLock.unlock()
+        snapshotLock.lock(); let prevState = _snapshot.state; _snapshot = snap; snapshotLock.unlock()
+        // "Calibrar" volta a IDLE sem o engine emitir setFrameDelivery(false) (os vetores compartilhados
+        // fixam os efeitos): em IDLE só o preview roda, então a entrega é desligada aqui. `userArm`
+        // recalibra e religa; a medição de taxa só é invalidada quando a entrega volta.
+        if prevState == .calibrating && snap.state == .idle { camera.setFrameDelivery(false) }
         let cb = onSnapshot
         let finished = onRunFinished
         DispatchQueue.main.async {

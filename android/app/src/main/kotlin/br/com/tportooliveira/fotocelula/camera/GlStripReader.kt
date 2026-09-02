@@ -58,10 +58,8 @@ class GlStripReader(
     private var fbo = 0
     private var fboTexture = 0
     private var program = 0
-    private var uTexMatrix = 0
     private var uRegion = 0
     private var uLuma = 0
-    private val texMatrix = FloatArray(16)
     private var quadVbo = 0
 
     private var surfaceTexture: SurfaceTexture? = null
@@ -144,9 +142,23 @@ class GlStripReader(
         }
     }
 
+    /**
+     * Libera EGL/GL e as superfícies. SÍNCRONO: o chamador (thread da câmera) pode precisar reconectar
+     * o TextureView à sessão normal logo em seguida, e a BufferQueue só aceita um produtor por vez.
+     * (A thread GL nunca espera pela thread da câmera: sem risco de deadlock.)
+     */
     fun release() {
         released = true
-        handler.post {
+        val lock = Object()
+        var done = false
+        val posted = handler.post {
+            try { releaseOnGlThread() } finally { synchronized(lock) { done = true; lock.notifyAll() } }
+        }
+        if (posted) synchronized(lock) { while (!done) lock.wait() }
+    }
+
+    private fun releaseOnGlThread() {
+        run {
             try { surfaceTexture?.setOnFrameAvailableListener(null) } catch (_: Exception) {}
             try { cameraSurface?.release() } catch (_: Exception) {}
             try { surfaceTexture?.release() } catch (_: Exception) {}
@@ -205,7 +217,6 @@ class GlStripReader(
         GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
 
         program = buildProgram(VERTEX, FRAGMENT)
-        uTexMatrix = GLES30.glGetUniformLocation(program, "uTexMatrix")
         uRegion = GLES30.glGetUniformLocation(program, "uRegion")
         uLuma = GLES30.glGetUniformLocation(program, "uLuma")
 
@@ -254,7 +265,6 @@ class GlStripReader(
             return
         }
         val ts = st.timestamp   // = SENSOR_TIMESTAMP do quadro
-        st.getTransformMatrix(texMatrix)
         frameCounter++
         framesReceived = frameCounter
         trackFps(ts)
@@ -281,7 +291,6 @@ class GlStripReader(
         GLES30.glUseProgram(program)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexture)
-        GLES30.glUniformMatrix4fv(uTexMatrix, 1, false, texMatrix, 0)
         GLES30.glUniform4f(uRegion, x0, y0, x1, y1)
         GLES30.glUniform1i(uLuma, if (luma) 1 else 0)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, quadVbo)
@@ -293,24 +302,26 @@ class GlStripReader(
     private fun renderStrip() {
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo)
         GLES30.glViewport(0, 0, roiW, roiH)
-        // Região da faixa em coordenadas de textura (0..1). A matriz do SurfaceTexture espera
-        // coordenadas com origem no canto INFERIOR esquerdo da imagem, então a banda
-        // [roiY0, roiY0+roiH) (linhas contadas do topo) vira t em [1 - (y0+h)/H, 1 - y0/H].
+        // Região da faixa em coordenadas de MEMÓRIA do buffer (0..1, linha 0 = topo, orientação do
+        // sensor), amostrando a textura OES SEM a matriz do SurfaceTexture: a matriz embute a rotação
+        // do sensor (transform hint do Camera2) e um flip vertical, o que giraria a faixa em 90°.
+        // Sem ela, a ROI é a mesma do ImageReader/serviço. O FBO recebe a banda com a linha 0 (topo)
+        // em uv.y = 0, que é a primeira linha lida por glReadPixels: sem inversão na leitura.
         val x0 = roiX0.toFloat() / sensorWidth
         val x1 = (roiX0 + roiW).toFloat() / sensorWidth
-        val t0 = 1f - (roiY0 + roiH).toFloat() / sensorHeight
-        val t1 = 1f - roiY0.toFloat() / sensorHeight
-        drawQuad(x0, t0, x1, t1, luma = true)
+        val y0 = roiY0.toFloat() / sensorHeight
+        val y1 = (roiY0 + roiH).toFloat() / sensorHeight
+        drawQuad(x0, y0, x1, y1, luma = true)
     }
 
     private fun readStrip(ts: Long) {
         readBuffer.rewind()
         GLES30.glReadPixels(0, 0, roiW, roiH, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, readBuffer)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-        // RGBA -> só o canal R (já é a luminância calculada no shader). glReadPixels devolve linhas
-        // de baixo para cima: invertemos para manter a convenção "linha 0 = topo".
+        // RGBA -> só o canal R (já é a luminância calculada no shader). A primeira linha devolvida por
+        // glReadPixels é uv.y = 0 = topo da banda (ver renderStrip): "linha 0 = topo" sem inversão.
         for (row in 0 until roiH) {
-            val src = (roiH - 1 - row) * roiW
+            val src = row * roiW
             val dst = row * roiW
             for (i in 0 until roiW) {
                 lumaBuffer.put(dst + i, readBuffer.get((src + i) * 4))
@@ -328,7 +339,8 @@ class GlStripReader(
         val h = eglQuery[0]
         if (w > 0 && h > 0) {
             GLES30.glViewport(0, 0, w, h)
-            drawQuad(0f, 0f, 1f, 1f, luma = false)
+            // memória (linha 0 = topo) → janela (y = 0 embaixo): inverte o eixo vertical
+            drawQuad(0f, 1f, 1f, 0f, luma = false)
             EGL14.eglSwapBuffers(eglDisplay, previewEglSurface)
         }
         EGL14.eglMakeCurrent(eglDisplay, pbufferSurface, pbufferSurface, eglContext)
@@ -359,13 +371,11 @@ class GlStripReader(
     private val VERTEX = """
         #version 300 es
         in vec2 aPos;
-        uniform mat4 uTexMatrix;
-        uniform vec4 uRegion;   // x0, y0, x1, y1 em coordenadas de textura (0..1)
+        uniform vec4 uRegion;   // x0, y0, x1, y1 em coordenadas de memória do buffer (0..1)
         out highp vec2 vTex;
         void main() {
             vec2 uv = (aPos + 1.0) * 0.5;
-            vec2 region = mix(uRegion.xy, uRegion.zw, uv);
-            vTex = (uTexMatrix * vec4(region, 0.0, 1.0)).xy;
+            vTex = mix(uRegion.xy, uRegion.zw, uv);
             gl_Position = vec4(aPos, 0.0, 1.0);
         }
     """.trimIndent()

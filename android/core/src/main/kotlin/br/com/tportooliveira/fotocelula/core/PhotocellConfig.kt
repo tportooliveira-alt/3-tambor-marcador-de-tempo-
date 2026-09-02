@@ -38,9 +38,12 @@ data class PhotocellConfig(
     val fractionMarginSigmas: Double = 4.0,
     /** Acima desta margem (contraste/ruído baixo) o pixel só fornece limites. */
     val fractionMarginMax: Double = 0.25,
-    /** Faixa plausível de velocidade do bordo, em px/s (fallback quando só uma coluna é interior). */
-    val speedPxPerSMin: Double = 800.0,
-    val speedPxPerSMax: Double = 4000.0,
+    /**
+     * Faixa plausível de velocidade do bordo, em px/s: 5 m/s a 12 mm/px até 20 m/s a ~1,7 mm/px (câmera
+     * perto). Um ajuste com inclinação fora dela é rejeitado; o fallback de 1 coluna usa a faixa inteira.
+     */
+    val speedPxPerSMin: Double = 400.0,
+    val speedPxPerSMax: Double = 12000.0,
     /** Uma coluna só participa do ajuste com pelo menos N linhas interiores. */
     val minInteriorRowsPerColumn: Int = 3,
     /** ... e pelo menos esta fração das linhas da banda. */

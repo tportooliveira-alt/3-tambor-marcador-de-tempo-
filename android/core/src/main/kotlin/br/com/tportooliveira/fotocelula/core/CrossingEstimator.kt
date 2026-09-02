@@ -112,12 +112,15 @@ object CrossingEstimator {
         var bounds = 0
         var lower: Double? = null
         var upper: Double? = null
-        val coveredColsCand = BooleanArray(w)
+        // colunas cobertas / descobertas por quadro (contagem de linhas): sentido do bordo no fallback
+        val covCnt = IntArray(nFrames * w)
+        val uncCnt = IntArray(nFrames * w)
         val maxPerCol = h * nFrames
 
         // ---- passo 1: seleção pelo valor observado + limites --------------------------------
         val colSumW = DoubleArray(w)
         val colTimes = Array(w) { DoubleArray(maxPerCol) }
+        val devs = DoubleArray(maxPerCol)   // desvios |t − mediana| para a MAD (reutilizado)
         val colS2 = DoubleArray(w)
         val colN = IntArray(w)
         for (row in 0 until h) {
@@ -155,13 +158,14 @@ object CrossingEstimator {
                             interior += 1
                         }
                     } else if (f >= hi) {
-                        if (k == 1) coveredColsCand[i] = true
+                        covCnt[k * w + i] += 1
                         if (isCenterCol) {
                             bounds += 1
                             val u = tIni + upOff + centerSlack
                             if (upper == null || u < upper!!) upper = u
                         }
                     } else if (f <= lo) {
+                        uncCnt[k * w + i] += 1
                         if (isCenterCol) {
                             bounds += 1
                             val lw = tIni + loOff - centerSlack
@@ -220,15 +224,13 @@ object CrossingEstimator {
                 // variância da mediana da coluna ~ (π/2) · variância da média (modelo de ruído)
                 val varModel = (PI / 2.0) * s2[c] / (fn * fn)
                 // variância amostral dos tempos da coluna (dois passos, ordem de inserção)
-                var mean = 0.0
-                for (k in 0 until nc) mean += times[c][k]
-                mean = mean / fn
-                var ss = 0.0
-                for (k in 0 until nc) {
-                    val d = times[c][k] - mean
-                    ss += d * d
-                }
-                val varS = if (nc >= 2) ss / (fn - 1.0) else 0.0
+                // dispersão amostral ROBUSTA: (1,4826·MAD)² — pixels espúrios isolados não marcam a coluna
+                // como texturizada nem inflam a incerteza; textura de verdade é coerente e aparece na MAD
+                val medC = t[c]
+                for (k in 0 until nc) devs[k] = abs(times[c][k] - medC)
+                val mad = if (nc >= 2) median(devs, nc) else 0.0
+                val sigR = 1.4826 * mad
+                val varS = sigR * sigR
                 val varEmp = (PI / 2.0) * varS / fn
                 variance[c] = if (varModel >= varEmp) varModel else varEmp
                 // contraste RMS da coluna (sumW = soma de contrast²), para o termo coerente de textura
@@ -392,10 +394,20 @@ object CrossingEstimator {
             val dx0 = col - center
             val tInt = colT[col]
             if (abs(dx0) < 0.5) fittedResult(tInt, colVar[col] + texVar(stats1.crms[col]))?.let { return it }
-            // sentido: colunas já cobertas no candidato ficam do lado de onde o bordo veio
+            // sentido do bordo: no primeiro quadro (c-lag, c, c+lag) em que a cobertura é assimétrica em
+            // torno da coluna interior — cobertas atrás, descobertas à frente (só o candidato não basta:
+            // com bordo rápido ou período longo a faixa inteira já está coberta nele)
             var leftCov = false
             var rightCov = false
-            for (c2 in 0 until w) if (coveredColsCand[c2]) { if (c2 < col) leftCov = true; if (c2 > col) rightCov = true }
+            for (k in 0 until nFrames) {
+                var lSide = false
+                var rSide = false
+                for (c2 in 0 until w) {
+                    if (covCnt[k * w + c2] >= minRows) { if (c2 < col) lSide = true else if (c2 > col) rSide = true }
+                    if (uncCnt[k * w + c2] >= minRows) { if (c2 > col) lSide = true else if (c2 < col) rSide = true }
+                }
+                if (lSide != rSide) { leftCov = lSide; rightCov = rSide; break }
+            }
             val cands = ArrayList<Double>()
             if (leftCov || !rightCov) { cands.add(tInt - dx0 * sMin); cands.add(tInt - dx0 * sMax) }
             if (rightCov || !leftCov) { cands.add(tInt + dx0 * sMin); cands.add(tInt + dx0 * sMax) }

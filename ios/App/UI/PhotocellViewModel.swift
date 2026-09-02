@@ -24,7 +24,8 @@ final class PhotocellViewModel: ObservableObject {
             // janelas coerentes (retomada ≥ bloqueio + 0,5 s; chegada ≥ retomada + 0,5 s): sem isso a FSM
             // nunca religaria os quadros e a prova travaria
             let fixed = settings.clamped()
-            if fixed != settings { settings = fixed; return }
+            // atribuir dentro do didSet NÃO reentra no observador: seguir com o valor corrigido
+            if fixed != settings { settings = fixed }
             settings.save()
             applySettings()
         }
@@ -132,6 +133,9 @@ final class PhotocellViewModel: ObservableObject {
     }
 
     func stopCamera() {
+        // a FSM precisa saber que a captura parou (ERROR, wake-ups cancelados, entrega desligada):
+        // o sistema pode não postar a interrupção antes do stopRunning
+        session.captureInterrupted()
         displayLink.stop()
         camera.stop()
         UIApplication.shared.isIdleTimerDisabled = false
@@ -176,7 +180,9 @@ final class PhotocellViewModel: ObservableObject {
         guard canCalibrate else { return }
         isCalibratingCamera = true
         errorMessage = nil
-        let poi = CGPoint(x: settings.lineXFraction, y: 0.5)
+        // ponto de interesse em coordenadas do SENSOR (não rotacionadas): usa a ROI já mapeada pelo preview
+        // (letterbox e rotação de 180° em landscapeLeft mudam o x); centro da tela até o preview mapear
+        let poi = lastROI.map { CGPoint(x: $0.centerX, y: ($0.top + $0.bottom) / 2) } ?? CGPoint(x: 0.5, y: 0.5)
         camera.convergeAndLock(pointOfInterest: poi) { [weak self] err in
             DispatchQueue.main.async {
                 guard let self = self else { return }

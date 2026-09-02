@@ -59,17 +59,11 @@ class PhotocellViewModel(private val context: Context) {
     /** Aplica ajustes coerentes ([AppSettings.fix]) e persiste com debounce (os sliders disparam por pixel). */
     fun updateSettings(s: AppSettings) {
         val fixed = s.fix()
-        val roiChanged = fixed.lineXFraction != settings.lineXFraction || fixed.bandTopFraction != settings.bandTopFraction ||
-            fixed.bandBottomFraction != settings.bandBottomFraction || fixed.stripWidthPx != settings.stripWidthPx
         settings = fixed
         main.removeCallbacks(saveRunnable)
         main.postDelayed(saveRunnable, 400)
         applySettings()
-        if (roiChanged) roiDirty = true
     }
-
-    /** A ROI mapeada pelo preview depende da geometria; o preview a reenvia quando este sinal muda. */
-    var roiDirty by mutableStateOf(false)
 
     private fun applySettings() {
         val cap = capability ?: return
@@ -161,7 +155,6 @@ class PhotocellViewModel(private val context: Context) {
 
     /** Chamado pelo preview quando a ROI é mapeada para o buffer. Ignorado com a ROI travada. */
     fun roiMapped(centerX: Double, top: Double, bottom: Double) {
-        roiDirty = false
         if (roiLocked) return
         service?.updateRoi(NormalizedRoi(centerX, top, bottom, settings.stripWidthPx))
     }
@@ -191,7 +184,13 @@ class PhotocellViewModel(private val context: Context) {
         val ctrl = controller ?: return
         isCalibratingCamera = true
         errorMessage = null
-        ctrl.convergeAndLock(Pair(settings.lineXFraction.toDouble(), 0.5), settings.exposureNs) { err ->
+        // ponto de medição AE/AF em fração do SENSOR (a ROI em pixels já mapeada), não da tela
+        val cap = capability
+        val roi = service?.currentRoiPixels()
+        val center = if (cap != null && roi != null)
+            Pair((roi.x + roi.width / 2.0) / cap.size.width, (roi.y0 + roi.y1) / 2.0 / cap.size.height)
+        else Pair(0.5, 0.5)
+        ctrl.convergeAndLock(center, settings.exposureNs) { err ->
             main.post {
                 isCalibratingCamera = false
                 if (err != null) errorMessage = err

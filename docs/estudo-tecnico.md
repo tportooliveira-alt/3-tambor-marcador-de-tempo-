@@ -77,6 +77,14 @@ Pixels saturados dão limites: `f_obs ≥ 1−m` com ruído até `m` implica `f 
 para `t_x(dx)`, não para `t_c`). O quadro de referência (c−lag) é avaliado com a mesma regra, o que cobre
 cruzamentos que caem na "janela cega" entre exposições. O é lido do quadro c+2·lag (platô).
 
+Dois achados do harness adversarial (`Tools/scenario_harness.py`) mudaram regras do fallback: a faixa
+plausível de velocidade do bordo passou de 800–4000 para **400–12000 px/s** (câmera a 3 mm/px com cavalo a
+18 m/s dá 6000 px/s, e o ajuste correto de 7 colunas estava sendo rejeitado como "implausível"); e o
+sentido do bordo, quando só uma coluna é interior, é lido no **primeiro quadro em que a cobertura é
+assimétrica** (cobertas atrás, descobertas à frente) — no candidato de um bordo rápido, ou a 60 FPS, a
+faixa inteira já está coberta e não informa nada. A dispersão por coluna usa a MAD (robusta): um pixel
+espúrio não marca a coluna como texturizada nem descarta os limites.
+
 Qualidade: **2** = ajuste completo com incerteza 3σ ≤ P/8 (tipicamente 0,01–0,1 ms); **1** = intervalo
 (ajuste com incerteza grande, coluna única com faixa de velocidades plausíveis 800–4000 px/s, ou só
 limites); **0** = meio da janela de exposição do quadro candidato, ±P/2. Com exposição curta (1/2000 s ou

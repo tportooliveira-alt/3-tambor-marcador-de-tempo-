@@ -176,8 +176,10 @@ def run_scenario(**p):
     finding = None
     if raw_err < -P / 1e6 - 0.01:
         finding = "disparo antes do cruzamento (falso positivo)"
-    elif st.quality == 2 and abs(err) > 0.5:
-        finding = "q2 com |erro| > 0,5 ms (precisão falsa)"
+    elif st.quality == 2 and abs(err) > max(0.5, unc):
+        # a 240 fps a qualidade 2 exige 3σ ≤ 0,52 ms; em taxas menores o limiar (P/8) cresce e o erro
+        # só é "falso" se sair da incerteza declarada
+        finding = "q2 com |erro| > max(0,5 ms, incerteza) (precisão falsa)"
     elif st.quality == 1 and abs(err) > unc + 0.05:
         finding = "q1 com a verdade fora do intervalo"
     elif st.quality == 0 and abs(err) > P / 2e6 + 0.1:

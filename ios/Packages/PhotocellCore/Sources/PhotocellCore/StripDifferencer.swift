@@ -36,13 +36,17 @@ public final class StripDifferencer {
         self.roi = roi
         self.planeHeight = planeHeight
         self.coreWidth = coreWidth
-        w = roi.width
-        h = roi.height
-        n = w * h
-        c0 = (w - coreWidth) / 2
+        let width = roi.width
+        let height = roi.height
+        let count = width * height
+        w = width
+        h = height
+        n = count
+        c0 = (width - coreWidth) / 2
+        // valor local: a closure não pode capturar `self` antes de todos os membros estarem inicializados
         buffers = (0..<3).map { _ in
-            let p = UnsafeMutablePointer<UInt8>.allocate(capacity: n)
-            p.initialize(repeating: 0, count: n)
+            let p = UnsafeMutablePointer<UInt8>.allocate(capacity: count)
+            p.initialize(repeating: 0, count: count)
             return p
         }
     }

@@ -81,7 +81,7 @@ class CameraController(
 
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
-    private var glReader: GlStripReader? = null
+    @Volatile private var glReader: GlStripReader? = null
     private var yuvReader: YuvStripReader? = null
     private var previewTexture: SurfaceTexture? = null
     private var previewSurface: Surface? = null

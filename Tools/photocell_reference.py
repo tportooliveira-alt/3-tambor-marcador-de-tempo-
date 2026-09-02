@@ -52,8 +52,10 @@ class PhotocellConfig:
     fraction_margin_min: float = 0.03            # margem mínima de classificação da fração f
     fraction_margin_sigmas: float = 4.0          # margem = max(min, k * sqrt(2) * sigma_px / |O-B|)
     fraction_margin_max: float = 0.25            # acima disso (contraste/ruído baixo) o pixel só dá limites
-    speed_px_per_s_min: float = 800.0            # faixa plausível de velocidade do bordo (fallback de 1 coluna)
-    speed_px_per_s_max: float = 4000.0
+    # faixa plausível de velocidade do bordo em px/s: 5 m/s a 12 mm/px ate 20 m/s a ~1,7 mm/px (camera
+    # perto). Um ajuste com inclinacao fora dela e rejeitado; o fallback de 1 coluna usa a faixa inteira.
+    speed_px_per_s_min: float = 400.0
+    speed_px_per_s_max: float = 12000.0
     min_interior_rows_per_column: int = 3        # coluna só participa do ajuste com pelo menos N linhas interiores
     min_interior_rows_fraction: float = 0.08     # ... e pelo menos esta fração das linhas da banda
     skew_ns: Optional[int] = None                # tempo de leitura do sensor (None = ignora offset por linha)
@@ -468,7 +470,9 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
     bounds = 0
     lower: Optional[float] = None
     upper: Optional[float] = None
-    covered_cols_cand: set = set()      # colunas já cobertas no quadro candidato (f1 >= hi)
+    # colunas cobertas / descobertas por quadro (contagem de linhas): sentido do bordo no fallback
+    cov_cnt: List[List[int]] = [[0] * w for _ in frames]
+    unc_cnt: List[List[int]] = [[0] * w for _ in frames]
 
     # ---- passo 1: seleção pelo valor observado + limites ------------------------------------
     col_sum_w: Dict[int, float] = {}
@@ -516,14 +520,14 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
                         col_n[i] = col_n.get(i, 0) + 1
                         interior += 1
                 elif f >= hi:
-                    if k == 1:
-                        covered_cols_cand.add(i)
+                    cov_cnt[k][i] += 1
                     if is_center_col:
                         bounds += 1
                         u = t_ini + up_off + center_slack
                         if upper is None or u < upper:
                             upper = u
                 elif f <= lo:
+                    unc_cnt[k][i] += 1
                     if is_center_col:
                         bounds += 1
                         lw = t_ini + lo_off - center_slack
@@ -582,17 +586,16 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
             fn = float(nc)
             # variancia da mediana da coluna ~ (pi/2) * variancia da media (modelo de ruido)
             var_model = (math.pi / 2.0) * s2[c] / (fn * fn)
-            # variancia amostral dos tempos da coluna (dois passos, ordem de insercao)
+            # dispersao amostral ROBUSTA dos tempos da coluna: (1,4826*MAD)^2 — um ou dois pixels
+            # espurios (ruido que empurrou um pixel coberto para "interior", erro ~E) nao podem marcar
+            # a coluna como texturizada nem inflar a incerteza; textura de verdade e coerente e aparece
+            # na MAD do mesmo jeito que na variancia
             ts_list = times[c]
-            mean = 0.0
-            for t in ts_list:
-                mean += t
-            mean = mean / fn
-            ss = 0.0
-            for t in ts_list:
-                d = t - mean
-                ss += d * d
-            var_s = ss / (fn - 1.0) if nc >= 2 else 0.0
+            med_c = col_t[c]
+            devs = [abs(t - med_c) for t in ts_list]
+            mad = _median(devs) if nc >= 2 else 0.0
+            sig_r = 1.4826 * mad
+            var_s = sig_r * sig_r
             var_emp = (math.pi / 2.0) * var_s / fn
             col_var[c] = var_model if var_model >= var_emp else var_emp
             # contraste RMS da coluna (sum_w = soma de contrast^2), para o termo coerente de textura
@@ -764,9 +767,28 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
             r = fitted_result(t_int, col_var[col] + tex_var(col_crms[col]))
             if r is not None:
                 return r
-        # sentido: colunas já cobertas no candidato ficam do lado de onde o bordo veio
-        left_cov = any(c < col for c in covered_cols_cand)
-        right_cov = any(c > col for c in covered_cols_cand)
+        # sentido do bordo: no primeiro quadro (c-lag, c, c+lag) em que a cobertura e assimetrica em
+        # torno da coluna interior — colunas cobertas atras, descobertas a frente. (So o candidato nao
+        # basta: com bordo rapido ou periodo longo a faixa inteira ja esta coberta nele.)
+        left_cov = False
+        right_cov = False
+        for k in range(len(frames)):
+            l_side = False
+            r_side = False
+            for c2 in range(w):
+                if cov_cnt[k][c2] >= min_rows:
+                    if c2 < col:
+                        l_side = True
+                    elif c2 > col:
+                        r_side = True
+                if unc_cnt[k][c2] >= min_rows:
+                    if c2 > col:
+                        l_side = True
+                    elif c2 < col:
+                        r_side = True
+            if l_side != r_side:
+                left_cov, right_cov = l_side, r_side
+                break
         cands: List[float] = []
         if left_cov or not right_cov:
             cands += [t_int - dx0 * s_min, t_int - dx0 * s_max]     # bordo vindo da esquerda (s > 0)
