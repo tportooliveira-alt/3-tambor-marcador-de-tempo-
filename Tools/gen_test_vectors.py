@@ -78,13 +78,15 @@ class Scene:
                  bg_level: int = 96, obj_level: int = 184, noise_sigma: float = 1.5,
                  flicker_amp: float = 0.0, seed: int = 1,
                  gamma: float = 1.0, tilt_px_per_row: float = 0.0, texture_amp: float = 0.0,
-                 flicker_integrated: bool = False, psf_px: float = 0.0):
+                 flicker_integrated: bool = True, psf_px: float = 0.0):
         self.pw, self.stride, self.ph, self.roi = plane_width, stride, plane_height, roi
         self.skew, self.E, self.period = skew_ns, exposure_ns, period_ns
         self.d = direction
         self.v = speed_px_per_s / NS_PER_SEC     # px por ns
         self.tc = t_cross_center_ns
-        self.xc = roi.x + roi.width // 2         # coluna central da faixa
+        # centro GEOMÉTRICO da faixa (o mesmo que o estimador usa: (w-1)/2); com largura par cai
+        # entre dois pixels
+        self.xc = roi.x + (roi.width - 1) / 2.0
         self.ra, self.rb = rows_a, rows_b         # linhas (globais) ocupadas pelo objeto
         self.bg, self.obj = bg_level, obj_level
         self.sigma = noise_sigma
@@ -94,8 +96,10 @@ class Scene:
         self.gamma = gamma                        # curva de tom: V = 255*(lin/255)^(1/gamma)
         self.tilt = tilt_px_per_row               # bordo inclinado: coluna do bordo varia com a linha
         self.tex = texture_amp                    # textura presa ao objeto (senoide em x e y)
-        self.fint = flicker_integrated            # flicker integrado ao longo da exposicao
-        self.psf = psf_px                         # desfoque: caixa de psf_px (5 amostras)
+        self.fint = flicker_integrated            # flicker integrado ao longo da exposicao (padrão)
+        # Desfoque: a caixa efetiva inclui SEMPRE a abertura de 1 px do próprio pixel (um sensor
+        # integra a área do pixel), somada em quadratura com a PSF óptica pedida.
+        self.psf = math.sqrt(psf_px * psf_px + 1.0)
 
     def edge_time_at(self, x: int) -> float:
         # instante em que o bordo alcança a coluna x
@@ -121,16 +125,14 @@ class Scene:
                 frac = 0.0
                 if self.ra <= g <= self.rb:
                     xe = x - (g - mid) * self.tilt
-                    if self.psf > 0.0:
-                        acc = 0.0
-                        for k in range(5):
-                            xk = xe + (k - 2.0) * self.psf / 4.0
-                            fk = (t_row + self.E - self._edge_time_at_x(xk)) / self.E
-                            acc += 0.0 if fk < 0.0 else (1.0 if fk > 1.0 else fk)
-                        frac = acc / 5.0
-                    else:
-                        frac = (t_row + self.E - self._edge_time_at_x(xe)) / self.E
-                        frac = 0.0 if frac < 0.0 else (1.0 if frac > 1.0 else frac)
+                    # média da caixa por Newton-Cotes (trapézio): pesos 1/2,1,1,1,1/2 sobre 4 intervalos
+                    acc = 0.0
+                    for k in range(5):
+                        xk = xe + (k - 2.0) * self.psf / 4.0
+                        fk = (t_row + self.E - self._edge_time_at_x(xk)) / self.E
+                        fk = 0.0 if fk < 0.0 else (1.0 if fk > 1.0 else fk)
+                        acc += fk * (0.5 if (k == 0 or k == 4) else 1.0)
+                    frac = acc / 4.0
                 obj = float(self.obj)
                 if self.tex > 0.0:
                     # textura presa ao objeto: fase relativa ao bordo (px atras do bordo no meio da exposicao)

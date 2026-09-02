@@ -41,12 +41,17 @@ exposições curtas e longas, calibração, máquina de estados completa).
 | Modo | Erro por gatilho | Observação |
 |---|---|---|
 | Por quadro (bruto) a 240 FPS | ±2,08 ms | limite da amostragem |
-| **Refinado, qualidade 2** (fração de exposição) | **0,01–0,1 ms** na simulação (3.840 cenários; sem textura: erro médio 0,007 ms, p95 0,03 ms, máximo 0,31 ms) | precisa de contraste ≥ 20 níveis entre cavalo e fundo, **superfície uniforme na banda** e exposição ≥ 1/480 s; a incerteza 3σ é mostrada junto do tempo |
+| **Refinado, qualidade 2** (fração de exposição) | **0,01–0,1 ms** na simulação (3.840 cenários; sem textura: erro médio 0,012 ms, p95 0,05 ms, máximo 0,23 ms) | precisa de contraste ≥ 20 níveis entre cavalo e fundo, **superfície uniforme na banda** e exposição ≥ 1/480 s; a incerteza 3σ é mostrada junto do tempo |
 | Refinado, qualidade 1 (intervalo) | intervalo honesto que contém a verdade (tipicamente ±0,5–1,5 ms) | exposição curta, contraste baixo, bordo inclinado ou visto numa só coluna |
 | Refinado, qualidade 0 | ≈ ±7,6 ms (intervalo físico: do último quadro comparado ao fim da exposição deste, mais o atraso até o centro; cresce se houve quadro perdido) | **textura no objeto** (pelagem malhada, peiteira, arreios na banda): o estimador recusa o refinamento em vez de inventar precisão; o app mostra o bruto |
 | Samsung (30 FPS para apps de terceiros) | ±17 ms | o app avisa na tela |
 
 Números por condição (velocidade × exposição × ruído × flicker × textura): [`docs/validacao-numerica.md`](docs/validacao-numerica.md).
+
+**O que mais importa: o viés comum cancela.** O tempo de prova é uma *diferença* entre dois gatilhos na
+mesma linha. Erros que afetam os dois do mesmo jeito — curva de tom desconhecida da câmera, tempo de
+leitura por linha não compensado, atraso do plano da fotocélula — somem na subtração: medimos +1,08 ms
+de viés por gatilho no pior caso de curva de tom e **−0,04 ms** no ΔT correspondente.
 Escolha a **banda** numa região uniforme do cavalo (peito ou pescoço sem peiteira) — é o que decide se o
 milésimo refinado aparece; com textura o tempo continua correto, mas com ±2 ms por gatilho.
 

@@ -80,12 +80,17 @@ final class PhysicsSweepTests: XCTestCase {
         print("[PhysicsSweep] \(summary)")
         XCTAssertTrue(failures.isEmpty, "Falhas (\(failures.count)):\n" + failures.prefix(25).joined(separator: "\n") + "\n\(summary)")
         XCTAssertGreaterThanOrEqual(Double(triggered), Double(all.count) * 0.98, summary)
-        XCTAssertGreaterThanOrEqual(Double(favorableQ2), Double(favorable) * 0.95, summary)
+        // Um ajuste só é aceito com >= 3 colunas (2 colunas dão uma reta exata e não verificável), e a
+        // incerteza inclui o viés não observável da abertura do pixel: isso custa parte dos cenários
+        // favoráveis, que caem para intervalo honesto em vez de um número confiante e errado.
+        XCTAssertGreaterThanOrEqual(Double(favorableQ2), Double(favorable) * 0.90, summary)
         // Sem textura, mais da metade dos cenários fecha em qualidade 2; com textura o estimador é honesto por projeto.
         let clean = triggered - texQ2 - texQ1 - texQ0
-        XCTAssertGreaterThanOrEqual(Double(errs.count), Double(clean) * 0.55, summary)
-        XCTAssertLessThan(mean, 0.10, summary)
-        XCTAssertLessThan(p95, 0.25, summary)
+        XCTAssertGreaterThanOrEqual(Double(errs.count), Double(clean) * 0.45, summary)
+        XCTAssertLessThan(mean, 0.05, summary)
+        XCTAssertLessThan(p95, 0.10, summary)
+        // O que o produto promete: nenhum refinamento de qualidade 2 erra mais que 0,35 ms.
+        XCTAssertLessThanOrEqual(sorted.last ?? 0.0, 0.35, summary)
     }
 
     func testDropsNearTriggerAreFlaggedAndDoNotBreakTiming() throws {

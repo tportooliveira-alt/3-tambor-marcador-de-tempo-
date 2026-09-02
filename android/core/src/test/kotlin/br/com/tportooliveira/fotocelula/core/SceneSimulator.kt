@@ -42,10 +42,13 @@ class Scene(
     val bgLevel: Int = 96, val objLevel: Int = 184, val noiseSigma: Double = 1.5,
     val flickerAmp: Double = 0.0, seed: Long = 1,
     val gamma: Double = 1.0, val tiltPxPerRow: Double = 0.0, val textureAmp: Double = 0.0,
-    val flickerIntegrated: Boolean = false, val psfPx: Double = 0.0,
+    val flickerIntegrated: Boolean = true, val psfPx: Double = 0.0,
 ) {
     private val v = speedPxPerS / 1e9
-    private val xc = roi.x + roi.width / 2
+    // centro GEOMÉTRICO da faixa (o mesmo do estimador: (w-1)/2); com largura par cai entre pixels
+    private val xc = roi.x + (roi.width - 1) / 2.0
+    // a caixa efetiva inclui SEMPRE a abertura de 1 px do próprio pixel, somada em quadratura à PSF
+    private val psfEff = sqrt(psfPx * psfPx + 1.0)
     private val rng = Rng(seed)
 
     fun edgeTimeAt(x: Int): Double = tCrossCenterNs + (x - xc) * direction / v
@@ -69,17 +72,14 @@ class Scene(
                 var frac = 0.0
                 if (g in rowsA..rowsB) {
                     val xe = x - (g - mid) * tiltPxPerRow
-                    if (psfPx > 0.0) {
-                        var acc = 0.0
-                        for (k in 0 until 5) {
-                            val xk = xe + (k - 2.0) * psfPx / 4.0
-                            val fk = (tRow + exposureNs - edgeTimeAtX(xk)) / exposureNs
-                            acc += if (fk < 0.0) 0.0 else if (fk > 1.0) 1.0 else fk
-                        }
-                        frac = acc / 5.0
-                    } else {
-                        frac = ((tRow + exposureNs - edgeTimeAtX(xe)) / exposureNs).coerceIn(0.0, 1.0)
+                    // média da caixa por Newton-Cotes (trapézio): pesos 1/2,1,1,1,1/2 sobre 4 intervalos
+                    var acc = 0.0
+                    for (k in 0 until 5) {
+                        val xk = xe + (k - 2.0) * psfEff / 4.0
+                        val fk = ((tRow + exposureNs - edgeTimeAtX(xk)) / exposureNs).coerceIn(0.0, 1.0)
+                        acc += fk * (if (k == 0 || k == 4) 0.5 else 1.0)
                     }
+                    frac = acc / 4.0
                 }
                 var obj = objLevel.toDouble()
                 if (textureAmp > 0.0) {

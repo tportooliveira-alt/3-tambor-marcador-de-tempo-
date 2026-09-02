@@ -46,6 +46,13 @@ data class PhotocellConfig(
     /** Bordo inclinado (celular fora de nível): folga do limite superior do intervalo de qualidade 0. */
     val q0TiltAllowancePxPerRow: Double = 0.05,
     /**
+     * Abertura efetiva de um pixel do plano de luma (o pixel integra área; demosaico e reamostragem
+     * alargam mais). Enquanto o bordo atravessa essa abertura a resposta não é linear em f: com as
+     * amostras concentradas num extremo da rampa sobra um viés comum, invisível nos resíduos,
+     * limitado pelo tempo que o bordo leva para atravessar a abertura.
+     */
+    val aperturePx: Double = 1.5,
+    /**
      * Faixa plausível de velocidade do bordo, em px/s: 5 m/s a 12 mm/px até 20 m/s a ~1,7 mm/px (câmera
      * perto). Um ajuste com inclinação fora dela é rejeitado; o fallback de 1 coluna usa a faixa inteira.
      */
@@ -72,5 +79,9 @@ data class PhotocellConfig(
         require(frameResumeNs >= startLockoutNs + 500_000_000L) { "frameResumeNs precisa ser >= startLockoutNs + 0,5 s" }
         require(finishArmNs >= frameResumeNs + 500_000_000L) { "finishArmNs precisa ser >= frameResumeNs + 0,5 s" }
         require(exposureNs >= 1L && gamma > 0.0) { "exposureNs/gamma inválidos" }
+        // sob flicker de 120 Hz a referência vai para o quadro c−2 e o platô só chega em seen == 4:
+        // com uma janela menor o gatilho seria impossível (silenciosamente) nessa iluminação
+        require(confirmWindow >= 4) { "confirmWindow precisa ser >= 4 (platô do estimador com lag 2)" }
+        require(confirmRequired in 1..confirmWindow) { "confirmRequired precisa estar entre 1 e confirmWindow" }
     }
 }

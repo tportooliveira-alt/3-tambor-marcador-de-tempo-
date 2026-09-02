@@ -248,13 +248,21 @@ class CameraController(
         if (hs) glCameraSurface?.let { b.addTarget(it) }
         yuvReader?.let { b.addTarget(it.surface) }
         if (!hs) previewSurface?.let { b.addTarget(it) }
+        // Numa sessão restrita de alta velocidade o dispositivo IMPÕE control mode AUTO, AE ON,
+        // AWB AUTO e AF CONTINUOUS_VIDEO, e força todo o pós-processamento para FAST
+        // (CameraDevice.createCaptureSession, "Constrained high-speed recording"; camera3.h,
+        // CONSTRAINED_HIGH_SPEED_MODE). Pedir NR/Edge OFF ou SCENE_MODE ali é silenciosamente
+        // ignorado — só faz sentido na sessão normal. Continuam valendo: AE/AWB lock, regiões de
+        // medição, zoom e estabilização.
         b.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
         b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, cap.fpsRange)
         b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
         if (cap.oisOff) b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF)
-        if (cap.noiseReductionOff) b.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_OFF)
-        if (cap.edgeOff) b.set(CaptureRequest.EDGE_MODE, CameraMetadata.EDGE_MODE_OFF)
-        b.set(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_DISABLED)
+        if (!hs) {
+            if (cap.noiseReductionOff) b.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_OFF)
+            if (cap.edgeOff) b.set(CaptureRequest.EDGE_MODE, CameraMetadata.EDGE_MODE_OFF)
+            b.set(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_DISABLED)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && cap.logicalMultiCamera && cap.zoomRatioRange != null) {
             // câmera lógica: fixar 1x para o framework não trocar de módulo físico no meio da prova
             b.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1f.coerceIn(cap.zoomRatioRange.lower, cap.zoomRatioRange.upper))
@@ -276,8 +284,10 @@ class CameraController(
             b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
             b.set(CaptureRequest.CONTROL_AE_LOCK, false)
         }
-        // ---- foco: convergir em contínuo; depois fixar a distância (AF OFF) ou parar (AUTO sem gatilho)
-        val fm = lockedFocusMode
+        // ---- foco: convergir em contínuo; depois fixar a distância (AF OFF) ou parar (AUTO sem
+        // gatilho). Em alta velocidade o AF é imposto como CONTINUOUS_VIDEO: pedir OFF é ignorado
+        // sem erro, então nem tentamos (e a UI diz a verdade ao operador).
+        val fm = if (hs) null else lockedFocusMode
         if (!converging && fm != null) {
             b.set(CaptureRequest.CONTROL_AF_MODE, fm)
             if (fm == CameraMetadata.CONTROL_AF_MODE_OFF) lockedFocusDistance?.let { b.set(CaptureRequest.LENS_FOCUS_DISTANCE, it) }
@@ -326,8 +336,12 @@ class CameraController(
             lastAfState = result.get(CaptureResult.CONTROL_AF_STATE) ?: -1
             result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
             resultCount++
-            // janela de taxa: o quadro inicial abre a janela e não conta
-            if (fpsWindowStart == 0L) { fpsWindowStart = ts; fpsWindowCount = 0 } else {
+            // Janela de taxa: numa sessão de alta velocidade o framework só entrega o resultado do
+            // ÚLTIMO pedido de cada lote (Camera3Device: "do not send callback to the app" para os
+            // demais), então contar resultados daria fps/lote. Ali a taxa vem do leitor GL.
+            if (capability.mode.highSpeed) {
+                // nada a acumular: measuredFps vem do GlStripReader
+            } else if (fpsWindowStart == 0L) { fpsWindowStart = ts; fpsWindowCount = 0 } else {
                 fpsWindowCount++
                 val span = ts - fpsWindowStart
                 if (span >= 1_000_000_000L) {
@@ -470,7 +484,12 @@ class CameraController(
             lockedExposure = convergedExposure; lockedIso = convergedIso
         }
         val fd = lastFocusDistance
-        when {
+        if (cap.mode.highSpeed) {
+            // a sessão restrita impõe AF contínuo; não há trava de foco possível
+            lockedFocusMode = null
+            lockedFocusDistance = null
+            focusLabel = "contínuo (imposto pela sessão de alta velocidade)"
+        } else when {
             afModes.contains(CameraMetadata.CONTROL_AF_MODE_OFF) && fd != null -> {
                 lockedFocusMode = CameraMetadata.CONTROL_AF_MODE_OFF; lockedFocusDistance = fd
                 focusLabel = if (cap.manualFocus) "fixo (%.2f dpt)".format(fd) else "fixo (distância não calibrada)"

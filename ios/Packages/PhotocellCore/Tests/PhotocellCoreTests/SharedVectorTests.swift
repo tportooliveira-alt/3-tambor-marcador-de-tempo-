@@ -69,6 +69,10 @@ final class SharedVectorTests: XCTestCase {
         c.flickerRatio = dbl(j["flicker_ratio"])
         c.flickerAuto = bool(j["flicker_auto"])
         c.gamma = dbl(j["gamma"])
+        c.systematicUncNs = int64(j["systematic_unc_ns"])
+        c.saturationLow = int(j["saturation_low"])
+        c.saturationHigh = int(j["saturation_high"])
+        c.q0TiltAllowancePxPerRow = dbl(j["q0_tilt_allowance_px_per_row"])
         return c
     }
 

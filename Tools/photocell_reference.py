@@ -61,6 +61,11 @@ class PhotocellConfig:
     # Bordo inclinado (celular fora de nível): a primeira linha da banda cruza antes da linha média e
     # o gatilho dispara cedo. Só o intervalo de qualidade 0 (sem ajuste) precisa dessa folga.
     q0_tilt_allowance_px_per_row: float = 0.05
+    # Abertura efetiva de um pixel do plano de luma (o pixel integra área; demosaico e reamostragem
+    # alargam mais). Enquanto o bordo atravessa essa abertura a resposta não é linear em f: se as
+    # amostras interiores não cobrem a rampa toda, um viés comum a todas fica INDETECTÁVEL, e é esse
+    # tempo (abertura ÷ velocidade do bordo) que entra como incerteza.
+    aperture_px: float = 1.5
     # faixa plausível de velocidade do bordo em px/s: 5 m/s a 12 mm/px ate 20 m/s a ~1,7 mm/px (camera
     # perto). Um ajuste com inclinacao fora dela e rejeitado; o fallback de 1 coluna usa a faixa inteira.
     speed_px_per_s_min: float = 400.0
@@ -87,6 +92,12 @@ class PhotocellConfig:
             raise ValueError("finish_arm_ns precisa ser >= frame_resume_ns + 0,5 s")
         if self.exposure_ns < 1 or self.gamma <= 0.0:
             raise ValueError("exposure_ns/gamma inválidos")
+        # sob flicker de 120 Hz a referência vai para o quadro c-2 e o platô só chega em seen == 4:
+        # com uma janela menor o gatilho seria impossível (silenciosamente) nessa iluminação
+        if self.confirm_window < 4:
+            raise ValueError("confirm_window precisa ser >= 4 (platô do estimador com lag 2)")
+        if self.confirm_required < 1 or self.confirm_required > self.confirm_window:
+            raise ValueError("confirm_required precisa estar entre 1 e confirm_window")
 
 
 @dataclass(frozen=True)
@@ -449,6 +460,13 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
     E = float(cfg.exposure_ns)
     gamma = cfg.gamma
     k_sig = cfg.fraction_margin_sigmas
+    # O ruído foi medido em níveis CODIFICADOS (ΔY cru), mas o contraste C é medido depois da
+    # linearização: converte-se sigma pela derivada da curva no nível do fundo (gamma == 1 -> igual).
+    def linear_scale(v_raw: float) -> float:
+        if gamma == 1.0 or v_raw <= 0.0:
+            return 1.0
+        return gamma * math.pow(v_raw / 255.0, gamma - 1.0)
+
     noise_term = k_sig * math.sqrt(2.0) * noise_sigma_px
     center = (w - 1) / 2.0
     frames: List[Tuple[List[int], float]] = [(inp.strip_prev, float(inp.prev_ts_ns - inp.ts_ns)),
@@ -494,6 +512,7 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
 
     interior = 0
     bounds = 0
+    model_err = [0.0]      # erro sistemático medido pela curvatura dos resíduos (ns)
     lower: Optional[float] = None
     upper: Optional[float] = None
     # colunas cobertas / descobertas por quadro (contagem de linhas): sentido do bordo no fallback
@@ -530,7 +549,7 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
             # uma folga de |dx|·s_max.
             is_center_col = abs(dx) <= 0.5
             center_slack = abs(dx) * s_max
-            m = margin_term / C
+            m = margin_term * linear_scale(inp.strip_bg[idx]) / C
             if m < cfg.fraction_margin_min:
                 m = cfg.fraction_margin_min
             if m >= 0.5:
@@ -590,7 +609,8 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
 
     def fitted_result(t_est: float, var_t: float) -> Optional[CrossingEstimate]:
         """Qualidade 2 se a incerteza (3 sigma) propagada do ajuste e pequena; senao intervalo."""
-        unc = int(math.floor(3.0 * math.sqrt(var_t) + 0.5))
+        # ruído (3 sigma) + erro de modelo medido (limite, soma direta) + piso sistemático
+        unc = int(math.floor(3.0 * math.sqrt(var_t) + model_err[0] + 0.5))
         if unc < unc_floor:
             unc = unc_floor
         refined = int(math.floor(t_est + 0.5))
@@ -656,7 +676,13 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
         Ajuste linear ponderado sobre as medianas por coluna, com rejeição de colunas cujo resíduo é
         fisicamente impossível (> E + P/4). Devolve (t_c, inclinação, variância de t_c) ou None.
         """
+        # Com 2 colunas o ajuste tem ZERO graus de liberdade: a reta passa exatamente pelos dois
+        # pontos, o chi2 não pode denunciar nada e um viés de coluna vira erro de inclinação, que a
+        # extrapolação até a coluna central amplifica (medido: 0,85 ms declarando ±0,10 ms). Exigimos
+        # 3 colunas para um ajuste; com menos, o resultado vem do intervalo com a faixa de velocidades.
         fit_cols = list(good)
+        if len(fit_cols) < 3:
+            return None
         for _ in range(3):
             gw = gx = gt = gxx = gxt = 0.0
             for c in fit_cols:
@@ -717,7 +743,9 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
         return None
 
     good_cols, col_t, col_var, textured_cols, col_crms = column_stats(col_sum_w, col_times, col_s2, col_n)
-    if textured_cols > 0 or tex_term > noise_term:
+    # Com textura os limites vêm de pixels cujo contraste ela AUMENTOU (os únicos com margem < 0,5),
+    # e o O deles não representa o objeto: a comparação não pode ser no fio da navalha.
+    if textured_cols > 0 or tex_term > 0.5 * noise_term:
         # os limites foram classificados com o plato como O: com textura (detectada no plato ou na
         # dispersao das colunas) nao sao confiaveis
         lower_i = None
@@ -734,6 +762,14 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
             times2: Dict[int, List[float]] = {}
             s2_2: Dict[int, float] = {}
             n2: Dict[int, int] = {}
+            # Erro de MODELO: se a resposta do pixel não é linear em f (curva de tom desconhecida,
+            # desfoque, resposta do sensor), o resíduo t_obs - t_previsto depende sistematicamente de
+            # f. Acumulamos a média ponderada do resíduo em três faixas de f; o que exceder o ruído
+            # entra na incerteza. Com o modelo certo as três médias ficam dentro do ruído (custo zero).
+            bin_w = [0.0, 0.0, 0.0]
+            bin_wr = [0.0, 0.0, 0.0]
+            bin_wv = [0.0, 0.0, 0.0]
+            sum_w_f = 0.0      # Σ w·f: a assimetria das amostras na rampa mede o viés não observável
             for row in range(h):
                 t_row = row_time(row)
                 for i in range(w):
@@ -769,7 +805,7 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
                             Cj = plateau_lin[row * w + j] - Bj
                             if Cj == 0.0:
                                 continue
-                            mj = margin_term / (Cj if Cj >= 0.0 else -Cj)
+                            mj = margin_term * linear_scale(inp.strip_bg[row * w + j]) / (Cj if Cj >= 0.0 else -Cj)
                             if mj < cfg.fraction_margin_min:
                                 mj = cfg.fraction_margin_min
                             if (vj - Bj) / Cj >= 1.0 - mj:
@@ -779,7 +815,7 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
                         C = contrast if contrast >= 0.0 else -contrast
                         if C < cfg.min_contrast:
                             continue
-                        m = margin_term / C
+                        m = margin_term * linear_scale(inp.strip_bg[idx]) / C
                         if m < cfg.fraction_margin_min:
                             m = cfg.fraction_margin_min
                         if m > cfg.fraction_margin_max:
@@ -794,12 +830,36 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
                         times2.setdefault(i, []).append(t)
                         s2_2[i] = s2_2.get(i, 0.0) + st * st
                         n2[i] = n2.get(i, 0) + 1
+                        b_idx = 0 if f_pred < 1.0 / 3.0 else (1 if f_pred < 2.0 / 3.0 else 2)
+                        bin_w[b_idx] += wgt
+                        bin_wr[b_idx] += wgt * (t - t_pred)
+                        bin_wv[b_idx] += wgt * wgt * st * st
+                        sum_w_f += wgt * f_pred
             good2, col_t2, col_var2, textured2, col_crms2 = column_stats(sum_w2, times2, s2_2, n2)
             fit2 = fit_line(good2, sum_w2, col_t2, col_var2, textured2, col_crms2) if good2 else None
             if fit2 is None:
                 break
             fit = fit2
             textured_cols = textured2
+            excess = 0.0
+            tot_w = bin_w[0] + bin_w[1] + bin_w[2]
+            for b_idx in range(3):
+                if bin_w[b_idx] <= 0.0:
+                    continue
+                mean_r = bin_wr[b_idx] / bin_w[b_idx]
+                sd_r = math.sqrt(bin_wv[b_idx]) / bin_w[b_idx]
+                e = abs(mean_r) - sd_r
+                if e > excess:
+                    excess = e
+            # Prior: a abertura do pixel suaviza a rampa de forma SIMÉTRICA — com amostras
+            # equilibradas em torno de f = 0,5 o efeito se cancela e nada precisa ser somado; com as
+            # amostras concentradas num extremo da rampa sobra um viés comum a todas, invisível nos
+            # resíduos, limitado pelo tempo que o bordo leva para atravessar a abertura.
+            asym = 0.0
+            if tot_w > 0.0:
+                asym = abs(sum_w_f / tot_w - 0.5) / 0.5
+            prior = abs(slope1) * cfg.aperture_px * asym
+            model_err[0] = excess if excess > prior else prior
         if fit is not None:
             r = fitted_result(fit[0], fit[2])
             if r is not None:
@@ -944,6 +1004,7 @@ class PhotocellEngine:
         # Intervalo de qualidade 0: o limite inferior é o último quadro em que a faixa foi REALMENTE
         # comparada (o differencer devolve None enquanto ressemeia depois de um drop/arm/retomada);
         # se ainda não houve nenhum, o primeiro quadro recebido desde o ressemeio.
+        self.delivery_on: bool = False
         self.last_measured_ts: Optional[int] = None
         self.seed_ts: Optional[int] = None
         self.drops = 0
@@ -953,6 +1014,13 @@ class PhotocellEngine:
         self.transitions: List[str] = []
 
     # --- utilitários -------------------------------------------------------
+    def _set_delivery(self, on: bool) -> None:
+        """Efeito só na transição: o contrato é 'ligado/desligado alterna', não 'reafirma'."""
+        if self.delivery_on == on:
+            return
+        self.delivery_on = on
+        self._emit("setFrameDelivery:true" if on else "setFrameDelivery:false")
+
     def _emit(self, e: str) -> None:
         self.effects.append(e)
 
@@ -986,7 +1054,7 @@ class PhotocellEngine:
 
     def user_reset(self) -> None:
         self._cancel_wakeups()
-        self._emit("setFrameDelivery:false")
+        self._set_delivery(False)
         if self.lag != 1:
             self.lag = 1
             self._emit("setReferenceLag:1")
@@ -1029,7 +1097,7 @@ class PhotocellEngine:
 
     def _fail(self, reason: str) -> None:
         self._cancel_wakeups()
-        self._emit("setFrameDelivery:false")
+        self._set_delivery(False)
         self.candidate = None
         self.error_reason = reason
         self._go(ERROR)
@@ -1039,13 +1107,21 @@ class PhotocellEngine:
         self.calibrator.reset()
         self.calibrator_lag2.reset()
         self.candidate = None
+        # nova prova: nada da anterior pode vazar (drops antigos marcavam a passada como degradada)
+        self.start = None
+        self.finish = None
+        self.result = None
+        self.error_reason = None
+        self.drops = 0
+        self.last_drop_ts = None
+        self.drop_pending = False
         self.last_frame_ts = None
         self.last_measured_ts = None
         self.seed_ts = None
         if self.lag != 1:
             self.lag = 1
             self._emit("setReferenceLag:1")
-        self._emit("setFrameDelivery:true")
+        self._set_delivery(True)
         self._emit("resetDifferencer")
         self._go(CALIBRATING)
 
@@ -1063,7 +1139,7 @@ class PhotocellEngine:
             # retomada dos quadros (também vale se a chegada já foi armada antes, por configuração)
             self.last_frame_ts = None
             self.seed_ts = None
-            self._emit("setFrameDelivery:true")
+            self._set_delivery(True)
             self._emit("resetDifferencer")
         elif self.state == RUNNING and at_ns == s + cfg.finish_arm_ns:
             self.candidate = None
@@ -1076,6 +1152,12 @@ class PhotocellEngine:
     def frame(self, m: Optional[FrameMeasurement], ts_ns: Optional[int] = None) -> None:
         """m == None significa quadro-semente (o differencer acabou de ressemear)."""
         ts = m.ts_ns if m is not None else ts_ns
+        if ts is not None and self.last_frame_ts is not None and ts <= self.last_frame_ts:
+            # Timestamp do sensor andou para trás (troca de base de tempo, quadro repetido): não dá
+            # para medir com ele. Numa prova em andamento isso invalida a medição; fora dela, ignora.
+            if self.state in ACTIVE_STATES:
+                self._fail("timestampGlitch")
+            return
         if ts is not None:
             self._track_gaps(ts)
             self._process_deadlines(ts)
@@ -1142,6 +1224,12 @@ class PhotocellEngine:
 
     def _armed_frame(self, m: FrameMeasurement, confirming_state: str) -> None:
         assert self.threshold is not None
+        # A chegada é armada por um wake-up (relógio estimado do sensor); o tempo do QUADRO é a
+        # verdade. Sem esta guarda, um desvio entre as duas bases (ou um timer atrasado) aceitaria a
+        # chegada antes da janela cega e produziria um tempo de prova curto demais.
+        if confirming_state == CONFIRMING_FINISH and self.start is not None \
+                and m.ts_ns < self.start.raw_ts_ns + self.cfg.finish_arm_ns:
+            return
         if m.delta_core > self.threshold:
             degraded = self.last_drop_ts is not None and \
                 abs(m.ts_ns - self.last_drop_ts) < self.cfg.degraded_drop_window_ns
@@ -1187,7 +1275,7 @@ class PhotocellEngine:
         self.start = info
         self.threshold_start = self.threshold or 0.0
         self._emit("feedback:start")
-        self._emit("setFrameDelivery:false")
+        self._set_delivery(False)
         self._go(DEBOUNCE_START)
         s = info.raw_ts_ns
         self._schedule(s + cfg.start_lockout_ns)
@@ -1198,7 +1286,7 @@ class PhotocellEngine:
         cfg = self.cfg
         self.finish = info
         self._emit("feedback:finish")
-        self._emit("setFrameDelivery:false")
+        self._set_delivery(False)
         self._go(DEBOUNCE_FINISH)
         self._schedule(info.raw_ts_ns + cfg.finish_lockout_ns)
 

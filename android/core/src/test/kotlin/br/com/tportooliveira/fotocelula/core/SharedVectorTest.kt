@@ -82,6 +82,10 @@ class SharedVectorTest {
         flickerRatio = j.getDouble("flicker_ratio"),
         flickerAuto = j.getBoolean("flicker_auto"),
         gamma = j.getDouble("gamma"),
+        systematicUncNs = j.getLong("systematic_unc_ns"),
+        saturationLow = j.getInt("saturation_low"),
+        saturationHigh = j.getInt("saturation_high"),
+        q0TiltAllowancePxPerRow = j.getDouble("q0_tilt_allowance_px_per_row"),
     )
 
     private fun roi(j: JSONObject) = RoiRect(j.getInt("x"), j.getInt("width"), j.getInt("y0"), j.getInt("y1"))

@@ -72,6 +72,11 @@ object CrossingEstimator {
         val e = cfg.exposureNs.toDouble()
         val gamma = cfg.gamma
         val kSig = cfg.fractionMarginSigmas
+        // O ruído foi medido em níveis CODIFICADOS (ΔY cru), mas o contraste C vem depois da
+        // linearização: converte-se sigma pela derivada da curva no nível do fundo (gamma 1 = igual).
+        fun linearScale(vRaw: Double): Double =
+            if (gamma == 1.0 || vRaw <= 0.0) 1.0 else gamma * Math.pow(vRaw / 255.0, gamma - 1.0)
+
         val noiseTerm = kSig * sqrt(2.0) * noiseSigmaPx
         val center = (w - 1) / 2.0
         val frameStrips = ArrayList<IntArray>()
@@ -120,6 +125,11 @@ object CrossingEstimator {
         val texTerm = 1.5 * aTex
         val marginTerm = if (noiseTerm >= texTerm) noiseTerm else texTerm
 
+        // Erro de MODELO: se a resposta do pixel não é linear em f (curva de tom desconhecida,
+        // desfoque, resposta do sensor), o resíduo t_obs − t_previsto depende sistematicamente de f.
+        // A média ponderada do resíduo em três faixas de f mede isso; o que excede o ruído entra na
+        // incerteza (com o modelo certo as três médias ficam dentro do ruído: custo zero).
+        var modelErr = 0.0
         var interior = 0
         var bounds = 0
         var lower: Double? = null
@@ -149,7 +159,7 @@ object CrossingEstimator {
                 val dx = i - center
                 val isCenterCol = abs(dx) <= 0.5
                 val centerSlack = abs(dx) * sMax
-                var m = marginTerm / c
+                var m = marginTerm * linearScale(inp.stripBg[idx]) / c
                 if (m < cfg.fractionMarginMin) m = cfg.fractionMarginMin
                 if (m >= 0.5) continue
                 val usableInterior = m <= cfg.fractionMarginMax
@@ -208,7 +218,7 @@ object CrossingEstimator {
 
         /** Qualidade 2 se a incerteza (3σ) propagada do ajuste é pequena; senão intervalo. */
         fun fittedResult(tEst: Double, varT: Double): CrossingEstimate? {
-            var unc = floor(3.0 * sqrt(varT) + 0.5).toLong()
+            var unc = floor(3.0 * sqrt(varT) + modelErr + 0.5).toLong()
             if (unc < uncFloor) unc = uncFloor
             val refined = floor(tEst + 0.5).toLong()
             if (unc <= uncQ2Max) return CrossingEstimate(2, refined, unc, interior, bounds, lowerI, upperI, texturedCols)
@@ -270,6 +280,10 @@ object CrossingEstimator {
          * fisicamente impossível (> E + P/4). Devolve (t_c, inclinação, variância de t_c) ou null.
          */
         fun fitLine(good: IntArray, sumW: DoubleArray, colT: DoubleArray, colVar: DoubleArray, textured: Int, colCrms: DoubleArray): LineFit? {
+            // Com 2 colunas o ajuste tem ZERO graus de liberdade: a reta passa exatamente pelos dois
+            // pontos, o chi2 não denuncia nada e um viés de coluna vira erro de inclinação que a
+            // extrapolação até o centro amplifica (medido: 0,85 ms declarando ±0,10 ms).
+            if (good.size < 3) return null
             val fitCols = ArrayList<Int>()
             for (c in good) fitCols.add(c)
             for (iter in 0 until 3) {
@@ -334,7 +348,9 @@ object CrossingEstimator {
         val colT = stats1.t
         val colVar = stats1.variance
         texturedCols = stats1.textured
-        if (texturedCols > 0 || texTerm > noiseTerm) {
+        // Com textura os limites vêm de pixels cujo contraste ela AUMENTOU (os únicos com margem
+        // < 0,5), e o O deles não representa o objeto: a comparação não pode ser no fio da navalha.
+        if (texturedCols > 0 || texTerm > 0.5 * noiseTerm) {
             // os limites foram classificados com o platô como O: com textura (detectada no platô ou na
             // dispersão das colunas) não são confiáveis
             lowerI = null
@@ -351,6 +367,10 @@ object CrossingEstimator {
                 val s22 = DoubleArray(w)
                 val n2 = IntArray(w)
                 val neigh = DoubleArray(3)
+                val binW = DoubleArray(3)
+                val binWr = DoubleArray(3)
+                val binWv = DoubleArray(3)
+                var sumWf = 0.0   // Σ w·f: a assimetria das amostras na rampa mede o viés não observável
                 for (row in 0 until h) {
                     val tRow = rowTime(row)
                     for (i in 0 until w) {
@@ -378,7 +398,7 @@ object CrossingEstimator {
                                 val bj = bgLin[row * w + j]
                                 val cj = plateauLin[row * w + j] - bj
                                 if (cj == 0.0) continue
-                                var mj = marginTerm / (if (cj >= 0.0) cj else -cj)
+                                var mj = marginTerm * linearScale(inp.stripBg[row * w + j]) / (if (cj >= 0.0) cj else -cj)
                                 if (mj < cfg.fractionMarginMin) mj = cfg.fractionMarginMin
                                 if ((vj - bj) / cj >= 1.0 - mj) { neigh[nNeigh] = vj; nNeigh += 1 }
                             }
@@ -386,7 +406,7 @@ object CrossingEstimator {
                             val contrast = o - b
                             val c = if (contrast >= 0.0) contrast else -contrast
                             if (c < cfg.minContrast) continue
-                            var m = marginTerm / c
+                            var m = marginTerm * linearScale(inp.stripBg[idx]) / c
                             if (m < cfg.fractionMarginMin) m = cfg.fractionMarginMin
                             if (m > cfg.fractionMarginMax) continue
                             if (!(fPred > m && fPred < 1.0 - m)) continue
@@ -398,6 +418,11 @@ object CrossingEstimator {
                             times2[i][n2[i]] = t
                             s22[i] += st * st
                             n2[i] += 1
+                            val bIdx = if (fPred < 1.0 / 3.0) 0 else if (fPred < 2.0 / 3.0) 1 else 2
+                            binW[bIdx] += wgt
+                            binWr[bIdx] += wgt * (t - tPred)
+                            binWv[bIdx] += wgt * wgt * st * st
+                            sumWf += wgt * fPred
                         }
                     }
                 }
@@ -406,6 +431,20 @@ object CrossingEstimator {
                 if (fit2 == null) break
                 fit = fit2
                 texturedCols = stats2.textured
+                var excess = 0.0
+                val totW = binW[0] + binW[1] + binW[2]
+                for (bIdx in 0 until 3) {
+                    if (binW[bIdx] <= 0.0) continue
+                    val meanR = binWr[bIdx] / binW[bIdx]
+                    val sdR = sqrt(binWv[bIdx]) / binW[bIdx]
+                    val ex = abs(meanR) - sdR
+                    if (ex > excess) excess = ex
+                }
+                // A abertura do pixel suaviza a rampa de forma SIMÉTRICA: com amostras equilibradas em
+                // torno de f = 0,5 o efeito se cancela; concentradas num extremo, sobra um viés comum.
+                val asym = if (totW > 0.0) abs(sumWf / totW - 0.5) / 0.5 else 0.0
+                val prior = abs(f1.slope) * cfg.aperturePx * asym
+                modelErr = if (excess > prior) excess else prior
             }
             if (fit != null) fittedResult(fit.tc, fit.varT)?.let { return it }
             // uma coluna dominante (ou inclinação implausível): usa a coluna com mais peso

@@ -112,6 +112,31 @@ principal limite prático conhecido: um cavalo real tem textura, e o refinamento
 banda escolhida (peito/pescoço uniforme, sem peiteira) tem contraste limpo. A comparação com vídeo real
 decide isso (importador de clipes previsto).
 
+**Rodada 3 do loop — o simulador ficou mais honesto e o estimador teve de acompanhar.** A revisão de
+física apontou que a cena sintética era *mais fácil* que a realidade em quatro pontos, todos corrigidos
+nos três simuladores: o pixel não tinha **abertura** (um sensor integra a área do pixel: a caixa efetiva
+passou a incluir 1 px somado em quadratura à PSF óptica), a média da caixa usava pesos errados (agora
+trapézio ½,1,1,1,½), o flicker era amostrado no instante da linha em vez de **integrado na exposição**
+(agora integrado por padrão) e a "verdade" do cruzamento usava `x + w//2` enquanto o estimador cruza em
+`(w−1)/2` (meio pixel de diferença com faixa de largura par). Com a cena mais realista apareceram erros
+de até **0,89 ms declarando ±0,10 ms**, todos com a mesma origem: o ajuste aceitava **duas colunas**, e
+com duas colunas a reta passa exatamente pelos dois pontos — zero graus de liberdade, χ² cego, e um viés
+de coluna vira erro de inclinação que a extrapolação até a coluna central amplifica. Três regras novas:
+(1) um ajuste exige **≥ 3 colunas** (com menos, o resultado vem do intervalo com a faixa de velocidades
+plausíveis); (2) a incerteza soma um **erro de modelo medido** — a média ponderada do resíduo em três
+faixas de f denuncia qualquer não-linearidade (curva de tom errada, desfoque) — e, quando as amostras se
+concentram num extremo da rampa (onde um viés comum é invisível), um **prior** igual ao tempo que o bordo
+leva para atravessar a abertura do pixel; (3) os limites (bounds) são descartados assim que a textura
+chega à metade do ruído, porque sob textura eles vêm justamente dos pixels cujo contraste ela aumentou.
+Resultado na varredura de 3.840 cenários: **nenhum resultado desonesto**, erro médio 0,012 ms, p95
+0,046 ms e **máximo 0,23 ms** (era 0,89 ms) — ao custo de ~8 % dos cenários favoráveis, que passam a
+entregar intervalo honesto em vez de um número confiante e errado.
+
+**O viés comum cancela no tempo de prova.** O harness ganhou um modo `--pair`: o mesmo cenário cruzado
+nos dois sentidos, como largada e chegada. Uma curva de tom errada chega a **+1,08 ms por gatilho** —
+e some no ΔT: **−0,04 ms**. O mesmo vale para o offset por linha quando o skew não é compensado
+(−0,007 ms). É a razão de o app não pedir a gamma ao operador: o que ele lê na tela é o ΔT.
+
 **Rodada 2 do loop (187 cenários, 5 achados).** (1) Depois de um drop, de armar ou da retomada dos
 quadros, o differencer precisa de `lag+1` quadros para voltar a medir: o limite inferior do intervalo de
 qualidade 0 passou a ser o último quadro **efetivamente comparado** (não o último quadro recebido), senão
@@ -123,6 +148,15 @@ operação documentado passou a exigir o celular nivelado (≤ 0,05 px/linha ≈
 (peito do cavalo seguido de arreio/perna do cavaleiro a menos de 1 ms) enviesam o ajuste de forma coerente
 entre linhas e colunas — nem a variância empírica nem o χ² percebem, e o erro medido foi de 0,58 ms com
 ±0,24 ms declarados. Mitigação: posicionar a banda onde o bordo do peito está isolado.
+
+**Máquina de estados — 22.000 sequências aleatórias.** Sete correções: a chegada era armada só pelo
+wake-up (relógio *estimado* do sensor no Android) e agora exige também `ts_quadro ≥ largada + janela
+cega`, senão um desvio entre as bases de tempo aceitaria a chegada cedo e produziria um tempo curto
+demais; um timestamp que anda para trás vira erro explícito (`timestampGlitch`) em vez de tempo negativo;
+`_begin_calibration` zera drops/resultado da prova anterior (um drop antigo marcava a passada nova como
+degradada); `setFrameDelivery` só é emitido na transição; e `validate()` recusa `confirm_window < 4`, que
+sob flicker de 120 Hz (referência no quadro c−2, platô em seen == 4) tornaria o gatilho impossível em
+silêncio.
 
 **Rodada 1 do loop de agentes (achados que viraram regra).** (1) Pixels **saturados** (≥ 250 ou ≤ 5)
 ficam fora do ajuste e dos limites: um cavalo branco ao sol ou flicker forte com curva de tom levava a

@@ -77,6 +77,12 @@ public enum CrossingEstimator {
         let e = Double(cfg.exposureNs)
         let gamma = cfg.gamma
         let kSig = cfg.fractionMarginSigmas
+        // O ruído foi medido em níveis CODIFICADOS (ΔY cru), mas o contraste C vem depois da
+        // linearização: converte-se sigma pela derivada da curva no nível do fundo (gamma 1 = igual).
+        func linearScale(_ vRaw: Double) -> Double {
+            if gamma == 1.0 || vRaw <= 0.0 { return 1.0 }
+            return gamma * pow(vRaw / 255.0, gamma - 1.0)
+        }
         let noiseTerm = kSig * (2.0).squareRoot() * noiseSigmaPx
         let center = Double(w - 1) / 2.0
         var frameStrips: [[UInt8]] = [inp.stripPrev, inp.stripCur]
@@ -127,6 +133,11 @@ public enum CrossingEstimator {
         let texTerm = 1.5 * aTex
         let marginTerm = noiseTerm >= texTerm ? noiseTerm : texTerm
 
+        // Erro de MODELO: se a resposta do pixel não é linear em f (curva de tom desconhecida,
+        // desfoque, resposta do sensor), o resíduo t_obs − t_previsto depende sistematicamente de f.
+        // A média ponderada do resíduo em três faixas de f mede isso; o que excede o ruído entra na
+        // incerteza (com o modelo certo as três médias ficam dentro do ruído: custo zero).
+        var modelErr = 0.0
         var interior = 0
         var bounds = 0
         var lower: Double? = nil
@@ -156,7 +167,7 @@ public enum CrossingEstimator {
                 let dx = Double(i) - center
                 let isCenterCol = abs(dx) <= 0.5
                 let centerSlack = abs(dx) * sMax
-                var m = marginTerm / c
+                var m = marginTerm * linearScale(inp.stripBg[idx]) / c
                 if m < cfg.fractionMarginMin { m = cfg.fractionMarginMin }
                 if m >= 0.5 { continue }
                 let usableInterior = m <= cfg.fractionMarginMax
@@ -217,7 +228,7 @@ public enum CrossingEstimator {
 
         /// Qualidade 2 se a incerteza (3σ) propagada do ajuste é pequena; senão intervalo.
         func fittedResult(_ tEst: Double, _ varT: Double) -> CrossingEstimate? {
-            var unc = Int64((3.0 * varT.squareRoot() + 0.5).rounded(.down))
+            var unc = Int64((3.0 * varT.squareRoot() + modelErr + 0.5).rounded(.down))
             if unc < uncFloor { unc = uncFloor }
             let refined = Int64((tEst + 0.5).rounded(.down))
             if unc <= uncQ2Max {
@@ -277,6 +288,10 @@ public enum CrossingEstimator {
         /// Ajuste linear ponderado sobre as medianas por coluna, com rejeição de colunas cujo resíduo é
         /// fisicamente impossível (> E + P/4). Devolve (t_c, inclinação, variância de t_c) ou nil.
         func fitLine(_ good: [Int], _ sumW: [Double], _ colT: [Double], _ colVar: [Double], _ textured: Int, _ colCrms: [Double]) -> LineFit? {
+            // Com 2 colunas o ajuste tem ZERO graus de liberdade: a reta passa exatamente pelos dois
+            // pontos, o chi2 não denuncia nada e um viés de coluna vira erro de inclinação que a
+            // extrapolação até o centro amplifica (medido: 0,85 ms declarando ±0,10 ms).
+            if good.count < 3 { return nil }
             var fitCols = good
             for _ in 0..<3 {
                 var gw = 0.0, gx = 0.0, gt = 0.0, gxx = 0.0, gxt = 0.0
@@ -343,7 +358,9 @@ public enum CrossingEstimator {
         let colT = stats1.t
         let colVar = stats1.variance
         texturedCols = stats1.textured
-        if texturedCols > 0 || texTerm > noiseTerm {
+        // Com textura os limites vêm de pixels cujo contraste ela AUMENTOU (os únicos com margem
+        // < 0,5), e o O deles não representa o objeto: a comparação não pode ser no fio da navalha.
+        if texturedCols > 0 || texTerm > 0.5 * noiseTerm {
             // os limites foram classificados com o platô como O: com textura (detectada no platô ou na
             // dispersão das colunas) não são confiáveis
             lowerI = nil
@@ -360,6 +377,10 @@ public enum CrossingEstimator {
                 var s22 = [Double](repeating: 0, count: w)
                 var n2 = [Int](repeating: 0, count: w)
                 var neigh = [Double](repeating: 0, count: 3)
+                var binW = [Double](repeating: 0, count: 3)
+                var binWr = [Double](repeating: 0, count: 3)
+                var binWv = [Double](repeating: 0, count: 3)
+                var sumWf = 0.0   // Σ w·f: a assimetria das amostras na rampa mede o viés não observável
                 for row in 0..<h {
                     let tRow = rowTime(row)
                     for i in 0..<w {
@@ -387,7 +408,7 @@ public enum CrossingEstimator {
                                 let bj = bgLin[row * w + j]
                                 let cj = plateauLin[row * w + j] - bj
                                 if cj == 0.0 { continue }
-                                var mj = marginTerm / (cj >= 0.0 ? cj : -cj)
+                                var mj = marginTerm * linearScale(inp.stripBg[row * w + j]) / (cj >= 0.0 ? cj : -cj)
                                 if mj < cfg.fractionMarginMin { mj = cfg.fractionMarginMin }
                                 if (vj - bj) / cj >= 1.0 - mj { neigh[nNeigh] = vj; nNeigh += 1 }
                             }
@@ -395,7 +416,7 @@ public enum CrossingEstimator {
                             let contrast = o - b
                             let c = contrast >= 0.0 ? contrast : -contrast
                             if c < cfg.minContrast { continue }
-                            var m = marginTerm / c
+                            var m = marginTerm * linearScale(inp.stripBg[idx]) / c
                             if m < cfg.fractionMarginMin { m = cfg.fractionMarginMin }
                             if m > cfg.fractionMarginMax { continue }
                             if !(fPred > m && fPred < 1.0 - m) { continue }
@@ -407,6 +428,11 @@ public enum CrossingEstimator {
                             times2[i][n2[i]] = t
                             s22[i] += st * st
                             n2[i] += 1
+                            let bIdx = fPred < 1.0 / 3.0 ? 0 : (fPred < 2.0 / 3.0 ? 1 : 2)
+                            binW[bIdx] += wgt
+                            binWr[bIdx] += wgt * (t - tPred)
+                            binWv[bIdx] += wgt * wgt * st * st
+                            sumWf += wgt * fPred
                         }
                     }
                 }
@@ -415,6 +441,20 @@ public enum CrossingEstimator {
                 guard let f2 = fit2 else { break }
                 fit = f2
                 texturedCols = stats2.textured
+                var excess = 0.0
+                let totW = binW[0] + binW[1] + binW[2]
+                for bIdx in 0..<3 {
+                    if binW[bIdx] <= 0.0 { continue }
+                    let meanR = binWr[bIdx] / binW[bIdx]
+                    let sdR = binWv[bIdx].squareRoot() / binW[bIdx]
+                    let ex = abs(meanR) - sdR
+                    if ex > excess { excess = ex }
+                }
+                // A abertura do pixel suaviza a rampa de forma SIMÉTRICA: com amostras equilibradas em
+                // torno de f = 0,5 o efeito se cancela; concentradas num extremo, sobra um viés comum.
+                let asym = totW > 0.0 ? abs(sumWf / totW - 0.5) / 0.5 : 0.0
+                let prior = abs(f1.slope) * cfg.aperturePx * asym
+                modelErr = excess > prior ? excess : prior
             }
             if let f = fit, let r = fittedResult(f.tc, f.varT) { return r }
             // uma coluna dominante (ou inclinação implausível): usa a coluna com mais peso

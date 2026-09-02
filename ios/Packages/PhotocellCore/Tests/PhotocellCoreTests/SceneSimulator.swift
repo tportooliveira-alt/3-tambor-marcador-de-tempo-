@@ -36,12 +36,13 @@ struct Scene {
     let noiseSigma: Double, flickerAmp: Double
     let gamma: Double, tiltPxPerRow: Double, textureAmp: Double, flickerIntegrated: Bool, psfPx: Double
     var rng: Rng
-    private let xc: Int
+    private let xc: Double
+    private let psfEff: Double
 
     init(planeWidth: Int, stride: Int, planeHeight: Int, roi: RoiRect, skewNs: Int64, exposureNs: Int64, periodNs: Int64,
          direction: Int, speedPxPerS: Double, tCrossCenterNs: Int64, rowsA: Int, rowsB: Int,
          bgLevel: Int = 96, objLevel: Int = 184, noiseSigma: Double = 1.5, flickerAmp: Double = 0.0, seed: UInt64 = 1,
-         gamma: Double = 1.0, tiltPxPerRow: Double = 0.0, textureAmp: Double = 0.0, flickerIntegrated: Bool = false,
+         gamma: Double = 1.0, tiltPxPerRow: Double = 0.0, textureAmp: Double = 0.0, flickerIntegrated: Bool = true,
          psfPx: Double = 0.0) {
         self.planeWidth = planeWidth; self.stride = stride; self.planeHeight = planeHeight; self.roi = roi
         self.skewNs = skewNs; self.exposureNs = exposureNs; self.periodNs = periodNs; self.direction = direction
@@ -51,11 +52,14 @@ struct Scene {
         self.gamma = gamma; self.tiltPxPerRow = tiltPxPerRow; self.textureAmp = textureAmp
         self.flickerIntegrated = flickerIntegrated; self.psfPx = psfPx
         self.rng = Rng(seed: seed)
-        self.xc = roi.x + roi.width / 2
+        // centro GEOMÉTRICO da faixa (o mesmo do estimador: (w-1)/2); com largura par cai entre pixels
+        self.xc = Double(roi.x) + Double(roi.width - 1) / 2.0
+        // a caixa efetiva inclui SEMPRE a abertura de 1 px do próprio pixel, somada em quadratura à PSF
+        self.psfEff = (psfPx * psfPx + 1.0).squareRoot()
     }
 
-    func edgeTimeAt(_ x: Int) -> Double { Double(tCrossCenterNs) + Double(x - xc) * Double(direction) / v }
-    private func edgeTimeAtX(_ xe: Double) -> Double { Double(tCrossCenterNs) + (xe - Double(xc)) * Double(direction) / v }
+    func edgeTimeAt(_ x: Int) -> Double { Double(tCrossCenterNs) + (Double(x) - xc) * Double(direction) / v }
+    private func edgeTimeAtX(_ xe: Double) -> Double { Double(tCrossCenterNs) + (xe - xc) * Double(direction) / v }
 
     /// Linhas y0..y1 da faixa (height*stride bytes), preenchimento 0xEE fora das colunas do plano.
     mutating func frameBytes(_ tFrame: Int64) -> [UInt8] {
@@ -77,22 +81,19 @@ struct Scene {
                 var frac = 0.0
                 if g >= rowsA && g <= rowsB {
                     let xe = Double(x) - (Double(g) - mid) * tiltPxPerRow
-                    if psfPx > 0.0 {
-                        var acc = 0.0
-                        for k in 0..<5 {
-                            let xk = xe + (Double(k) - 2.0) * psfPx / 4.0
-                            let fk = (Double(tRow) + e - edgeTimeAtX(xk)) / e
-                            acc += fk < 0.0 ? 0.0 : (fk > 1.0 ? 1.0 : fk)
-                        }
-                        frac = acc / 5.0
-                    } else {
-                        frac = min(max((Double(tRow) + e - edgeTimeAtX(xe)) / e, 0.0), 1.0)
+                    // média da caixa por Newton-Cotes (trapézio): pesos 1/2,1,1,1,1/2 sobre 4 intervalos
+                    var acc = 0.0
+                    for k in 0..<5 {
+                        let xk = xe + (Double(k) - 2.0) * psfEff / 4.0
+                        let fk = min(max((Double(tRow) + e - edgeTimeAtX(xk)) / e, 0.0), 1.0)
+                        acc += fk * ((k == 0 || k == 4) ? 0.5 : 1.0)
                     }
+                    frac = acc / 4.0
                 }
                 var obj = Double(objLevel)
                 if textureAmp > 0.0 {
                     // textura presa ao objeto: fase relativa ao bordo (px atrás do bordo no meio da exposição)
-                    let rel = Double(x - xc) * Double(direction) - (Double(tRow) + e / 2.0 - Double(tCrossCenterNs)) * v
+                    let rel = (Double(x) - xc) * Double(direction) - (Double(tRow) + e / 2.0 - Double(tCrossCenterNs)) * v
                     obj = Double(objLevel) + textureAmp * sin(rel * 0.9 + Double(g) * 0.3)
                 }
                 let lin = base + (obj - base) * frac

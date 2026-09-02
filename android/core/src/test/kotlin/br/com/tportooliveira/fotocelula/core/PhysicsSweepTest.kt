@@ -77,13 +77,17 @@ class PhysicsSweepTest {
         println("[PhysicsSweep] $summary")
         assertTrue(failures.isEmpty(), "Falhas (${failures.size}):\n" + failures.take(25).joinToString("\n") + "\n$summary")
         assertTrue(triggered >= all.size * 0.98, "taxa de disparo baixa: $summary")
-        assertTrue(favorableQ2 >= favorable * 0.95, "poucos refinamentos completos nos cenários favoráveis: $summary")
-        // Sem textura, mais da metade dos cenários (incluindo exposições curtas e ruído alto) fecha em qualidade 2.
+        // Um ajuste só é aceito com >= 3 colunas (2 colunas dão uma reta exata e não verificável), e a
+        // incerteza inclui o viés não observável da abertura do pixel: isso custa parte dos cenários
+        // favoráveis, que caem para intervalo honesto em vez de um número confiante e errado.
+        assertTrue(favorableQ2 >= favorable * 0.90, "poucos refinamentos completos nos cenários favoráveis: $summary")
         // Com textura o estimador é honesto por projeto: cai para intervalo ou quadro, nunca declara precisão falsa.
         val clean = triggered - texQ2 - texQ1 - texQ0
-        assertTrue(errs.size >= clean * 0.55, "poucos refinamentos completos sem textura: $summary")
-        assertTrue(mean < 0.10, "erro médio alto: $summary")
-        assertTrue(p95 < 0.25, "p95 alto: $summary")
+        assertTrue(errs.size >= clean * 0.45, "poucos refinamentos completos sem textura: $summary")
+        assertTrue(mean < 0.05, "erro médio alto: $summary")
+        assertTrue(p95 < 0.10, "p95 alto: $summary")
+        // O que o produto promete: nenhum refinamento de qualidade 2 erra mais que 0,35 ms.
+        assertTrue((sorted.lastOrNull() ?: 0.0) <= 0.35, "erro máximo em qualidade 2 alto: $summary")
     }
 
     @Test

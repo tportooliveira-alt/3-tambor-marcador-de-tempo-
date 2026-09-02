@@ -120,12 +120,20 @@ class PhotocellEngine(
     // Intervalo de qualidade 0: o limite inferior é o último quadro em que a faixa foi REALMENTE
     // comparada (o differencer devolve null enquanto ressemeia depois de um drop/arm/retomada); se
     // ainda não houve nenhum, o primeiro quadro recebido desde o ressemeio.
+    private var deliveryOn = false
     private var lastMeasuredTs: Nanos? = null
     private var seedTs: Nanos? = null
     private var lastDropTs: Nanos? = null
     private var dropPending = false   // a plataforma avisou de quadros perdidos sem timestamp
 
     // ---- utilitários ----------------------------------------------------------
+    /** Efeito só na transição: o contrato é "ligado/desligado alterna", não "reafirma". */
+    private fun setDelivery(on: Boolean) {
+        if (deliveryOn == on) return
+        deliveryOn = on
+        emit(Effect.SetFrameDelivery(on))
+    }
+
     private fun emit(e: Effect) { effects.add(e) }
 
     private fun go(s: PhotocellState) {
@@ -165,7 +173,7 @@ class PhotocellEngine(
 
     fun userReset() {
         cancelWakeups()
-        emit(Effect.SetFrameDelivery(false))
+        setDelivery(false)
         if (lag != 1) {
             lag = 1
             emit(Effect.SetReferenceLag(1))
@@ -213,7 +221,7 @@ class PhotocellEngine(
 
     private fun fail(reason: String) {
         cancelWakeups()
-        emit(Effect.SetFrameDelivery(false))
+        setDelivery(false)
         candidate = null
         errorReason = reason
         go(PhotocellState.ERROR)
@@ -224,6 +232,14 @@ class PhotocellEngine(
         calibrator.reset()
         calibratorLag2.reset()
         candidate = null
+        // nova prova: nada da anterior pode vazar (drops antigos marcavam a passada como degradada)
+        start = null
+        finish = null
+        result = null
+        errorReason = null
+        drops = 0
+        lastDropTs = null
+        dropPending = false
         lastFrameTs = null
         lastMeasuredTs = null
         seedTs = null
@@ -231,7 +247,7 @@ class PhotocellEngine(
             lag = 1
             emit(Effect.SetReferenceLag(1))
         }
-        emit(Effect.SetFrameDelivery(true))
+        setDelivery(true)
         emit(Effect.ResetDifferencer)
         go(PhotocellState.CALIBRATING)
     }
@@ -246,7 +262,7 @@ class PhotocellEngine(
             (state == PhotocellState.RUNNING || state == PhotocellState.AWAITING_FINISH) && atNs == s + cfg.frameResumeNs -> {
                 lastFrameTs = null
                 seedTs = null
-                emit(Effect.SetFrameDelivery(true))
+                setDelivery(true)
                 emit(Effect.ResetDifferencer)
             }
             state == PhotocellState.RUNNING && atNs == s + cfg.finishArmNs -> {
@@ -262,6 +278,13 @@ class PhotocellEngine(
     /** [m] == null significa quadro-semente (o differencer acabou de ressemear); passe [tsNs]. */
     fun frame(m: FrameMeasurement?, tsNs: Nanos? = null) {
         val ts = m?.tsNs ?: tsNs
+        val lastTs = lastFrameTs
+        if (ts != null && lastTs != null && ts <= lastTs) {
+            // Timestamp do sensor andou para trás (troca de base de tempo, quadro repetido): não dá
+            // para medir com ele. Numa prova em andamento isso invalida a medição; fora dela, ignora.
+            if (state.isActive) fail("timestampGlitch")
+            return
+        }
         if (ts != null) {
             trackGaps(ts)
             processDeadlines(ts)
@@ -330,6 +353,11 @@ class PhotocellEngine(
 
     private fun armedFrame(m: FrameMeasurement, confirming: PhotocellState) {
         val th = threshold ?: return
+        // A chegada é armada por um wake-up (relógio estimado do sensor); o tempo do QUADRO é a
+        // verdade. Sem esta guarda, um desvio entre as duas bases (ou um timer atrasado) aceitaria a
+        // chegada antes da janela cega e produziria um tempo de prova curto demais.
+        val st = start
+        if (confirming == PhotocellState.CONFIRMING_FINISH && st != null && m.tsNs < st.rawTsNs + cfg.finishArmNs) return
         if (m.deltaCore > th) {
             val ld = lastDropTs
             val degraded = ld != null && Math.abs(m.tsNs - ld) < cfg.degradedDropWindowNs
@@ -378,7 +406,7 @@ class PhotocellEngine(
         start = info
         thresholdStart = threshold ?: 0.0
         emit(Effect.Feedback(Effect.Feedback.Kind.START))
-        emit(Effect.SetFrameDelivery(false))
+        setDelivery(false)
         go(PhotocellState.DEBOUNCE_START)
         val s = info.rawTsNs
         schedule(s + cfg.startLockoutNs)
@@ -389,7 +417,7 @@ class PhotocellEngine(
     private fun triggerFinish(info: TriggerInfo) {
         finish = info
         emit(Effect.Feedback(Effect.Feedback.Kind.FINISH))
-        emit(Effect.SetFrameDelivery(false))
+        setDelivery(false)
         go(PhotocellState.DEBOUNCE_FINISH)
         schedule(info.rawTsNs + cfg.finishLockoutNs)
     }

@@ -5,6 +5,7 @@ Harness de cenários adversariais para o estimador (referência Python).
 Uso (linha de comando):
     python3 Tools/scenario_harness.py '{"speed_m_s": 12, "texture_amp": 20, "dark_object": true}'
     python3 Tools/scenario_harness.py --sweep '[{"noise_sigma": 3}, {"psf_px": 4, "frac": 0.9}]'
+    python3 Tools/scenario_harness.py --pair  '[{"cfg_gamma": 2.2}]'    # erro do TEMPO DE PROVA (ΔT)
 
 Cada cenário roda o pipeline inteiro (differencer → calibração → engine → estimador) numa cena
 sintética com rolling shutter, exposição integrada, ruído e os efeitos "reais" opcionais, e devolve:
@@ -25,7 +26,7 @@ Critérios de achado (os mesmos do loop de agentes):
 Parâmetros (todos opcionais; unidades no nome):
     speed_m_s (14), mm_per_px (6), exposure_ns (1/480 s), fps (240), noise_sigma (1.5), direction (+1/−1),
     frac (0.37: fase do cruzamento dentro do período), obj_level (184), bg_level (96), dark_object (False:
-    troca obj/fundo), flicker (0.0 amplitude 120 Hz), flicker_integrated (False), gamma (1.0) e cfg_gamma (1.0),
+    troca obj/fundo), flicker (0.0 amplitude 120 Hz), flicker_integrated (True: o sensor integra a luz na exposição), gamma (1.0) e cfg_gamma (1.0),
     tilt_px_per_row (0), texture_amp (0), psf_px (0), strip_width (15), band_rows (96), object_rows_margin (12),
     object_width_px (None = infinito; largura finita mostra o bordo de saída), occluded_rows (0: linhas do
     meio da banda sem objeto), drop_frames ([]: índices relativos ao quadro candidato, ex. [-1, 0, 1]),
@@ -63,11 +64,17 @@ class AdversarialScene(Scene):
             f_out = 0.0 if f_out < 0.0 else (1.0 if f_out > 1.0 else f_out)
             f_in -= f_out
         if self.second_delay is not None:
-            # segundo objeto (mesma luma) entrando `second_delay` depois: soma sem passar de 1
+            # Segundo objeto (mesma luma) com a MESMA largura, entrando `second_delay` depois: só faz
+            # sentido se o primeiro já saiu do pixel, senão os dois se sobrepõem e a soma seria irreal.
             t2 = tx + self.second_delay
-            f2 = (t_row + self.E - t2) / self.E
-            f2 = 0.0 if f2 < 0.0 else (1.0 if f2 > 1.0 else f2)
-            f_in = min(1.0, f_in + f2)
+            f2_in = (t_row + self.E - t2) / self.E
+            f2_in = 0.0 if f2_in < 0.0 else (1.0 if f2_in > 1.0 else f2_in)
+            if self.object_width_px is not None:
+                t2_out = t2 + self.object_width_px / self.v
+                f2_out = (t_row + self.E - t2_out) / self.E
+                f2_out = 0.0 if f2_out < 0.0 else (1.0 if f2_out > 1.0 else f2_out)
+                f2_in -= f2_out
+            f_in = min(1.0, f_in + f2_in)
         return f_in
 
     def frame_bytes(self, t_frame):
@@ -91,15 +98,11 @@ class AdversarialScene(Scene):
                 frac = 0.0
                 if covered_row:
                     xe = x - (g - mid) * self.tilt
-                    if self.psf > 0:
-                        n = 5
-                        acc = 0.0
-                        for k in range(n):
-                            xk = xe + (k - (n - 1) / 2) * self.psf / (n - 1)
-                            acc += self._coverage(t_row, xk)
-                        frac = acc / n
-                    else:
-                        frac = self._coverage(t_row, xe)
+                    acc = 0.0
+                    for k in range(5):
+                        xk = xe + (k - 2.0) * self.psf / 4.0
+                        acc += self._coverage(t_row, xk) * (0.5 if (k == 0 or k == 4) else 1.0)
+                    frac = acc / 4.0
                 obj = self.obj
                 if self.tex > 0:
                     rel = (x - self.xc) * self.d - (t_row + self.E / 2 - self.tc) * self.v
@@ -148,12 +151,18 @@ def run_scenario(**p):
     cf = n_pre + 3
     tc = t0 + cf * P + int(frac * P)
     sd = p.get("second_object_delay_ms")
+    if sd is not None and p.get("object_width_px") is None:
+        raise ValueError("cenário inválido: second_object_delay_ms exige object_width_px (dois "
+                         "semiplanos sobrepostos não são um objeto)")
+    if sd is not None and float(sd) * 1e6 * (speed * 1000.0 / mm_per_px) / 1e9 < float(p["object_width_px"]):
+        raise ValueError("cenário inválido: o segundo objeto entra antes de o primeiro sair "
+                         "(second_object_delay_ms curto demais para object_width_px)")
     sc = AdversarialScene(plane_width=pw, stride=stride, plane_height=ph, roi=roi, skew_ns=skew, exposure_ns=expo,
                           period_ns=P, direction=d, speed_px_per_s=speed_px, t_cross_center_ns=tc,
                           rows_a=roi.y0 + margin, rows_b=roi.y1 - 1 - margin, bg_level=bg, obj_level=obj,
                           noise_sigma=noise, flicker_amp=flicker, seed=seed, gamma=float(p.get("gamma", 1.0)),
                           tilt_px_per_row=float(p.get("tilt_px_per_row", 0.0)), texture_amp=float(p.get("texture_amp", 0.0)),
-                          flicker_integrated=bool(p.get("flicker_integrated", False)), psf_px=float(p.get("psf_px", 0.0)),
+                          flicker_integrated=bool(p.get("flicker_integrated", True)), psf_px=float(p.get("psf_px", 0.0)),
                           object_width_px=p.get("object_width_px"), occluded_rows=int(p.get("occluded_rows", 0)),
                           second_object_delay_ns=None if sd is None else int(float(sd) * 1e6))
     drops = set(int(i) + cf for i in p.get("drop_frames", []))
@@ -213,7 +222,38 @@ def run_scenario(**p):
     return out
 
 
+def run_pair(**p):
+    """
+    Erro do TEMPO DE PROVA (o que o produto entrega): o mesmo cenário cruzado nos dois sentidos, como
+    a largada e a chegada. Vieses comuns aos dois gatilhos (curva de tom desconhecida, offset por linha
+    quando o skew não é compensado, atraso do núcleo) cancelam na diferença; o que sobra é o erro real
+    de ΔT. Achado: |erro de ΔT| maior que a soma das incertezas declaradas + 0,1 ms.
+    """
+    a = run_scenario(**{**p, "direction": 1})
+    b = run_scenario(**{**p, "direction": -1, "seed": int(p.get("seed", 1)) + 101})
+    out = {"params": p, "pair": True}
+    if not a["triggered"] or not b["triggered"]:
+        out.update(delta_error_ms=None, finding="sem disparo num dos sentidos")
+        return out
+    # ΔT medido − ΔT verdadeiro = (erro da chegada) − (erro da largada)
+    delta_err = (b["error_ms"] or 0.0) - (a["error_ms"] or 0.0)
+    budget = (a["unc_ms"] or 0.0) + (b["unc_ms"] or 0.0) + 0.1
+    out.update(delta_error_ms=round(delta_err, 4), start=(a["quality"], a["error_ms"], a["unc_ms"]),
+               finish=(b["quality"], b["error_ms"], b["unc_ms"]), budget_ms=round(budget, 4),
+               finding=None if abs(delta_err) <= budget else "erro de ΔT fora do orçamento de incerteza")
+    return out
+
+
 def main(argv):
+    if len(argv) >= 3 and argv[1] == "--pair":
+        scenarios = json.loads(argv[2])
+        results = [run_pair(**s) for s in scenarios]
+        for r in results:
+            p = r.pop("params")
+            print(json.dumps(r, ensure_ascii=False), "<-", json.dumps(p, ensure_ascii=False))
+        n_find = sum(1 for r in results if r["finding"])
+        print(f"pares={len(results)} achados={n_find}")
+        return 1 if n_find else 0
     if len(argv) >= 2 and argv[1] == "--sweep":
         scenarios = json.loads(argv[2]) if len(argv) > 2 else json.load(sys.stdin)
     elif len(argv) >= 2:

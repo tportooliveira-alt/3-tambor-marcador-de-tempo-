@@ -43,6 +43,11 @@ public struct PhotocellConfig: Equatable, Sendable {
     public var saturationHigh: Int = 250
     /// Bordo inclinado (celular fora de nível): folga do limite superior do intervalo de qualidade 0.
     public var q0TiltAllowancePxPerRow: Double = 0.05
+    /// Abertura efetiva de um pixel do plano de luma (o pixel integra área; demosaico e reamostragem
+    /// alargam mais). Enquanto o bordo atravessa essa abertura a resposta não é linear em f: com as
+    /// amostras concentradas num extremo da rampa sobra um viés comum, invisível nos resíduos,
+    /// limitado pelo tempo que o bordo leva para atravessar a abertura.
+    public var aperturePx: Double = 1.5
     /// Faixa plausível de velocidade do bordo, em px/s: 5 m/s a 12 mm/px até 20 m/s a ~1,7 mm/px (câmera
     /// perto). Um ajuste com inclinação fora dela é rejeitado; o fallback de 1 coluna usa a faixa inteira.
     public var speedPxPerSMin: Double = 400.0
@@ -69,6 +74,7 @@ public struct PhotocellConfig: Equatable, Sendable {
         case frameResumeBeforeLockoutEnds
         case finishArmBeforeFrameResume
         case invalidExposureOrGamma
+        case invalidConfirmWindow
     }
 
     /// Janelas coerentes: os quadros voltam depois do bloqueio e a chegada arma depois de voltarem.
@@ -77,5 +83,9 @@ public struct PhotocellConfig: Equatable, Sendable {
         if frameResumeNs < startLockoutNs + 500_000_000 { throw ValidationError.frameResumeBeforeLockoutEnds }
         if finishArmNs < frameResumeNs + 500_000_000 { throw ValidationError.finishArmBeforeFrameResume }
         if exposureNs < 1 || gamma <= 0.0 { throw ValidationError.invalidExposureOrGamma }
+        // sob flicker de 120 Hz a referência vai para o quadro c−2 e o platô só chega em seen == 4:
+        // com uma janela menor o gatilho seria impossível (silenciosamente) nessa iluminação
+        if confirmWindow < 4 { throw ValidationError.invalidConfirmWindow }
+        if confirmRequired < 1 || confirmRequired > confirmWindow { throw ValidationError.invalidConfirmWindow }
     }
 }

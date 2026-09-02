@@ -122,6 +122,7 @@ public final class PhotocellEngine {
     /// Intervalo de qualidade 0: o limite inferior é o último quadro em que a faixa foi REALMENTE
     /// comparada (o differencer devolve nil enquanto ressemeia depois de um drop/arm/retomada); se
     /// ainda não houve nenhum, o primeiro quadro recebido desde o ressemeio.
+    private var deliveryOn = false
     private var lastMeasuredTs: Nanos? = nil
     private var seedTs: Nanos? = nil
     private var lastDropTs: Nanos? = nil
@@ -138,6 +139,13 @@ public final class PhotocellEngine {
     }
 
     // MARK: - utilitários
+    /// Efeito só na transição: o contrato é "ligado/desligado alterna", não "reafirma".
+    private func setDelivery(_ on: Bool) {
+        if deliveryOn == on { return }
+        deliveryOn = on
+        emit(.setFrameDelivery(on))
+    }
+
     private func emit(_ e: Effect) { effects.append(e) }
 
     private func go(_ s: PhotocellState) {
@@ -177,7 +185,7 @@ public final class PhotocellEngine {
 
     public func userReset() {
         cancelWakeups()
-        emit(.setFrameDelivery(false))
+        setDelivery(false)
         if lag != 1 {
             lag = 1
             emit(.setReferenceLag(1))
@@ -223,7 +231,7 @@ public final class PhotocellEngine {
 
     private func fail(_ reason: String) {
         cancelWakeups()
-        emit(.setFrameDelivery(false))
+        setDelivery(false)
         candidate = nil
         errorReason = reason
         go(.error)
@@ -234,6 +242,14 @@ public final class PhotocellEngine {
         calibrator.reset()
         calibratorLag2.reset()
         candidate = nil
+        // nova prova: nada da anterior pode vazar (drops antigos marcavam a passada como degradada)
+        start = nil
+        finish = nil
+        result = nil
+        errorReason = nil
+        drops = 0
+        lastDropTs = nil
+        dropPending = false
         lastFrameTs = nil
         lastMeasuredTs = nil
         seedTs = nil
@@ -241,7 +257,7 @@ public final class PhotocellEngine {
             lag = 1
             emit(.setReferenceLag(1))
         }
-        emit(.setFrameDelivery(true))
+        setDelivery(true)
         emit(.resetDifferencer)
         go(.calibrating)
     }
@@ -256,7 +272,7 @@ public final class PhotocellEngine {
         } else if (state == .running || state == .awaitingFinish) && atNs == s + cfg.frameResumeNs {
             lastFrameTs = nil
             seedTs = nil
-            emit(.setFrameDelivery(true))
+            setDelivery(true)
             emit(.resetDifferencer)
         } else if state == .running && atNs == s + cfg.finishArmNs {
             candidate = nil
@@ -270,6 +286,12 @@ public final class PhotocellEngine {
     /// `m == nil` significa quadro-semente (o differencer acabou de ressemear); passe `tsNs`.
     public func frame(_ m: FrameMeasurement?, tsNs: Nanos? = nil) {
         let ts = m?.tsNs ?? tsNs
+        if let ts = ts, let lastTs = lastFrameTs, ts <= lastTs {
+            // Timestamp do sensor andou para trás (troca de base de tempo, quadro repetido): não dá
+            // para medir com ele. Numa prova em andamento isso invalida a medição; fora dela, ignora.
+            if state.isActive { fail("timestampGlitch") }
+            return
+        }
         if let ts = ts {
             trackGaps(ts)
             processDeadlines(ts)
@@ -336,6 +358,10 @@ public final class PhotocellEngine {
 
     private func armedFrame(_ m: FrameMeasurement, confirming: PhotocellState) {
         guard let th = threshold else { return }
+        // A chegada é armada por um wake-up (relógio estimado do sensor); o tempo do QUADRO é a
+        // verdade. Sem esta guarda, um desvio entre as duas bases (ou um timer atrasado) aceitaria a
+        // chegada antes da janela cega e produziria um tempo de prova curto demais.
+        if confirming == .confirmingFinish, let st = start, m.tsNs < st.rawTsNs + cfg.finishArmNs { return }
         if m.deltaCore > th {
             var degraded = false
             if let ld = lastDropTs { degraded = abs(m.tsNs - ld) < cfg.degradedDropWindowNs }
@@ -382,7 +408,7 @@ public final class PhotocellEngine {
         start = info
         thresholdStart = threshold ?? 0.0
         emit(.feedback(.start))
-        emit(.setFrameDelivery(false))
+        setDelivery(false)
         go(.debounceStart)
         let s = info.rawTsNs
         schedule(s + cfg.startLockoutNs)
@@ -393,7 +419,7 @@ public final class PhotocellEngine {
     private func triggerFinish(_ info: TriggerInfo) {
         finish = info
         emit(.feedback(.finish))
-        emit(.setFrameDelivery(false))
+        setDelivery(false)
         go(.debounceFinish)
         schedule(info.rawTsNs + cfg.finishLockoutNs)
     }
