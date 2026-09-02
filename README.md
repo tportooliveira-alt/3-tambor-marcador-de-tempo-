@@ -43,7 +43,7 @@ exposições curtas e longas, calibração, máquina de estados completa).
 | Por quadro (bruto) a 240 FPS | ±2,08 ms | limite da amostragem |
 | **Refinado, qualidade 2** (fração de exposição) | **0,01–0,1 ms** na simulação (3.840 cenários; sem textura: erro médio 0,007 ms, p95 0,03 ms, máximo 0,31 ms) | precisa de contraste ≥ 20 níveis entre cavalo e fundo, **superfície uniforme na banda** e exposição ≥ 1/480 s; a incerteza 3σ é mostrada junto do tempo |
 | Refinado, qualidade 1 (intervalo) | intervalo honesto que contém a verdade (tipicamente ±0,5–1,5 ms) | exposição curta, contraste baixo, bordo inclinado ou visto numa só coluna |
-| Refinado, qualidade 0 | ±2,08 ms (meio da janela do quadro) | **textura no objeto** (pelagem malhada, peiteira, arreios na banda): o estimador recusa o refinamento em vez de inventar precisão; o app mostra o bruto |
+| Refinado, qualidade 0 | ≈ ±4,6 ms (intervalo físico: do início da exposição anterior ao fim desta, mais o atraso até o centro; cresce se houve quadro perdido) | **textura no objeto** (pelagem malhada, peiteira, arreios na banda): o estimador recusa o refinamento em vez de inventar precisão; o app mostra o bruto |
 | Samsung (30 FPS para apps de terceiros) | ±17 ms | o app avisa na tela |
 
 Números por condição (velocidade × exposição × ruído × flicker × textura): [`docs/validacao-numerica.md`](docs/validacao-numerica.md).
@@ -112,6 +112,7 @@ python3 Tools/validate_project.py       # validação estática do projeto iOS (
 1. A sonda escolhe o modo: 240/120 FPS em sessão de alta velocidade (uma única superfície, lida por OpenGL) ou 120/60/30 FPS em sessão normal. Se a sessão de alta velocidade não entregar a taxa prometida (medida nos timestamps), o app cai sozinho para a normal e avisa.
 2. Samsung só libera 30 FPS a apps de terceiros (±17 ms por gatilho): use um Pixel/Motorola/Xiaomi para o milésimo.
 3. O skew do rolling shutter vem do próprio aparelho (`SENSOR_ROLLING_SHUTTER_SKEW`) e aparece nos diagnósticos.
+4. No iPhone o skew não é exposto: o app não compensa o tempo por linha, e esse offset (≈ metade do skew, ~1,6 ms) é o mesmo na largada e na chegada quando a banda é a mesma — cancela em ΔT; a diferença de altura do cavalo entre as duas passagens vale no máximo ~0,4 ms por 96 linhas de banda.
 
 ## Checklist de verificação no aparelho
 

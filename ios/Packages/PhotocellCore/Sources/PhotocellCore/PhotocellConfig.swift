@@ -36,6 +36,11 @@ public struct PhotocellConfig: Equatable, Sendable {
     public var fractionMarginSigmas: Double = 4.0
     /// Acima desta margem (contraste/ruído baixo) o pixel só fornece limites.
     public var fractionMarginMax: Double = 0.25
+    /// Piso da incerteza reportada em qualidade 2 (erro de modelo: gamma desconhecida, desfoque).
+    public var systematicUncNs: Nanos = 100_000
+    /// Pixels saturados (ou pretos) não seguem V = B + (O−B)f: ficam fora do ajuste e dos limites.
+    public var saturationLow: Int = 5
+    public var saturationHigh: Int = 250
     /// Faixa plausível de velocidade do bordo, em px/s: 5 m/s a 12 mm/px até 20 m/s a ~1,7 mm/px (câmera
     /// perto). Um ajuste com inclinação fora dela é rejeitado; o fallback de 1 coluna usa a faixa inteira.
     public var speedPxPerSMin: Double = 400.0

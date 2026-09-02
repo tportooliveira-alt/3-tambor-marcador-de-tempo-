@@ -25,6 +25,9 @@ struct DiagnosticsBar: View {
                             vm.snapshot.threshold.map { String(format: "%.2f", $0) } ?? "—", vm.snapshot.noiseMean))
                 Text(String(format: "Drops %d · custo/quadro %.0f µs · %@", vm.snapshot.drops,
                             vm.diagnostics.lastFrameCostMicros, precisionLabel))
+                // o iOS não expõe o tempo de leitura (skew): o offset por linha não é compensado e cancela
+                // entre largada e chegada quando a mesma banda dispara (≤ 0,4 ms por 96 linhas)
+                Text("Tempo por linha (rolling shutter): não compensado — cancela entre largada e chegada")
             }
             .font(.caption2.monospacedDigit())
             .foregroundColor(.white.opacity(0.9))

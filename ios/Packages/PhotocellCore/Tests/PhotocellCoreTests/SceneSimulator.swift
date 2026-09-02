@@ -96,8 +96,10 @@ struct Scene {
                     obj = Double(objLevel) + textureAmp * sin(rel * 0.9 + Double(g) * 0.3)
                 }
                 let lin = base + (obj - base) * frac
-                let shaped = gamma != 1.0 ? 255.0 * pow((lin > 0.0 ? lin : 0.0) / 255.0, 1.0 / gamma) : lin
-                let value = shaped * flick + rng.gauss(noiseSigma)
+                // o flicker modula a LUZ (antes da curva de tom); o ruído é do sensor (depois)
+                let lit = lin * flick
+                let shaped = gamma != 1.0 ? 255.0 * pow((lit > 0.0 ? lit : 0.0) / 255.0, 1.0 / gamma) : lit
+                let value = shaped + rng.gauss(noiseSigma)
                 buf[row * stride + x] = UInt8(min(max(Int((value + 0.5).rounded(.down)), 0), 255))
             }
         }

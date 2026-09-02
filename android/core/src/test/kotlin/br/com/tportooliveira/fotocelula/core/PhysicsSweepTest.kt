@@ -63,7 +63,7 @@ class PhysicsSweepTest {
                 }
                 else -> {
                     if (c.tex > 0.0) texQ0++
-                    if (abs(r.refinedErrorNs) > 4_200_000L) failures.add("q0 erro %.3f ms: %s".format(errMs, c))
+                    if (abs(errMs) > uncMs + 0.1) failures.add("q0 verdade fora do intervalo (%.3f ± %.3f ms): %s".format(errMs, uncMs, c))
                 }
             }
         }

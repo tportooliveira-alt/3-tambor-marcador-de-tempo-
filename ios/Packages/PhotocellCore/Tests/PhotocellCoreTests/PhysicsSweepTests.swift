@@ -68,7 +68,7 @@ final class PhysicsSweepTests: XCTestCase {
                 }
             default:
                 if c.tex > 0.0 { texQ0 += 1 }
-                if abs(r.refinedErrorNs) > 4_200_000 { failures.append(String(format: "q0 erro %.3f ms: %@", errMs, c.description)) }
+                if abs(errMs) > uncMs + 0.1 { failures.append(String(format: "q0 verdade fora do intervalo (%.3f ± %.3f ms): %@", errMs, uncMs, c.description)) }
             }
         }
         let sorted = errs.sorted()

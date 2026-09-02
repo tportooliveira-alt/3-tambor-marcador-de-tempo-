@@ -47,4 +47,6 @@ class CrossingInput(
     var nextStrip: IntArray? = null
     var plateauTsNs: Nanos? = null
     var plateauStrip: IntArray? = null
+    /** Último quadro VISTO antes do candidato (c−1, ou antes se houve drop): intervalo honesto de q0. */
+    var lastSeenTsNs: Nanos? = null
 }

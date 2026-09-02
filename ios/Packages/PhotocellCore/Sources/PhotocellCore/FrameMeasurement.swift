@@ -50,6 +50,8 @@ public struct CrossingInput: Sendable {
     public var nextStrip: [UInt8]? = nil
     public var plateauTsNs: Nanos? = nil
     public var plateauStrip: [UInt8]? = nil
+    /// Último quadro VISTO antes do candidato (c−1, ou antes se houve drop): intervalo honesto de q0.
+    public var lastSeenTsNs: Nanos? = nil
 
     public init(tsNs: Nanos, prevTsNs: Nanos, stripPrev: [UInt8], stripCur: [UInt8], stripBg: [Double], lag: Int) {
         self.tsNs = tsNs; self.prevTsNs = prevTsNs

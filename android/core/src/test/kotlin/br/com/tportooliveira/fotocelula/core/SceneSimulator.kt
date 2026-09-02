@@ -88,8 +88,10 @@ class Scene(
                     obj = objLevel + textureAmp * sin(rel * 0.9 + g * 0.3)
                 }
                 val lin = base + (obj - base) * frac
-                val shaped = if (gamma != 1.0) 255.0 * ((if (lin > 0.0) lin else 0.0) / 255.0).pow(1.0 / gamma) else lin
-                val value = shaped * flick + rng.gauss(noiseSigma)
+                // o flicker modula a LUZ (antes da curva de tom); o ruído é do sensor (depois)
+                val lit = lin * flick
+                val shaped = if (gamma != 1.0) 255.0 * ((if (lit > 0.0) lit else 0.0) / 255.0).pow(1.0 / gamma) else lit
+                val value = shaped + rng.gauss(noiseSigma)
                 buf[row * stride + x] = floor(value + 0.5).toInt().coerceIn(0, 255).toByte()
             }
         }

@@ -52,6 +52,12 @@ class PhotocellConfig:
     fraction_margin_min: float = 0.03            # margem mínima de classificação da fração f
     fraction_margin_sigmas: float = 4.0          # margem = max(min, k * sqrt(2) * sigma_px / |O-B|)
     fraction_margin_max: float = 0.25            # acima disso (contraste/ruído baixo) o pixel só dá limites
+    # Piso da incerteza reportada em qualidade 2: erro de modelo (gamma desconhecida, desfoque, curva de
+    # tom) que a propagação do ruído não vê. 0,1 ms.
+    systematic_unc_ns: int = 100_000
+    # Pixels saturados (ou pretos) não seguem V = B + (O-B)f: ficam fora do ajuste e dos limites.
+    saturation_low: int = 5
+    saturation_high: int = 250
     # faixa plausível de velocidade do bordo em px/s: 5 m/s a 12 mm/px ate 20 m/s a ~1,7 mm/px (camera
     # perto). Um ajuste com inclinacao fora dela e rejeitado; o fallback de 1 coluna usa a faixa inteira.
     speed_px_per_s_min: float = 400.0
@@ -359,6 +365,7 @@ class CrossingInput:
     next_strip: Optional[List[int]] = None
     plateau_ts_ns: Optional[int] = None     # quadro c+2·lag (faixa coberta: referência O)
     plateau_strip: Optional[List[int]] = None
+    last_seen_ts_ns: Optional[int] = None   # último quadro VISTO antes do candidato (c-1, ou antes se houve drop)
 
 
 def linearize(v: float, gamma: float) -> float:
@@ -406,12 +413,28 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
     plausível de velocidades e o sentido inferido das colunas já cobertas.
     """
     P = cfg.frame_period_ns
-    # Sem refinamento possível, a melhor estimativa é o meio da janela de exposição da banda
-    # (offset das linhas, se o skew é conhecido, + E/2); a incerteza continua ±P/2.
+    # Sem refinamento possível, o cruzamento está entre o FIM da exposição do último quadro visto
+    # (senão teria disparado lá) e o fim da exposição do candidato: centro (t_prev + t_c)/2 + E,
+    # meia-largura (t_c - t_prev)/2 (= P/2 sem drops; cresce com quadros perdidos). Offset das linhas
+    # se o skew é conhecido. Sem quadro anterior conhecido: meio da janela de exposição ± P/2.
     mid_row_offset = 0
     if cfg.skew_ns is not None:
         mid_row_offset = ((roi.y0 + roi.height // 2) * cfg.skew_ns) // plane_height
-    none = CrossingEstimate(0, inp.ts_ns + mid_row_offset + cfg.exposure_ns // 2, P // 2, 0, 0, None, None, 0)
+    # Intervalo físico do gatilho, sem hipóteses sobre contraste: o cruzamento da coluna que disparou
+    # não pode ser anterior ao início da exposição do último quadro VISTO (nele o pixel estaria coberto
+    # o tempo todo e já teria disparado) nem posterior ao fim da exposição do candidato; linhas: a
+    # primeira/última da banda dão o menor/maior t_ini. Depois o centro é cruzado até (core−1)/2 px / v_min
+    # mais tarde (só nesse sentido). Sem drops e E = P/2 isto dá ≈ ±(P/2 + E/2 + atraso do núcleo).
+    def row_offset(row: int) -> int:
+        if cfg.skew_ns is None:
+            return 0
+        return ((roi.y0 + row) * cfg.skew_ns) // plane_height
+    core_half_px = (cfg.core_width - 1) / 2.0
+    core_lag_ns = int(math.floor(core_half_px * 1e9 / cfg.speed_px_per_s_min + 0.5))
+    last_seen = inp.last_seen_ts_ns if (inp.last_seen_ts_ns is not None and inp.last_seen_ts_ns < inp.ts_ns) else inp.ts_ns - P
+    none_lo = last_seen + row_offset(0)
+    none_hi = inp.ts_ns + row_offset(roi.height - 1) + cfg.exposure_ns + core_lag_ns
+    none = CrossingEstimate(0, (none_lo + none_hi) // 2, (none_hi - none_lo) // 2, 0, 0, None, None, 0)
     n = len(inp.strip_cur)
     plateau_strip = inp.plateau_strip
     if n == 0 or plateau_strip is None or len(plateau_strip) != n \
@@ -432,7 +455,7 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
     s_min = 1e9 / cfg.speed_px_per_s_max     # ns por px (bordo rápido)
     s_max = 1e9 / cfg.speed_px_per_s_min     # ns por px (bordo lento)
     min_rows = max(1, cfg.min_interior_rows_per_column, int(math.ceil(cfg.min_interior_rows_fraction * h)))
-    unc_floor = max(1, int(E) // 50)
+    unc_floor = max(1, int(E) // 50, cfg.systematic_unc_ns)
     unc_q2_max = P // 8                      # acima disso o ajuste vira intervalo (qualidade 1)
 
     def row_time(row: int) -> int:
@@ -479,10 +502,19 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
     col_times: Dict[int, List[float]] = {}   # tempos t_x por coluna (mediana resiste a pixels espurios)
     col_s2: Dict[int, float] = {}            # soma das variancias de t por pixel (ruido -> tempo)
     col_n: Dict[int, int] = {}
+    sat_lo = float(cfg.saturation_low)
+    sat_hi = float(cfg.saturation_high)
+
+    def saturated(raw: float) -> bool:
+        return raw <= sat_lo or raw >= sat_hi
+
     for row in range(h):
         t_row = row_time(row)
         for i in range(w):
             idx = row * w + i
+            # fundo ou platô saturados: o modelo linear não vale neste pixel
+            if saturated(inp.strip_bg[idx]) or saturated(float(plateau_strip[idx])):
+                continue
             B = bg_lin[idx]
             O = plateau_lin[idx]
             contrast = O - B
@@ -509,7 +541,10 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
             wgt = contrast * contrast
             st = E * m / k_sig                # sigma de t deste pixel (E * sqrt2 * sigma_px / C)
             for k, (strip, t_off) in enumerate(frames):
-                f = (linearize(float(strip[idx]), gamma) - B) / contrast
+                raw = float(strip[idx])
+                if saturated(raw):
+                    continue
+                f = (linearize(raw, gamma) - B) / contrast
                 t_ini = float(t_row) + t_off
                 if lo < f < hi:
                     if usable_interior:
@@ -700,12 +735,16 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
                 t_row = row_time(row)
                 for i in range(w):
                     idx = row * w + i
+                    if saturated(inp.strip_bg[idx]) or saturated(float(plateau_strip[idx])):
+                        continue
                     B = bg_lin[idx]
                     t_pred = t_c1 + slope1 * (i - center)
                     for strip, t_off in frames:
                         t_ini = float(t_row) + t_off
                         f_pred = (t_ini + E - t_pred) / E
                         if not (0.0 < f_pred < 1.0):
+                            continue
+                        if saturated(float(strip[idx])):
                             continue
                         # O local: mediana das ate 3 colunas logo atras do bordo, mesma linha e quadro,
                         # previstas totalmente cobertas (t_x(j) <= t_ini); senao o plato.
@@ -719,6 +758,9 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
                                 continue
                             # vizinho tem de estar coberto tambem na OBSERVACAO (o bordo pode estar
                             # inclinado: a previsao e a media das linhas)
+                            if saturated(float(strip[row * w + j])) or saturated(inp.strip_bg[row * w + j]) \
+                                    or saturated(float(plateau_strip[row * w + j])):
+                                continue
                             vj = linearize(float(strip[row * w + j]), gamma)
                             Bj = bg_lin[row * w + j]
                             Cj = plateau_lin[row * w + j] - Bj
@@ -896,6 +938,7 @@ class PhotocellEngine:
         self.noise_sigma_px: float = 0.0
         self.wakeups: List[int] = []
         self.last_frame_ts: Optional[int] = None
+        self.prev_frame_ts: Optional[int] = None    # quadro visto antes do atual (para o intervalo q0)
         self.drops = 0
         self.last_drop_ts: Optional[int] = None
         self.drop_pending = False     # a plataforma avisou de quadros perdidos sem timestamp
@@ -949,6 +992,7 @@ class PhotocellEngine:
         self.last_drop_ts = None
         self.drop_pending = False
         self.last_frame_ts = None
+        self.prev_frame_ts = None
         self._go(IDLE)
 
     def capture_interrupted(self) -> None:
@@ -965,6 +1009,7 @@ class PhotocellEngine:
         self.drops += 1
         self.drop_pending = True
         self.last_frame_ts = None
+        self.prev_frame_ts = None
         if self.state == CONFIRMING_START:
             self.candidate = None
             self._go(ARMED)
@@ -987,6 +1032,7 @@ class PhotocellEngine:
         self.calibrator_lag2.reset()
         self.candidate = None
         self.last_frame_ts = None
+        self.prev_frame_ts = None
         if self.lag != 1:
             self.lag = 1
             self._emit("setReferenceLag:1")
@@ -1007,6 +1053,7 @@ class PhotocellEngine:
         elif self.state in (RUNNING, AWAITING_FINISH) and at_ns == s + cfg.frame_resume_ns:
             # retomada dos quadros (também vale se a chegada já foi armada antes, por configuração)
             self.last_frame_ts = None
+            self.prev_frame_ts = None
             self._emit("setFrameDelivery:true")
             self._emit("resetDifferencer")
         elif self.state == RUNNING and at_ns == s + cfg.finish_arm_ns:
@@ -1052,6 +1099,7 @@ class PhotocellEngine:
                 if missed > 0:
                     self.drops += missed
                     self.last_drop_ts = ts_ns
+        self.prev_frame_ts = self.last_frame_ts
         self.last_frame_ts = ts_ns
 
     def _calibration_frame(self, m: FrameMeasurement) -> None:
@@ -1085,7 +1133,8 @@ class PhotocellEngine:
             degraded = self.last_drop_ts is not None and \
                 abs(m.ts_ns - self.last_drop_ts) < self.cfg.degraded_drop_window_ns
             inp = CrossingInput(ts_ns=m.ts_ns, prev_ts_ns=m.prev_ts_ns, strip_prev=list(m.strip_prev),
-                                strip_cur=list(m.strip_cur), strip_bg=list(m.strip_bg), lag=m.lag)
+                                strip_cur=list(m.strip_cur), strip_bg=list(m.strip_bg), lag=m.lag,
+                                last_seen_ts_ns=self.prev_frame_ts)
             self.candidate = Candidate(inp=inp, degraded=degraded)
             self._go(confirming_state)
         elif m.delta_full <= self.threshold:

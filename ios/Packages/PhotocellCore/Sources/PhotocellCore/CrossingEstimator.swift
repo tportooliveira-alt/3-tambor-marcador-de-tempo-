@@ -53,10 +53,20 @@ public enum CrossingEstimator {
     public static func estimate(cfg: PhotocellConfig, roi: RoiRect, planeHeight: Int,
                                 input inp: CrossingInput, noiseSigmaPx: Double) -> CrossingEstimate {
         let p = cfg.framePeriodNs
-        // Sem refinamento possível, a melhor estimativa é o meio da janela de exposição da banda.
-        var midRowOffset: Int64 = 0
-        if let skew = cfg.skewNs { midRowOffset = floorDiv(Int64(roi.y0 + roi.height / 2) * skew, Int64(planeHeight)) }
-        let none = CrossingEstimate(quality: 0, refinedTsNs: inp.tsNs + midRowOffset + cfg.exposureNs / 2, uncertaintyNs: p / 2,
+        // Intervalo físico do gatilho, sem hipóteses sobre contraste: do início da exposição do último
+        // quadro VISTO (primeira linha da banda) ao fim da exposição do candidato (última linha), mais o
+        // atraso até o centro ((core−1)/2 px à velocidade mínima plausível).
+        func rowOffset(_ row: Int) -> Int64 {
+            if let skew = cfg.skewNs { return floorDiv(Int64(roi.y0 + row) * skew, Int64(planeHeight)) }
+            return 0
+        }
+        let coreHalfPx = Double(cfg.coreWidth - 1) / 2.0
+        let coreLagNs = Int64((coreHalfPx * 1e9 / cfg.speedPxPerSMin + 0.5).rounded(.down))
+        var lastSeen = inp.tsNs - p
+        if let seen = inp.lastSeenTsNs, seen < inp.tsNs { lastSeen = seen }
+        let noneLo = lastSeen + rowOffset(0)
+        let noneHi = inp.tsNs + rowOffset(roi.height - 1) + cfg.exposureNs + coreLagNs
+        let none = CrossingEstimate(quality: 0, refinedTsNs: floorDiv(noneLo + noneHi, 2), uncertaintyNs: floorDiv(noneHi - noneLo, 2),
                                     interiorCount: 0, boundCount: 0, lowerNs: nil, upperNs: nil, texturedColumns: 0)
         let n = inp.stripCur.count
         guard n > 0, let plateauStrip = inp.plateauStrip, plateauStrip.count == n,
@@ -79,7 +89,10 @@ public enum CrossingEstimator {
         let sMin = 1e9 / cfg.speedPxPerSMax
         let sMax = 1e9 / cfg.speedPxPerSMin
         let minRows = max(max(1, cfg.minInteriorRowsPerColumn), Int((cfg.minInteriorRowsFraction * Double(h)).rounded(.up)))
-        let uncFloor = max(1, cfg.exposureNs / 50)
+        let uncFloor = max(max(1, cfg.exposureNs / 50), cfg.systematicUncNs)
+        let satLo = Double(cfg.saturationLow)
+        let satHi = Double(cfg.saturationHigh)
+        func saturated(_ raw: Double) -> Bool { raw <= satLo || raw >= satHi }
         let uncQ2Max = p / 8                      // acima disso o ajuste vira intervalo (qualidade 1)
         func rowTime(_ row: Int) -> Int64 {
             if let skew = cfg.skewNs { return inp.tsNs + floorDiv(Int64(roi.y0 + row) * skew, Int64(planeHeight)) }
@@ -133,6 +146,8 @@ public enum CrossingEstimator {
             let tRow = rowTime(row)
             for i in 0..<w {
                 let idx = row * w + i
+                // fundo ou platô saturados: o modelo linear não vale neste pixel
+                if saturated(inp.stripBg[idx]) || saturated(Double(plateauStrip[idx])) { continue }
                 let b = bgLin[idx]
                 let o = plateauLin[idx]
                 let contrast = o - b
@@ -152,7 +167,9 @@ public enum CrossingEstimator {
                 let wgt = contrast * contrast
                 let st = e * m / kSig
                 for k in 0..<nFrames {
-                    let f = (linearize(Double(frameStrips[k][idx]), gamma: gamma) - b) / contrast
+                    let raw = Double(frameStrips[k][idx])
+                    if saturated(raw) { continue }
+                    let f = (linearize(raw, gamma: gamma) - b) / contrast
                     let tIni = Double(tRow) + frameOffsets[k]
                     if f > lo && f < hi {
                         if usableInterior {
@@ -347,6 +364,7 @@ public enum CrossingEstimator {
                     let tRow = rowTime(row)
                     for i in 0..<w {
                         let idx = row * w + i
+                        if saturated(inp.stripBg[idx]) || saturated(Double(plateauStrip[idx])) { continue }
                         let b = bgLin[idx]
                         let tPred = f1.tc + f1.slope * (Double(i) - center)
                         for k in 0..<nFrames {
@@ -354,6 +372,7 @@ public enum CrossingEstimator {
                             let tIni = Double(tRow) + frameOffsets[k]
                             let fPred = (tIni + e - tPred) / e
                             if !(fPred > 0.0 && fPred < 1.0) { continue }
+                            if saturated(Double(strip[idx])) { continue }
                             // O local: mediana das até 3 colunas logo atrás do bordo, mesma linha e quadro,
                             // previstas E observadas totalmente cobertas; senão o platô.
                             var nNeigh = 0
@@ -362,6 +381,8 @@ public enum CrossingEstimator {
                                 if j < 0 || j >= w { break }
                                 let tPredJ = f1.tc + f1.slope * (Double(j) - center)
                                 if tPredJ > tIni { continue }
+                                if saturated(Double(strip[row * w + j])) || saturated(inp.stripBg[row * w + j]) ||
+                                    saturated(Double(plateauStrip[row * w + j])) { continue }
                                 let vj = linearize(Double(strip[row * w + j]), gamma: gamma)
                                 let bj = bgLin[row * w + j]
                                 let cj = plateauLin[row * w + j] - bj

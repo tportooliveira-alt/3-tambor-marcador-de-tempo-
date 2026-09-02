@@ -18,6 +18,8 @@ Critérios de achado (os mesmos do loop de agentes):
     - sem disparo (com o objeto cruzando a faixa) ou disparo antes do cruzamento.
     Objetos finos (object_width_px menor que ~3 quadros de deslocamento, ex.: rédea, chicote) saem da
     faixa antes da confirmação e NÃO disparam — é o comportamento desejado; use expect_trigger=false.
+    Envelope de operação (o que o produto promete): velocidade ≥ 5 m/s, ≤ 12 mm/px, bordo inclinado
+    ≤ 0,10 px/linha, desfoque ≤ 4 px. Fora dele um achado é relatado como "fora do envelope" e não conta.
 
 Parâmetros (todos opcionais; unidades no nome):
     speed_m_s (14), mm_per_px (6), exposure_ns (1/480 s), fps (240), noise_sigma (1.5), direction (+1/−1),
@@ -101,9 +103,9 @@ class AdversarialScene(Scene):
                 if self.tex > 0:
                     rel = (x - self.xc) * self.d - (t_row + self.E / 2 - self.tc) * self.v
                     obj = self.obj + self.tex * math.sin(rel * 0.9 + g * 0.3)
-                lin = base + (obj - base) * frac
+                lin = (base + (obj - base) * frac) * flick      # flicker modula a luz, antes da curva de tom
                 val = 255.0 * ((max(lin, 0) / 255.0) ** (1.0 / self.gamma)) if self.gamma != 1.0 else lin
-                val = val * flick + self.rng.gauss(self.sigma)
+                val = val + self.rng.gauss(self.sigma)
                 iv = int(math.floor(val + 0.5))
                 iv = 0 if iv < 0 else (255 if iv > 255 else iv)
                 buf[row * self.stride + x] = iv
@@ -167,14 +169,28 @@ def run_scenario(**p):
         out.update(quality=None, error_ms=None, unc_ms=None, inside=None,
                    finding="sem disparo" if expect else None)
         return out
-    err = (st.refined_ts_ns - tc) / 1e6
+    # Skew desconhecido pelo engine (iPhone): todas as linhas são tratadas como t_ini = ts, um offset
+    # constante de (linha média/H)·skew que cancela em ΔT; o erro é avaliado descontando-o.
+    row_offset_ns = 0.0
+    if not p.get("cfg_skew", True):
+        row_offset_ns = (roi.y0 + roi.height / 2.0) * skew / ph
+    err = (st.refined_ts_ns + row_offset_ns - tc) / 1e6
     unc = st.uncertainty_ns / 1e6
     raw_err = (st.raw_ts_ns - tc) / 1e6
+    # O gatilho vem da primeira coluna do núcleo (largura/2 px antes do centro) e de qualquer linha da
+    # banda: pode ser legitimamente anterior ao cruzamento do CENTRO por (núcleo/2 + 1)/v + E.
+    core_half_px = cfg.core_width / 2.0 + 1.0
+    # bordo inclinado: a primeira linha da banda chega (banda/2)·tilt px antes da linha média
+    tilt_lead_px = abs(float(p.get("tilt_px_per_row", 0.0))) * (roi.height / 2.0)
+    earliest_ok_ms = -(P + expo + (core_half_px + tilt_lead_px) / speed_px * 1e9) / 1e6 - 0.05
+    in_envelope = speed >= 5.0 and mm_per_px <= 12.0 and abs(float(p.get("tilt_px_per_row", 0.0))) <= 0.10 \
+        and float(p.get("psf_px", 0.0)) <= 4.0
     out.update(quality=st.quality, error_ms=round(err, 4), unc_ms=round(unc, 4), inside=abs(err) <= unc,
+               row_offset_ms=round(row_offset_ns / 1e6, 4),
                raw_error_ms=round(raw_err, 4), textured_columns=st.textured_columns, degraded=st.degraded,
                interior=st.interior_count)
     finding = None
-    if raw_err < -P / 1e6 - 0.01:
+    if raw_err < earliest_ok_ms:
         finding = "disparo antes do cruzamento (falso positivo)"
     elif st.quality == 2 and abs(err) > max(0.5, unc):
         # a 240 fps a qualidade 2 exige 3σ ≤ 0,52 ms; em taxas menores o limiar (P/8) cresce e o erro
@@ -182,8 +198,11 @@ def run_scenario(**p):
         finding = "q2 com |erro| > max(0,5 ms, incerteza) (precisão falsa)"
     elif st.quality == 1 and abs(err) > unc + 0.05:
         finding = "q1 com a verdade fora do intervalo"
-    elif st.quality == 0 and abs(err) > P / 2e6 + 0.1:
-        finding = "q0 com erro maior que meio período"
+    elif st.quality == 0 and abs(err) > unc + 0.1:
+        finding = "q0 com a verdade fora do intervalo"
+    if finding is not None and not in_envelope:
+        out["out_of_envelope"] = finding
+        finding = None
     out["finding"] = finding
     return out
 

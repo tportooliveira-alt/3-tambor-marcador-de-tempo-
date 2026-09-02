@@ -118,6 +118,8 @@ public final class PhotocellEngine {
     private var thresholdStart = 0.0
     private var wakeups: [Nanos] = []
     private var lastFrameTs: Nanos? = nil
+    /// Quadro visto antes do atual (para o intervalo de qualidade 0).
+    private var prevFrameTs: Nanos? = nil
     private var lastDropTs: Nanos? = nil
     private var dropPending = false   // a plataforma avisou de quadros perdidos sem timestamp
 
@@ -185,6 +187,7 @@ public final class PhotocellEngine {
         lastDropTs = nil
         dropPending = false
         lastFrameTs = nil
+        prevFrameTs = nil
         go(.idle)
     }
 
@@ -200,6 +203,7 @@ public final class PhotocellEngine {
         drops += 1
         dropPending = true
         lastFrameTs = nil
+        prevFrameTs = nil
         if state == .confirmingStart {
             candidate = nil
             go(.armed)
@@ -226,6 +230,7 @@ public final class PhotocellEngine {
         calibratorLag2.reset()
         candidate = nil
         lastFrameTs = nil
+        prevFrameTs = nil
         if lag != 1 {
             lag = 1
             emit(.setReferenceLag(1))
@@ -244,6 +249,7 @@ public final class PhotocellEngine {
             go(.running)
         } else if (state == .running || state == .awaitingFinish) && atNs == s + cfg.frameResumeNs {
             lastFrameTs = nil
+            prevFrameTs = nil
             emit(.setFrameDelivery(true))
             emit(.resetDifferencer)
         } else if state == .running && atNs == s + cfg.finishArmNs {
@@ -288,6 +294,7 @@ public final class PhotocellEngine {
                 }
             }
         }
+        prevFrameTs = lastFrameTs
         lastFrameTs = tsNs
     }
 
@@ -325,8 +332,9 @@ public final class PhotocellEngine {
             var degraded = false
             if let ld = lastDropTs { degraded = abs(m.tsNs - ld) < cfg.degradedDropWindowNs }
             // cópias: os buffers do differencer rotacionam no próximo quadro
-            let inp = CrossingInput(tsNs: m.tsNs, prevTsNs: m.prevTsNs, stripPrev: Array(m.stripPrev),
+            var inp = CrossingInput(tsNs: m.tsNs, prevTsNs: m.prevTsNs, stripPrev: Array(m.stripPrev),
                                     stripCur: Array(m.stripCur), stripBg: Array(m.stripBg), lag: m.lag)
+            inp.lastSeenTsNs = prevFrameTs
             candidate = Candidate(inp: inp, degraded: degraded)
             go(confirming)
         } else if m.deltaFull <= th {

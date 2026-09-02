@@ -79,6 +79,24 @@
       "description": "Cruzamento sintético; direção <-; skew=3200000; flicker=0.0; drops=[47]"
     },
     {
+      "name": "strip_cross_saturated",
+      "kind": "strip",
+      "file": "strip_cross_saturated.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.0; drops=[]"
+    },
+    {
+      "name": "strip_cross_flicker_strong",
+      "kind": "strip",
+      "file": "strip_cross_flicker_strong.json",
+      "description": "Cruzamento sintético; direção <-; skew=3200000; flicker=0.3; drops=[]"
+    },
+    {
+      "name": "strip_cross_drop_candidate",
+      "kind": "strip",
+      "file": "strip_cross_drop_candidate.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.0; drops=[48]"
+    },
+    {
       "name": "calibration_normal",
       "kind": "calibration",
       "file": "calibration_normal.json",

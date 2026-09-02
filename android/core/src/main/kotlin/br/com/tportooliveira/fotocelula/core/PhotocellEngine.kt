@@ -116,6 +116,8 @@ class PhotocellEngine(
     private var thresholdStart = 0.0
     private val wakeups: MutableList<Nanos> = ArrayList()
     private var lastFrameTs: Nanos? = null
+    /** Quadro visto antes do atual (para o intervalo de qualidade 0). */
+    private var prevFrameTs: Nanos? = null
     private var lastDropTs: Nanos? = null
     private var dropPending = false   // a plataforma avisou de quadros perdidos sem timestamp
 
@@ -173,6 +175,7 @@ class PhotocellEngine(
         lastDropTs = null
         dropPending = false
         lastFrameTs = null
+        prevFrameTs = null
         go(PhotocellState.IDLE)
     }
 
@@ -190,6 +193,7 @@ class PhotocellEngine(
         drops += 1
         dropPending = true
         lastFrameTs = null
+        prevFrameTs = null
         if (state == PhotocellState.CONFIRMING_START) {
             candidate = null
             go(PhotocellState.ARMED)
@@ -216,6 +220,7 @@ class PhotocellEngine(
         calibratorLag2.reset()
         candidate = null
         lastFrameTs = null
+        prevFrameTs = null
         if (lag != 1) {
             lag = 1
             emit(Effect.SetReferenceLag(1))
@@ -234,6 +239,7 @@ class PhotocellEngine(
             state == PhotocellState.DEBOUNCE_START && atNs == s + cfg.startLockoutNs -> go(PhotocellState.RUNNING)
             (state == PhotocellState.RUNNING || state == PhotocellState.AWAITING_FINISH) && atNs == s + cfg.frameResumeNs -> {
                 lastFrameTs = null
+                prevFrameTs = null
                 emit(Effect.SetFrameDelivery(true))
                 emit(Effect.ResetDifferencer)
             }
@@ -281,6 +287,7 @@ class PhotocellEngine(
                 }
             }
         }
+        prevFrameTs = lastFrameTs
         lastFrameTs = tsNs
     }
 
@@ -323,6 +330,7 @@ class PhotocellEngine(
                 tsNs = m.tsNs, prevTsNs = m.prevTsNs, stripPrev = m.stripPrev.copyOf(),
                 stripCur = m.stripCur.copyOf(), stripBg = m.stripBg.copyOf(), lag = m.lag,
             )
+            inp.lastSeenTsNs = prevFrameTs
             candidate = Candidate(inp, degraded)
             go(confirming)
         } else if (m.deltaFull <= th) {

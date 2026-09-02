@@ -51,9 +51,18 @@ object CrossingEstimator {
 
     fun estimate(cfg: PhotocellConfig, roi: RoiRect, planeHeight: Int, inp: CrossingInput, noiseSigmaPx: Double): CrossingEstimate {
         val p = cfg.framePeriodNs
-        // Sem refinamento possível, a melhor estimativa é o meio da janela de exposição da banda.
-        val midRowOffset = cfg.skewNs?.let { Math.floorDiv((roi.y0 + roi.height / 2).toLong() * it, planeHeight.toLong()) } ?: 0L
-        val none = CrossingEstimate(0, inp.tsNs + midRowOffset + cfg.exposureNs / 2, p / 2, 0, 0, null, null, 0)
+        // Intervalo físico do gatilho, sem hipóteses sobre contraste: do início da exposição do último
+        // quadro VISTO (primeira linha da banda) ao fim da exposição do candidato (última linha), mais o
+        // atraso até o centro ((core−1)/2 px à velocidade mínima plausível).
+        val skewForRows = cfg.skewNs
+        fun rowOffset(row: Int): Long = if (skewForRows != null) Math.floorDiv((roi.y0 + row).toLong() * skewForRows, planeHeight.toLong()) else 0L
+        val coreHalfPx = (cfg.coreWidth - 1) / 2.0
+        val coreLagNs = Math.floor(coreHalfPx * 1e9 / cfg.speedPxPerSMin + 0.5).toLong()
+        val lastSeenQ0 = inp.lastSeenTsNs
+        val lastSeen = if (lastSeenQ0 != null && lastSeenQ0 < inp.tsNs) lastSeenQ0 else inp.tsNs - p
+        val noneLo = lastSeen + rowOffset(0)
+        val noneHi = inp.tsNs + rowOffset(roi.height - 1) + cfg.exposureNs + coreLagNs
+        val none = CrossingEstimate(0, Math.floorDiv(noneLo + noneHi, 2L), Math.floorDiv(noneHi - noneLo, 2L), 0, 0, null, null, 0)
         val n = inp.stripCur.size
         val plateauStrip = inp.plateauStrip
         if (n == 0 || plateauStrip == null || plateauStrip.size != n || inp.stripPrev.size != n || inp.stripBg.size != n) return none
@@ -78,7 +87,10 @@ object CrossingEstimator {
         val sMin = 1e9 / cfg.speedPxPerSMax
         val sMax = 1e9 / cfg.speedPxPerSMin
         val minRows = maxOf(1, cfg.minInteriorRowsPerColumn, Math.ceil(cfg.minInteriorRowsFraction * h).toInt())
-        val uncFloor = maxOf(1L, cfg.exposureNs / 50)
+        val uncFloor = maxOf(1L, cfg.exposureNs / 50, cfg.systematicUncNs)
+        val satLo = cfg.saturationLow.toDouble()
+        val satHi = cfg.saturationHigh.toDouble()
+        fun saturated(raw: Double): Boolean = raw <= satLo || raw >= satHi
         val uncQ2Max = p / 8                      // acima disso o ajuste vira intervalo (qualidade 1)
         val skew = cfg.skewNs
         fun rowTime(row: Int): Long =
@@ -127,6 +139,8 @@ object CrossingEstimator {
             val tRow = rowTime(row)
             for (i in 0 until w) {
                 val idx = row * w + i
+                // fundo ou platô saturados: o modelo linear não vale neste pixel
+                if (saturated(inp.stripBg[idx]) || saturated(plateauStrip[idx].toDouble())) continue
                 val b = bgLin[idx]
                 val o = plateauLin[idx]
                 val contrast = o - b
@@ -146,7 +160,9 @@ object CrossingEstimator {
                 val wgt = contrast * contrast
                 val st = e * m / kSig
                 for (k in 0 until nFrames) {
-                    val f = (linearize(frameStrips[k][idx].toDouble(), gamma) - b) / contrast
+                    val raw = frameStrips[k][idx].toDouble()
+                    if (saturated(raw)) continue
+                    val f = (linearize(raw, gamma) - b) / contrast
                     val tIni = tRow.toDouble() + frameOffsets[k]
                     if (f > lo && f < hi) {
                         if (usableInterior) {
@@ -339,6 +355,7 @@ object CrossingEstimator {
                     val tRow = rowTime(row)
                     for (i in 0 until w) {
                         val idx = row * w + i
+                        if (saturated(inp.stripBg[idx]) || saturated(plateauStrip[idx].toDouble())) continue
                         val b = bgLin[idx]
                         val tPred = f1.tc + f1.slope * (i - center)
                         for (k in 0 until nFrames) {
@@ -346,6 +363,7 @@ object CrossingEstimator {
                             val tIni = tRow.toDouble() + frameOffsets[k]
                             val fPred = (tIni + e - tPred) / e
                             if (!(fPred > 0.0 && fPred < 1.0)) continue
+                            if (saturated(strip[idx].toDouble())) continue
                             // O local: mediana das até 3 colunas logo atrás do bordo, mesma linha e quadro,
                             // previstas E observadas totalmente cobertas; senão o platô.
                             var nNeigh = 0
@@ -354,6 +372,8 @@ object CrossingEstimator {
                                 if (j < 0 || j >= w) break
                                 val tPredJ = f1.tc + f1.slope * (j - center)
                                 if (tPredJ > tIni) continue
+                                if (saturated(strip[row * w + j].toDouble()) || saturated(inp.stripBg[row * w + j]) ||
+                                    saturated(plateauStrip[row * w + j].toDouble())) continue
                                 val vj = linearize(strip[row * w + j].toDouble(), gamma)
                                 val bj = bgLin[row * w + j]
                                 val cj = plateauLin[row * w + j] - bj

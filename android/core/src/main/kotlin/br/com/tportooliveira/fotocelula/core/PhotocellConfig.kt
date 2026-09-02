@@ -38,6 +38,11 @@ data class PhotocellConfig(
     val fractionMarginSigmas: Double = 4.0,
     /** Acima desta margem (contraste/ruído baixo) o pixel só fornece limites. */
     val fractionMarginMax: Double = 0.25,
+    /** Piso da incerteza reportada em qualidade 2 (erro de modelo: gamma desconhecida, desfoque). */
+    val systematicUncNs: Nanos = 100_000L,
+    /** Pixels saturados (ou pretos) não seguem V = B + (O−B)f: ficam fora do ajuste e dos limites. */
+    val saturationLow: Int = 5,
+    val saturationHigh: Int = 250,
     /**
      * Faixa plausível de velocidade do bordo, em px/s: 5 m/s a 12 mm/px até 20 m/s a ~1,7 mm/px (câmera
      * perto). Um ajuste com inclinação fora dela é rejeitado; o fallback de 1 coluna usa a faixa inteira.

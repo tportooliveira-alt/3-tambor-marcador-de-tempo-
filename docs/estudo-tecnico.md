@@ -87,7 +87,9 @@ espúrio não marca a coluna como texturizada nem descarta os limites.
 
 Qualidade: **2** = ajuste completo com incerteza 3σ ≤ P/8 (tipicamente 0,01–0,1 ms); **1** = intervalo
 (ajuste com incerteza grande, coluna única com faixa de velocidades plausíveis 800–4000 px/s, ou só
-limites); **0** = meio da janela de exposição do quadro candidato, ±P/2. Com exposição curta (1/2000 s ou
+limites); **0** = intervalo físico do gatilho, do início da exposição do último quadro visto ao fim da
+exposição do candidato mais o atraso até a coluna central à velocidade mínima plausível (≈ ±4,6 ms a
+240 FPS com 1/480 s; cresce com quadros perdidos) — o tempo bruto por quadro continua sendo o do candidato. Com exposição curta (1/2000 s ou
 menos) a maioria dos cruzamentos cai fora da janela e o resultado é 1 ou 0 — física, não defeito; por
 isso o padrão é 1/480 s. Os números medidos na simulação estão em [`validacao-numerica.md`](validacao-numerica.md).
 
@@ -108,6 +110,19 @@ SNR suficiente); **com textura ±30 o estimador cai para qualidade 0 em 100 % do
 principal limite prático conhecido: um cavalo real tem textura, e o refinamento sub-quadro só entra onde a
 banda escolhida (peito/pescoço uniforme, sem peiteira) tem contraste limpo. A comparação com vídeo real
 decide isso (importador de clipes previsto).
+
+**Rodada 1 do loop de agentes (achados que viraram regra).** (1) Pixels **saturados** (≥ 250 ou ≤ 5)
+ficam fora do ajuste e dos limites: um cavalo branco ao sol ou flicker forte com curva de tom levava a
+qualidade 2 com erros de 1–6 ms (o modelo `V = B + (O − B)·f` não vale num pixel cortado em 255). (2) A
+incerteza reportada tem piso de **0,1 ms** (erro de modelo: gamma desconhecida, desfoque), então "±0,04 ms"
+deixou de existir. (3) O intervalo de qualidade 0 passou a ser o físico e sem hipóteses sobre contraste: do início da
+exposição do **último quadro visto** (primeira linha da banda) ao fim da exposição do candidato (última
+linha), mais o atraso até a coluna central à velocidade mínima plausível (400 px/s); um drop do próprio
+quadro candidato alarga o intervalo em vez de errar por 5–16 ms. Custo: q0 passa de ±2,1 para ≈ ±4,6 ms —
+honesto; apertar isso exige uma estimativa grosseira de velocidade pelas colunas cobertas por quadro
+(item do loop). (4) O
+simulador aplicava o flicker depois da curva de tom; o flicker modula a luz, antes dela (corrigido nos
+três simuladores).
 
 **Tempo por linha (rolling shutter) e semântica dos timestamps.** No Android, `SENSOR_TIMESTAMP` é o
 início da exposição da **primeira linha**; `SENSOR_ROLLING_SHUTTER_SKEW` é o intervalo do início da

@@ -136,12 +136,13 @@ class Scene:
                     # textura presa ao objeto: fase relativa ao bordo (px atras do bordo no meio da exposicao)
                     rel = (x - self.xc) * self.d - (t_row + self.E / 2.0 - self.tc) * self.v
                     obj = self.obj + self.tex * math.sin(rel * 0.9 + g * 0.3)
-                lin = base + (obj - base) * frac
+                # o flicker modula a LUZ (antes da curva de tom); o ruído é do sensor/ADC (depois)
+                lin = (base + (obj - base) * frac) * flick
                 if self.gamma != 1.0:
                     val = 255.0 * math.pow((lin if lin > 0.0 else 0.0) / 255.0, 1.0 / self.gamma)
                 else:
                     val = lin
-                val = val * flick + self.rng.gauss(self.sigma)
+                val = val + self.rng.gauss(self.sigma)
                 iv = int(math.floor(val + 0.5))
                 iv = 0 if iv < 0 else (255 if iv > 255 else iv)
                 buf[row * self.stride + x] = iv
@@ -203,7 +204,7 @@ def strip_vector(name: str, *, direction: int, skew_ns: Optional[int], flicker: 
                  exposure_ns: int = NS_PER_SEC // 480, cross_fraction: float = 0.37,
                  tolerance_ms: float = 0.15, gamma: float = 1.0, cfg_gamma: float = 1.0,
                  tilt_px_per_row: float = 0.0, texture_amp: float = 0.0, psf_px: float = 0.0,
-                 strip_width: int = 9) -> Dict:
+                 strip_width: int = 9, obj_level: int = 184) -> Dict:
     cfg = PhotocellConfig(calibration_samples=32, calibration_min_samples_for_outlier=8,
                           skew_ns=skew_ns, exposure_ns=exposure_ns, gamma=cfg_gamma)
     period = cfg.frame_period_ns
@@ -222,7 +223,8 @@ def strip_vector(name: str, *, direction: int, skew_ns: Optional[int], flicker: 
                   speed_px_per_s=speed_px, t_cross_center_ns=t_cross,
                   rows_a=roi.y0 + rows_margin, rows_b=roi.y1 - 1 - rows_margin,
                   noise_sigma=noise_sigma, flicker_amp=flicker, seed=seed, gamma=gamma,
-                  tilt_px_per_row=tilt_px_per_row, texture_amp=texture_amp, psf_px=psf_px)
+                  tilt_px_per_row=tilt_px_per_row, texture_amp=texture_amp, psf_px=psf_px,
+                  obj_level=obj_level)
     n_frames = cross_frame + 10
     frames, timestamps = [], []
     for i in range(n_frames):
@@ -484,6 +486,17 @@ def main() -> None:
     vectors.append(strip_vector("strip_cross_drop_at_trigger", direction=-1, skew_ns=3_200_000,
                                 flicker=0.0, drop_frames=[47], seed=24, strip_width=15,
                                 cross_fraction=0.61, tolerance_ms=0.35))
+    # rodada 1 do loop: platô saturado (cavalo branco ao sol), flicker forte com curva de tom, drop do
+    # próprio quadro candidato (o intervalo q0 tem de cobrir o quadro perdido)
+    vectors.append(strip_vector("strip_cross_saturated", direction=+1, skew_ns=3_200_000,
+                                flicker=0.0, drop_frames=[], seed=25, strip_width=15,
+                                obj_level=252, noise_sigma=3.0, tolerance_ms=0.35))
+    vectors.append(strip_vector("strip_cross_flicker_strong", direction=-1, skew_ns=3_200_000,
+                                flicker=0.30, drop_frames=[], seed=26, strip_width=15,
+                                gamma=2.2, cfg_gamma=2.2, tolerance_ms=0.35))
+    vectors.append(strip_vector("strip_cross_drop_candidate", direction=+1, skew_ns=3_200_000,
+                                flicker=0.0, drop_frames=[48], seed=27, strip_width=15,
+                                cross_fraction=0.4, tolerance_ms=0.35))
 
     # --- calibração ----------------------------------------------------------
     cfg = PhotocellConfig()
