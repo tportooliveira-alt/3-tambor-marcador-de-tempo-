@@ -87,9 +87,10 @@ espúrio não marca a coluna como texturizada nem descarta os limites.
 
 Qualidade: **2** = ajuste completo com incerteza 3σ ≤ P/8 (tipicamente 0,01–0,1 ms); **1** = intervalo
 (ajuste com incerteza grande, coluna única com faixa de velocidades plausíveis 800–4000 px/s, ou só
-limites); **0** = intervalo físico do gatilho, do início da exposição do último quadro visto ao fim da
-exposição do candidato mais o atraso até a coluna central à velocidade mínima plausível (≈ ±4,6 ms a
-240 FPS com 1/480 s; cresce com quadros perdidos) — o tempo bruto por quadro continua sendo o do candidato. Com exposição curta (1/2000 s ou
+limites); **0** = intervalo físico do gatilho, do início da exposição do último quadro **realmente
+comparado** ao fim da exposição do candidato, mais o atraso até a coluna central à velocidade mínima
+plausível e uma folga para bordo inclinado (≈ ±7,6 ms a 240 FPS com 1/480 s; cresce com quadros
+perdidos e com o ressemeio do differencer) — o tempo bruto por quadro continua sendo o do candidato. Com exposição curta (1/2000 s ou
 menos) a maioria dos cruzamentos cai fora da janela e o resultado é 1 ou 0 — física, não defeito; por
 isso o padrão é 1/480 s. Os números medidos na simulação estão em [`validacao-numerica.md`](validacao-numerica.md).
 
@@ -110,6 +111,18 @@ SNR suficiente); **com textura ±30 o estimador cai para qualidade 0 em 100 % do
 principal limite prático conhecido: um cavalo real tem textura, e o refinamento sub-quadro só entra onde a
 banda escolhida (peito/pescoço uniforme, sem peiteira) tem contraste limpo. A comparação com vídeo real
 decide isso (importador de clipes previsto).
+
+**Rodada 2 do loop (187 cenários, 5 achados).** (1) Depois de um drop, de armar ou da retomada dos
+quadros, o differencer precisa de `lag+1` quadros para voltar a medir: o limite inferior do intervalo de
+qualidade 0 passou a ser o último quadro **efetivamente comparado** (não o último quadro recebido), senão
+um cruzamento ocorrido durante o ressemeio caía fora do intervalo declarado (erro de −10 ms num intervalo
+de ±6,7 ms). (2) Um bordo inclinado adianta o gatilho — a primeira linha da banda cruza antes da linha
+média —, então o limite superior de q0 ganhou a folga `(h/2)·0,05 px/linha ÷ v_min`; o envelope de
+operação documentado passou a exigir o celular nivelado (≤ 0,05 px/linha ≈ 1,4°) e bordo a ≥ 800 px/s.
+(3) **Limitação sem sinal detectável**: dois bordos verticais paralelos a menos de ~10 px dentro da faixa
+(peito do cavalo seguido de arreio/perna do cavaleiro a menos de 1 ms) enviesam o ajuste de forma coerente
+entre linhas e colunas — nem a variância empírica nem o χ² percebem, e o erro medido foi de 0,58 ms com
+±0,24 ms declarados. Mitigação: posicionar a banda onde o bordo do peito está isolado.
 
 **Rodada 1 do loop de agentes (achados que viraram regra).** (1) Pixels **saturados** (≥ 250 ou ≤ 5)
 ficam fora do ajuste e dos limites: um cavalo branco ao sol ou flicker forte com curva de tom levava a

@@ -58,6 +58,9 @@ class PhotocellConfig:
     # Pixels saturados (ou pretos) não seguem V = B + (O-B)f: ficam fora do ajuste e dos limites.
     saturation_low: int = 5
     saturation_high: int = 250
+    # Bordo inclinado (celular fora de nível): a primeira linha da banda cruza antes da linha média e
+    # o gatilho dispara cedo. Só o intervalo de qualidade 0 (sem ajuste) precisa dessa folga.
+    q0_tilt_allowance_px_per_row: float = 0.05
     # faixa plausível de velocidade do bordo em px/s: 5 m/s a 12 mm/px ate 20 m/s a ~1,7 mm/px (camera
     # perto). Um ajuste com inclinacao fora dela e rejeitado; o fallback de 1 coluna usa a faixa inteira.
     speed_px_per_s_min: float = 400.0
@@ -429,7 +432,7 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
         if cfg.skew_ns is None:
             return 0
         return ((roi.y0 + row) * cfg.skew_ns) // plane_height
-    core_half_px = (cfg.core_width - 1) / 2.0
+    core_half_px = (cfg.core_width - 1) / 2.0 + cfg.q0_tilt_allowance_px_per_row * (roi.height / 2.0)
     core_lag_ns = int(math.floor(core_half_px * 1e9 / cfg.speed_px_per_s_min + 0.5))
     last_seen = inp.last_seen_ts_ns if (inp.last_seen_ts_ns is not None and inp.last_seen_ts_ns < inp.ts_ns) else inp.ts_ns - P
     none_lo = last_seen + row_offset(0)
@@ -938,7 +941,11 @@ class PhotocellEngine:
         self.noise_sigma_px: float = 0.0
         self.wakeups: List[int] = []
         self.last_frame_ts: Optional[int] = None
-        self.prev_frame_ts: Optional[int] = None    # quadro visto antes do atual (para o intervalo q0)
+        # Intervalo de qualidade 0: o limite inferior é o último quadro em que a faixa foi REALMENTE
+        # comparada (o differencer devolve None enquanto ressemeia depois de um drop/arm/retomada);
+        # se ainda não houve nenhum, o primeiro quadro recebido desde o ressemeio.
+        self.last_measured_ts: Optional[int] = None
+        self.seed_ts: Optional[int] = None
         self.drops = 0
         self.last_drop_ts: Optional[int] = None
         self.drop_pending = False     # a plataforma avisou de quadros perdidos sem timestamp
@@ -992,7 +999,8 @@ class PhotocellEngine:
         self.last_drop_ts = None
         self.drop_pending = False
         self.last_frame_ts = None
-        self.prev_frame_ts = None
+        self.last_measured_ts = None
+        self.seed_ts = None
         self._go(IDLE)
 
     def capture_interrupted(self) -> None:
@@ -1009,7 +1017,7 @@ class PhotocellEngine:
         self.drops += 1
         self.drop_pending = True
         self.last_frame_ts = None
-        self.prev_frame_ts = None
+        self.seed_ts = None
         if self.state == CONFIRMING_START:
             self.candidate = None
             self._go(ARMED)
@@ -1032,7 +1040,8 @@ class PhotocellEngine:
         self.calibrator_lag2.reset()
         self.candidate = None
         self.last_frame_ts = None
-        self.prev_frame_ts = None
+        self.last_measured_ts = None
+        self.seed_ts = None
         if self.lag != 1:
             self.lag = 1
             self._emit("setReferenceLag:1")
@@ -1053,7 +1062,7 @@ class PhotocellEngine:
         elif self.state in (RUNNING, AWAITING_FINISH) and at_ns == s + cfg.frame_resume_ns:
             # retomada dos quadros (também vale se a chegada já foi armada antes, por configuração)
             self.last_frame_ts = None
-            self.prev_frame_ts = None
+            self.seed_ts = None
             self._emit("setFrameDelivery:true")
             self._emit("resetDifferencer")
         elif self.state == RUNNING and at_ns == s + cfg.finish_arm_ns:
@@ -1072,6 +1081,11 @@ class PhotocellEngine:
             self._process_deadlines(ts)
         if m is None:
             return
+        self._dispatch_measured(m)
+        # depois do despacho: o candidato criado neste quadro precisa do quadro medido ANTERIOR
+        self.last_measured_ts = m.ts_ns
+
+    def _dispatch_measured(self, m: FrameMeasurement) -> None:
         st = self.state
         if st == CALIBRATING:
             self._calibration_frame(m)
@@ -1083,9 +1097,7 @@ class PhotocellEngine:
             self._armed_frame(m, CONFIRMING_FINISH)
         elif st == CONFIRMING_FINISH:
             self._confirming_frame(m, AWAITING_FINISH, is_start=False)
-        else:
-            # RUNNING (após retomada), DEBOUNCE_*, FINISHED, IDLE, ERROR: ignorar.
-            return
+        # RUNNING (após retomada), DEBOUNCE_*, FINISHED, IDLE, ERROR: ignorar.
 
     def _track_gaps(self, ts_ns: int) -> None:
         cfg = self.cfg
@@ -1099,7 +1111,8 @@ class PhotocellEngine:
                 if missed > 0:
                     self.drops += missed
                     self.last_drop_ts = ts_ns
-        self.prev_frame_ts = self.last_frame_ts
+        if self.seed_ts is None:
+            self.seed_ts = ts_ns
         self.last_frame_ts = ts_ns
 
     def _calibration_frame(self, m: FrameMeasurement) -> None:
@@ -1134,7 +1147,8 @@ class PhotocellEngine:
                 abs(m.ts_ns - self.last_drop_ts) < self.cfg.degraded_drop_window_ns
             inp = CrossingInput(ts_ns=m.ts_ns, prev_ts_ns=m.prev_ts_ns, strip_prev=list(m.strip_prev),
                                 strip_cur=list(m.strip_cur), strip_bg=list(m.strip_bg), lag=m.lag,
-                                last_seen_ts_ns=self.prev_frame_ts)
+                                last_seen_ts_ns=self.last_measured_ts
+                                if self.last_measured_ts is not None else self.seed_ts)
             self.candidate = Candidate(inp=inp, degraded=degraded)
             self._go(confirming_state)
         elif m.delta_full <= self.threshold:

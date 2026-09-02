@@ -60,7 +60,7 @@ public enum CrossingEstimator {
             if let skew = cfg.skewNs { return floorDiv(Int64(roi.y0 + row) * skew, Int64(planeHeight)) }
             return 0
         }
-        let coreHalfPx = Double(cfg.coreWidth - 1) / 2.0
+        let coreHalfPx = Double(cfg.coreWidth - 1) / 2.0 + cfg.q0TiltAllowancePxPerRow * (Double(roi.height) / 2.0)
         let coreLagNs = Int64((coreHalfPx * 1e9 / cfg.speedPxPerSMin + 0.5).rounded(.down))
         var lastSeen = inp.tsNs - p
         if let seen = inp.lastSeenTsNs, seen < inp.tsNs { lastSeen = seen }

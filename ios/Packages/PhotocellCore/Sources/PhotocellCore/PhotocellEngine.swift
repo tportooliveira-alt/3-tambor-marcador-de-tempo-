@@ -119,7 +119,11 @@ public final class PhotocellEngine {
     private var wakeups: [Nanos] = []
     private var lastFrameTs: Nanos? = nil
     /// Quadro visto antes do atual (para o intervalo de qualidade 0).
-    private var prevFrameTs: Nanos? = nil
+    /// Intervalo de qualidade 0: o limite inferior é o último quadro em que a faixa foi REALMENTE
+    /// comparada (o differencer devolve nil enquanto ressemeia depois de um drop/arm/retomada); se
+    /// ainda não houve nenhum, o primeiro quadro recebido desde o ressemeio.
+    private var lastMeasuredTs: Nanos? = nil
+    private var seedTs: Nanos? = nil
     private var lastDropTs: Nanos? = nil
     private var dropPending = false   // a plataforma avisou de quadros perdidos sem timestamp
 
@@ -187,7 +191,8 @@ public final class PhotocellEngine {
         lastDropTs = nil
         dropPending = false
         lastFrameTs = nil
-        prevFrameTs = nil
+        lastMeasuredTs = nil
+        seedTs = nil
         go(.idle)
     }
 
@@ -203,7 +208,7 @@ public final class PhotocellEngine {
         drops += 1
         dropPending = true
         lastFrameTs = nil
-        prevFrameTs = nil
+        seedTs = nil
         if state == .confirmingStart {
             candidate = nil
             go(.armed)
@@ -230,7 +235,8 @@ public final class PhotocellEngine {
         calibratorLag2.reset()
         candidate = nil
         lastFrameTs = nil
-        prevFrameTs = nil
+        lastMeasuredTs = nil
+        seedTs = nil
         if lag != 1 {
             lag = 1
             emit(.setReferenceLag(1))
@@ -249,7 +255,7 @@ public final class PhotocellEngine {
             go(.running)
         } else if (state == .running || state == .awaitingFinish) && atNs == s + cfg.frameResumeNs {
             lastFrameTs = nil
-            prevFrameTs = nil
+            seedTs = nil
             emit(.setFrameDelivery(true))
             emit(.resetDifferencer)
         } else if state == .running && atNs == s + cfg.finishArmNs {
@@ -277,6 +283,8 @@ public final class PhotocellEngine {
         case .confirmingFinish: confirmingFrame(m, back: .awaitingFinish, isStart: false)
         default: break // RUNNING (após retomada), DEBOUNCE_*, FINISHED, IDLE, ERROR: ignorar
         }
+        // depois do despacho: o candidato criado neste quadro precisa do quadro medido ANTERIOR
+        lastMeasuredTs = m.tsNs
     }
 
     private func trackGaps(_ tsNs: Nanos) {
@@ -294,7 +302,7 @@ public final class PhotocellEngine {
                 }
             }
         }
-        prevFrameTs = lastFrameTs
+        if seedTs == nil { seedTs = tsNs }
         lastFrameTs = tsNs
     }
 
@@ -334,7 +342,7 @@ public final class PhotocellEngine {
             // cópias: os buffers do differencer rotacionam no próximo quadro
             var inp = CrossingInput(tsNs: m.tsNs, prevTsNs: m.prevTsNs, stripPrev: Array(m.stripPrev),
                                     stripCur: Array(m.stripCur), stripBg: Array(m.stripBg), lag: m.lag)
-            inp.lastSeenTsNs = prevFrameTs
+            inp.lastSeenTsNs = lastMeasuredTs ?? seedTs
             candidate = Candidate(inp: inp, degraded: degraded)
             go(confirming)
         } else if m.deltaFull <= th {

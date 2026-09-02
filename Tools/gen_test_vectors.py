@@ -497,6 +497,11 @@ def main() -> None:
     vectors.append(strip_vector("strip_cross_drop_candidate", direction=+1, skew_ns=3_200_000,
                                 flicker=0.0, drop_frames=[48], seed=27, strip_width=15,
                                 cross_fraction=0.4, tolerance_ms=0.35))
+    # rodada 2: drop 3 quadros antes do gatilho com flicker (lag 2) — o limite inferior do intervalo
+    # de qualidade 0 tem de recuar até o último quadro REALMENTE comparado, não até o quadro-semente
+    vectors.append(strip_vector("strip_cross_drop_before_trigger", direction=+1, skew_ns=3_200_000,
+                                flicker=0.12, drop_frames=[45], seed=28, strip_width=15,
+                                cross_fraction=0.3, tolerance_ms=0.35))
 
     # --- calibração ----------------------------------------------------------
     cfg = PhotocellConfig()

@@ -43,7 +43,7 @@ exposições curtas e longas, calibração, máquina de estados completa).
 | Por quadro (bruto) a 240 FPS | ±2,08 ms | limite da amostragem |
 | **Refinado, qualidade 2** (fração de exposição) | **0,01–0,1 ms** na simulação (3.840 cenários; sem textura: erro médio 0,007 ms, p95 0,03 ms, máximo 0,31 ms) | precisa de contraste ≥ 20 níveis entre cavalo e fundo, **superfície uniforme na banda** e exposição ≥ 1/480 s; a incerteza 3σ é mostrada junto do tempo |
 | Refinado, qualidade 1 (intervalo) | intervalo honesto que contém a verdade (tipicamente ±0,5–1,5 ms) | exposição curta, contraste baixo, bordo inclinado ou visto numa só coluna |
-| Refinado, qualidade 0 | ≈ ±4,6 ms (intervalo físico: do início da exposição anterior ao fim desta, mais o atraso até o centro; cresce se houve quadro perdido) | **textura no objeto** (pelagem malhada, peiteira, arreios na banda): o estimador recusa o refinamento em vez de inventar precisão; o app mostra o bruto |
+| Refinado, qualidade 0 | ≈ ±7,6 ms (intervalo físico: do último quadro comparado ao fim da exposição deste, mais o atraso até o centro; cresce se houve quadro perdido) | **textura no objeto** (pelagem malhada, peiteira, arreios na banda): o estimador recusa o refinamento em vez de inventar precisão; o app mostra o bruto |
 | Samsung (30 FPS para apps de terceiros) | ±17 ms | o app avisa na tela |
 
 Números por condição (velocidade × exposição × ruído × flicker × textura): [`docs/validacao-numerica.md`](docs/validacao-numerica.md).
@@ -60,6 +60,8 @@ classificação depende do ruído medido na calibração. Detalhes e fontes: `do
 
 1. Tripé pesado na lateral da linha, celular **deitado (paisagem)**, lente 1x, sem zoom.
 2. Abra o app antes de posicionar: o formato de 240 FPS tem campo de visão mais estreito.
+   Deixe o celular **nivelado** (use o nível da bolha ou o do app de bússola): a linha da fotocélula é
+   vertical, e uma inclinação acima de ~1,5° faz o gatilho disparar cedo nas linhas de cima da banda.
 3. Alinhe a linha tracejada com a estaca/cerca do outro lado da pista movendo o **tripé**, não a
    linha (o plano da fotocélula só é perpendicular à pista no centro da imagem).
 4. Ajuste a **banda** (alças) para a altura que o peito/pescoço do cavalo sempre cruza.

@@ -97,6 +97,12 @@
       "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.0; drops=[48]"
     },
     {
+      "name": "strip_cross_drop_before_trigger",
+      "kind": "strip",
+      "file": "strip_cross_drop_before_trigger.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.12; drops=[45]"
+    },
+    {
       "name": "calibration_normal",
       "kind": "calibration",
       "file": "calibration_normal.json",

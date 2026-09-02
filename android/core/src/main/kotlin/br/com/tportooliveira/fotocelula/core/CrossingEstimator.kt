@@ -56,7 +56,7 @@ object CrossingEstimator {
         // atraso até o centro ((core−1)/2 px à velocidade mínima plausível).
         val skewForRows = cfg.skewNs
         fun rowOffset(row: Int): Long = if (skewForRows != null) Math.floorDiv((roi.y0 + row).toLong() * skewForRows, planeHeight.toLong()) else 0L
-        val coreHalfPx = (cfg.coreWidth - 1) / 2.0
+        val coreHalfPx = (cfg.coreWidth - 1) / 2.0 + cfg.q0TiltAllowancePxPerRow * (roi.height / 2.0)
         val coreLagNs = Math.floor(coreHalfPx * 1e9 / cfg.speedPxPerSMin + 0.5).toLong()
         val lastSeenQ0 = inp.lastSeenTsNs
         val lastSeen = if (lastSeenQ0 != null && lastSeenQ0 < inp.tsNs) lastSeenQ0 else inp.tsNs - p

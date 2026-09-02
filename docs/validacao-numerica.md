@@ -7,7 +7,9 @@ rolling shutter (skew 3,2 ms), exposição integrada, ruído gaussiano por pixel
 testes `PhysicsSweepTest` (Kotlin) e `PhysicsSweepTests` (Swift).
 
 Qualidade 2 = ajuste completo (erro comparado ao tempo por quadro); 1 = intervalo honesto (conta quantos contêm a
-verdade); 0 = meio da janela de exposição (±2,08 ms). A coluna 'textura' simula pelagem/sela: variação de luma
+verdade); 0 = intervalo físico do gatilho, do último quadro realmente comparado ao fim da exposição do candidato,
+mais o atraso até a coluna central (≈ ±7,6 ms a 240 FPS; maior com quadros perdidos). A coluna 'textura' simula
+pelagem/sela: variação de luma
 ±30 níveis presa ao objeto (senoide de ~7 px), o efeito real que mais degrada o estimador; com textura o resultado
 deve cair para intervalo ou tempo do quadro, nunca para um número falso.
 
@@ -39,15 +41,15 @@ deve cair para intervalo ou tempo do quadro, nunca para um número falso.
 | 8 m/s | 1/480 s | 3.0 | 120 Hz | ±30 | 2.08 ms | 0 | 0 | 6 |
 | 8 m/s | 1/2000 s | 0.5 | — | — | 0.97 ms | 6 / 0.001 ms / 0.001 ms | 0 | 0 |
 | 8 m/s | 1/2000 s | 0.5 | — | ±30 | 0.97 ms | 0 | 0 | 6 |
-| 8 m/s | 1/2000 s | 0.5 | 120 Hz | — | 0.97 ms | 2 / 0.000 ms / 0.000 ms | 4 / 4 (±1.26 ms) | 0 |
+| 8 m/s | 1/2000 s | 0.5 | 120 Hz | — | 0.97 ms | 2 / 0.000 ms / 0.000 ms | 0 | 4 |
 | 8 m/s | 1/2000 s | 0.5 | 120 Hz | ±30 | 0.97 ms | 0 | 0 | 6 |
 | 8 m/s | 1/2000 s | 1.5 | — | — | 0.97 ms | 6 / 0.002 ms / 0.004 ms | 0 | 0 |
 | 8 m/s | 1/2000 s | 1.5 | — | ±30 | 0.97 ms | 0 | 0 | 6 |
-| 8 m/s | 1/2000 s | 1.5 | 120 Hz | — | 0.97 ms | 2 / 0.005 ms / 0.005 ms | 4 / 4 (±1.28 ms) | 0 |
+| 8 m/s | 1/2000 s | 1.5 | 120 Hz | — | 0.97 ms | 2 / 0.005 ms / 0.005 ms | 0 | 4 |
 | 8 m/s | 1/2000 s | 1.5 | 120 Hz | ±30 | 0.97 ms | 0 | 0 | 6 |
-| 8 m/s | 1/2000 s | 3.0 | — | — | 0.97 ms | 4 / 0.003 ms / 0.004 ms | 2 / 2 (±1.53 ms) | 0 |
+| 8 m/s | 1/2000 s | 3.0 | — | — | 0.97 ms | 4 / 0.003 ms / 0.004 ms | 2 / 2 (±1.87 ms) | 0 |
 | 8 m/s | 1/2000 s | 3.0 | — | ±30 | 0.97 ms | 0 | 0 | 6 |
-| 8 m/s | 1/2000 s | 3.0 | 120 Hz | — | 0.97 ms | 0 | 4 / 4 (±1.29 ms) | 2 |
+| 8 m/s | 1/2000 s | 3.0 | 120 Hz | — | 0.97 ms | 0 | 0 | 6 |
 | 8 m/s | 1/2000 s | 3.0 | 120 Hz | ±30 | 0.97 ms | 0 | 0 | 6 |
 | 14 m/s | 1/240 s | 0.5 | — | — | 3.47 ms | 6 / 0.002 ms / 0.003 ms | 0 | 0 |
 | 14 m/s | 1/240 s | 0.5 | — | ±30 | 3.47 ms | 0 | 0 | 6 |
@@ -79,11 +81,11 @@ deve cair para intervalo ou tempo do quadro, nunca para um número falso.
 | 14 m/s | 1/2000 s | 0.5 | 120 Hz | ±30 | 0.97 ms | 0 | 0 | 6 |
 | 14 m/s | 1/2000 s | 1.5 | — | — | 0.97 ms | 6 / 0.001 ms / 0.003 ms | 0 | 0 |
 | 14 m/s | 1/2000 s | 1.5 | — | ±30 | 0.97 ms | 0 | 0 | 6 |
-| 14 m/s | 1/2000 s | 1.5 | 120 Hz | — | 0.97 ms | 2 / 0.003 ms / 0.005 ms | 2 / 2 (±1.53 ms) | 2 |
+| 14 m/s | 1/2000 s | 1.5 | 120 Hz | — | 0.97 ms | 2 / 0.003 ms / 0.005 ms | 0 | 4 |
 | 14 m/s | 1/2000 s | 1.5 | 120 Hz | ±30 | 0.97 ms | 0 | 0 | 6 |
-| 14 m/s | 1/2000 s | 3.0 | — | — | 0.97 ms | 4 / 0.003 ms / 0.004 ms | 2 / 2 (±0.48 ms) | 0 |
+| 14 m/s | 1/2000 s | 3.0 | — | — | 0.97 ms | 4 / 0.003 ms / 0.004 ms | 2 / 2 (±1.11 ms) | 0 |
 | 14 m/s | 1/2000 s | 3.0 | — | ±30 | 0.97 ms | 0 | 0 | 6 |
-| 14 m/s | 1/2000 s | 3.0 | 120 Hz | — | 0.97 ms | 1 / 0.007 ms / 0.007 ms | 3 / 3 (±1.18 ms) | 2 |
+| 14 m/s | 1/2000 s | 3.0 | 120 Hz | — | 0.97 ms | 1 / 0.007 ms / 0.007 ms | 1 / 1 (±1.10 ms) | 4 |
 | 14 m/s | 1/2000 s | 3.0 | 120 Hz | ±30 | 0.97 ms | 0 | 0 | 6 |
 | 18 m/s | 1/240 s | 0.5 | — | — | 3.47 ms | 6 / 0.001 ms / 0.002 ms | 0 | 0 |
 | 18 m/s | 1/240 s | 0.5 | — | ±30 | 3.47 ms | 0 | 0 | 6 |
@@ -117,12 +119,12 @@ deve cair para intervalo ou tempo do quadro, nunca para um número falso.
 | 18 m/s | 1/2000 s | 1.5 | — | ±30 | 0.97 ms | 0 | 0 | 6 |
 | 18 m/s | 1/2000 s | 1.5 | 120 Hz | — | 0.97 ms | 6 / 0.013 ms / 0.028 ms | 0 | 0 |
 | 18 m/s | 1/2000 s | 1.5 | 120 Hz | ±30 | 0.97 ms | 0 | 0 | 6 |
-| 18 m/s | 1/2000 s | 3.0 | — | — | 0.97 ms | 2 / 0.000 ms / 0.001 ms | 4 / 4 (±1.00 ms) | 0 |
+| 18 m/s | 1/2000 s | 3.0 | — | — | 0.97 ms | 2 / 0.000 ms / 0.001 ms | 4 / 4 (±1.48 ms) | 0 |
 | 18 m/s | 1/2000 s | 3.0 | — | ±30 | 0.97 ms | 0 | 0 | 6 |
-| 18 m/s | 1/2000 s | 3.0 | 120 Hz | — | 0.97 ms | 4 / 0.023 ms / 0.041 ms | 2 / 2 (±1.28 ms) | 0 |
+| 18 m/s | 1/2000 s | 3.0 | 120 Hz | — | 0.97 ms | 4 / 0.023 ms / 0.041 ms | 1 / 1 (±1.14 ms) | 1 |
 | 18 m/s | 1/2000 s | 3.0 | 120 Hz | ±30 | 0.97 ms | 0 | 0 | 6 |
 
-Erro médio (qualidade 2) sobre todas as condições: **0.006 ms** (sem textura: **0.006 ms**); intervalos de qualidade 1 que contêm a verdade: **29/29**; tempo por quadro: **1.97 ms**. Tempo de geração: 199 s.
+Erro médio (qualidade 2) sobre todas as condições: **0.006 ms** (sem textura: **0.006 ms**); intervalos de qualidade 1 que contêm a verdade: **12/12**; tempo por quadro: **1.97 ms**. Tempo de geração: 285 s.
 
 Leitura: exposições mais longas dão mais pixels "interiores" (mais qualidade 2); com exposição curta e cavalo
 lento só uma coluna vê o bordo e o resultado cai para um intervalo (qualidade 1) que usa a faixa de velocidades

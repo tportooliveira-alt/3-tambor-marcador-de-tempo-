@@ -18,8 +18,9 @@ Critérios de achado (os mesmos do loop de agentes):
     - sem disparo (com o objeto cruzando a faixa) ou disparo antes do cruzamento.
     Objetos finos (object_width_px menor que ~3 quadros de deslocamento, ex.: rédea, chicote) saem da
     faixa antes da confirmação e NÃO disparam — é o comportamento desejado; use expect_trigger=false.
-    Envelope de operação (o que o produto promete): velocidade ≥ 5 m/s, ≤ 12 mm/px, bordo inclinado
-    ≤ 0,10 px/linha, desfoque ≤ 4 px. Fora dele um achado é relatado como "fora do envelope" e não conta.
+    Envelope de operação (o que o produto promete): bordo a ≥ 800 px/s (velocidade/mm_per_px), bordo
+    inclinado ≤ 0,05 px/linha (celular nivelado), desfoque ≤ 4 px. Fora dele um achado é relatado como
+    "fora do envelope" e não conta.
 
 Parâmetros (todos opcionais; unidades no nome):
     speed_m_s (14), mm_per_px (6), exposure_ns (1/480 s), fps (240), noise_sigma (1.5), direction (+1/−1),
@@ -130,6 +131,9 @@ def run_scenario(**p):
     margin = int(p.get("object_rows_margin", 12))
     skew = int(p.get("skew_ns", 3_200_000))
     seed = int(p.get("seed", 1))
+    if band <= 2 * margin + 2:
+        raise ValueError(f"cenário inválido: band_rows={band} não comporta object_rows_margin={margin} "
+                         f"(o objeto não cobriria nenhuma linha); use band_rows > {2 * margin + 2}")
     cfg = PhotocellConfig(frame_rate_hz=fps, calibration_samples=32, calibration_min_samples_for_outlier=8,
                           skew_ns=skew if p.get("cfg_skew", True) else None, exposure_ns=expo,
                           gamma=float(p.get("cfg_gamma", 1.0)))
@@ -178,12 +182,14 @@ def run_scenario(**p):
     unc = st.uncertainty_ns / 1e6
     raw_err = (st.raw_ts_ns - tc) / 1e6
     # O gatilho vem da primeira coluna do núcleo (largura/2 px antes do centro) e de qualquer linha da
-    # banda: pode ser legitimamente anterior ao cruzamento do CENTRO por (núcleo/2 + 1)/v + E.
+    # banda; a referência do differencer está `lag` quadros atrás (lag 2 sob flicker de 120 Hz), então
+    # a mudança acumulada nesses quadros dispara até lag·P + E antes do cruzamento do CENTRO.
+    lag = eng.lag
     core_half_px = cfg.core_width / 2.0 + 1.0
     # bordo inclinado: a primeira linha da banda chega (banda/2)·tilt px antes da linha média
     tilt_lead_px = abs(float(p.get("tilt_px_per_row", 0.0))) * (roi.height / 2.0)
-    earliest_ok_ms = -(P + expo + (core_half_px + tilt_lead_px) / speed_px * 1e9) / 1e6 - 0.05
-    in_envelope = speed >= 5.0 and mm_per_px <= 12.0 and abs(float(p.get("tilt_px_per_row", 0.0))) <= 0.10 \
+    earliest_ok_ms = -(lag * P + expo + (core_half_px + tilt_lead_px) / speed_px * 1e9) / 1e6 - 0.05
+    in_envelope = speed_px >= 800.0 and abs(float(p.get("tilt_px_per_row", 0.0))) <= 0.05 \
         and float(p.get("psf_px", 0.0)) <= 4.0
     out.update(quality=st.quality, error_ms=round(err, 4), unc_ms=round(unc, 4), inside=abs(err) <= unc,
                row_offset_ms=round(row_offset_ns / 1e6, 4),

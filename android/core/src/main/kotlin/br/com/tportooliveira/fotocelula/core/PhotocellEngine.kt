@@ -117,7 +117,11 @@ class PhotocellEngine(
     private val wakeups: MutableList<Nanos> = ArrayList()
     private var lastFrameTs: Nanos? = null
     /** Quadro visto antes do atual (para o intervalo de qualidade 0). */
-    private var prevFrameTs: Nanos? = null
+    // Intervalo de qualidade 0: o limite inferior é o último quadro em que a faixa foi REALMENTE
+    // comparada (o differencer devolve null enquanto ressemeia depois de um drop/arm/retomada); se
+    // ainda não houve nenhum, o primeiro quadro recebido desde o ressemeio.
+    private var lastMeasuredTs: Nanos? = null
+    private var seedTs: Nanos? = null
     private var lastDropTs: Nanos? = null
     private var dropPending = false   // a plataforma avisou de quadros perdidos sem timestamp
 
@@ -175,7 +179,8 @@ class PhotocellEngine(
         lastDropTs = null
         dropPending = false
         lastFrameTs = null
-        prevFrameTs = null
+        lastMeasuredTs = null
+        seedTs = null
         go(PhotocellState.IDLE)
     }
 
@@ -193,7 +198,7 @@ class PhotocellEngine(
         drops += 1
         dropPending = true
         lastFrameTs = null
-        prevFrameTs = null
+        seedTs = null
         if (state == PhotocellState.CONFIRMING_START) {
             candidate = null
             go(PhotocellState.ARMED)
@@ -220,7 +225,8 @@ class PhotocellEngine(
         calibratorLag2.reset()
         candidate = null
         lastFrameTs = null
-        prevFrameTs = null
+        lastMeasuredTs = null
+        seedTs = null
         if (lag != 1) {
             lag = 1
             emit(Effect.SetReferenceLag(1))
@@ -239,7 +245,7 @@ class PhotocellEngine(
             state == PhotocellState.DEBOUNCE_START && atNs == s + cfg.startLockoutNs -> go(PhotocellState.RUNNING)
             (state == PhotocellState.RUNNING || state == PhotocellState.AWAITING_FINISH) && atNs == s + cfg.frameResumeNs -> {
                 lastFrameTs = null
-                prevFrameTs = null
+                seedTs = null
                 emit(Effect.SetFrameDelivery(true))
                 emit(Effect.ResetDifferencer)
             }
@@ -269,6 +275,8 @@ class PhotocellEngine(
             PhotocellState.CONFIRMING_FINISH -> confirmingFrame(m, PhotocellState.AWAITING_FINISH, false)
             else -> Unit // RUNNING (após retomada), DEBOUNCE_*, FINISHED, IDLE, ERROR: ignorar
         }
+        // depois do despacho: o candidato criado neste quadro precisa do quadro medido ANTERIOR
+        lastMeasuredTs = m.tsNs
     }
 
     private fun trackGaps(tsNs: Nanos) {
@@ -287,7 +295,7 @@ class PhotocellEngine(
                 }
             }
         }
-        prevFrameTs = lastFrameTs
+        if (seedTs == null) seedTs = tsNs
         lastFrameTs = tsNs
     }
 
@@ -330,7 +338,7 @@ class PhotocellEngine(
                 tsNs = m.tsNs, prevTsNs = m.prevTsNs, stripPrev = m.stripPrev.copyOf(),
                 stripCur = m.stripCur.copyOf(), stripBg = m.stripBg.copyOf(), lag = m.lag,
             )
-            inp.lastSeenTsNs = prevFrameTs
+            inp.lastSeenTsNs = lastMeasuredTs ?: seedTs
             candidate = Candidate(inp, degraded)
             go(confirming)
         } else if (m.deltaFull <= th) {
