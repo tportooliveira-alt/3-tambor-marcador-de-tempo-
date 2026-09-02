@@ -404,18 +404,21 @@ class CameraController(
         }
     }
 
-    /** Suspende/retoma a entrega de quadros (efeito setFrameDelivery da FSM). */
+    /**
+     * Suspende/retoma a entrega de quadros ao pipeline (efeito setFrameDelivery da FSM). O que para é
+     * o TRABALHO por quadro (cópia da faixa, differencer, engine, estimador) — a captura continua.
+     *
+     * Na sessão normal o preview é alvo da MESMA requisição repetida da leitura: parar a requisição
+     * pouparia um pouco de ISP e congelaria a imagem na tela, justamente quando o operador precisa
+     * dela (depois de um Reset, e durante a prova para acompanhar o cavalo). Por isso só desligamos o
+     * consumo dos quadros.
+     */
     fun setFrameDelivery(enabled: Boolean) {
         handler.post {
             if (closed) return@post
             glReader?.enabled = enabled
             yuvReader?.enabled = enabled
             if (enabled) resetFpsWindows()
-            if (!capability.mode.highSpeed) {
-                // Na sessão normal também paramos a captura para poupar o ISP; o preview congela.
-                if (!enabled && delivering) { try { session?.stopRepeating() } catch (_: Exception) {}; delivering = false }
-                if (enabled && !delivering) startRepeating()
-            }
         }
     }
 

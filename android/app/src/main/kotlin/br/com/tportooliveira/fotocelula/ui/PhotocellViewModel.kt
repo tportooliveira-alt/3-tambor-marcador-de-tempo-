@@ -51,6 +51,8 @@ class PhotocellViewModel(private val context: Context) {
     private val placeholderClock = SensorClock(true)
     private var previewTexture: SurfaceTexture? = null
     private var started = false
+    /** Uma única reabertura automática por sessão de tela (evita laço de erro). */
+    private var cameraRetried = false
     private var thermalListener: PowerManager.OnThermalStatusChangedListener? = null
     private val saveRunnable = Runnable { settings.save(context) }
 
@@ -92,7 +94,7 @@ class PhotocellViewModel(private val context: Context) {
         closeCamera()
     }
 
-    fun start() { started = true; if (previewTexture != null) openCamera() }
+    fun start() { started = true; cameraRetried = false; if (previewTexture != null) openCamera() }
     fun stop() { started = false; closeCamera() }
 
     private fun openCamera() {
@@ -111,7 +113,22 @@ class PhotocellViewModel(private val context: Context) {
                 if (ls.locked && (expChanged || ls.locked != prev.locked || ls.skewNs != prev.skewNs)) applySettings()
             }
         }
-        ctrl.onError = { msg -> main.post { errorMessage = msg; service?.captureInterrupted() } }
+        ctrl.onError = { msg ->
+            main.post {
+                service?.captureInterrupted()
+                // Abrir a câmera pode falhar por um instante (outro app soltando o dispositivo, volta
+                // de segundo plano). Uma tentativa automática evita ter de reiniciar o app no meio do
+                // treino; se falhar de novo, a mensagem fica na tela.
+                if (started && !cameraRetried) {
+                    cameraRetried = true
+                    errorMessage = "$msg — tentando reabrir a câmera…"
+                    closeCamera()
+                    main.postDelayed({ if (started) openCamera() }, 700)
+                } else {
+                    errorMessage = msg
+                }
+            }
+        }
         ctrl.onCapabilityChanged = { nc, reason ->
             main.post {
                 capability = nc
