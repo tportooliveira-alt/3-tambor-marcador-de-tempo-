@@ -1,0 +1,26 @@
+# macOS / Xcode
+.DS_Store
+xcuserdata/
+*.xcuserstate
+DerivedData/
+ios/Packages/PhotocellCore/.build/
+ios/Packages/PhotocellCore/.swiftpm/
+*.xcworkspace/xcuserdata/
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+android/.idea/
+android/*.iml
+android/captures/
+android/.kotlin/
+
+# Python
+__pycache__/
+*.pyc
+
+# Misc
+*.log
+.env
