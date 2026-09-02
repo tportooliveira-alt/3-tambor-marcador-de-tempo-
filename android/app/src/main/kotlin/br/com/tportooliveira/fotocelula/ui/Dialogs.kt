@@ -1,5 +1,6 @@
 package br.com.tportooliveira.fotocelula.ui
 
+import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +25,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import br.com.tportooliveira.fotocelula.core.TimeFormatter
+import androidx.core.content.FileProvider
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -57,7 +60,26 @@ fun HistoryDialog(vm: PhotocellViewModel, onClose: () -> Unit) {
                 }
             }
         },
-        confirmButton = { Button(onClick = { createDoc.launch("fotocelula-tambor.csv") }, enabled = records.isNotEmpty()) { Text("Exportar CSV") } },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // Compartilhar: manda o CSV direto pelo WhatsApp/e-mail/Drive (o arquivo vai para uma
+                // subpasta do cache exposta pelo FileProvider, nada mais do app fica acessível).
+                Button(onClick = {
+                    val dir = File(ctx.cacheDir, "share").apply { mkdirs() }
+                    val f = File(dir, "fotocelula-tambor.csv")
+                    f.writeText(vm.history.toCsv(), Charsets.UTF_8)
+                    val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", f)
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/csv"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        putExtra(Intent.EXTRA_SUBJECT, "Histórico Fotocélula Tambor")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    ctx.startActivity(Intent.createChooser(send, "Compartilhar histórico"))
+                }, enabled = records.isNotEmpty()) { Text("Compartilhar") }
+                Button(onClick = { createDoc.launch("fotocelula-tambor.csv") }, enabled = records.isNotEmpty()) { Text("Salvar CSV") }
+            }
+        },
         dismissButton = { TextButton(onClick = onClose) { Text("Fechar") } },
     )
 }
