@@ -111,13 +111,14 @@ Ainda em **Modo teste**, toque em **Prova**:
 
 1. Crie um evento ("Teste de casa").
 2. Em **Inscrições**, adicione 3 linhas (nº 1, 2, 3 com nomes quaisquer e uma categoria "A").
-   Se quiser testar a importação, salve um arquivo `.csv` com:
+   Para testar a importação, use o arquivo pronto
+   [`docs/exemplo-lista-largada.csv`](exemplo-lista-largada.csv) (mande para o celular pelo
+   WhatsApp/Drive e escolha em **Importar CSV**) ou salve um `.csv` com:
    ```
    1;Ana;Estrela;A
    2;Bruno;Trovão;A
    3;Carla;Luna;B
    ```
-   e use **Importar CSV**.
 3. Volte à tela principal: a faixa **PRÓXIMO: #1 Ana / Estrela — A** aparece em cima do preview.
 4. Faça 3 "passadas" com o braço. Em cada resultado, toque em **Salvar para #n** — a faixa avança
    sozinha para o próximo. Numa delas, marque 1 tambor; noutra, marque SAT.

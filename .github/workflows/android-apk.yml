@@ -1,0 +1,55 @@
+# Gera o APK de depuração no GitHub (a máquina do agente não tem o SDK do Android).
+# O APK sai como artefato do workflow: baixe pelo celular na aba Actions → a execução → "apk-debug".
+name: APK de depuração
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "android/**"
+      - "shared/test-vectors/**"
+      - ".github/workflows/android-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Testes do núcleo primeiro: um APK que passa nos vetores compartilhados ou nada.
+      - name: Testes do núcleo (46 testes, 30 vetores)
+        working-directory: android
+        run: ./gradlew -PskipApp=true :core:test --no-daemon
+
+      - name: Montar o APK de depuração
+        working-directory: android
+        run: ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Publicar o APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Relatórios de teste (quando algo falha)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relatorios-de-teste
+          path: android/core/build/reports/tests/**
+          if-no-files-found: ignore
