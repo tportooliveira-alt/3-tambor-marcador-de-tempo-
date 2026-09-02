@@ -61,6 +61,12 @@ cruzou o **plano central** da faixa — por isso a largada (num sentido) e a che
 viés de direção. Pixels totalmente cobertos/descobertos só fornecem limites; a margem de
 classificação depende do ruído medido na calibração. Detalhes e fontes: `docs/estudo-tecnico.md`.
 
+## Primeiro teste no aparelho
+
+Roteiro de uma noite (instalar, o que checar, o que anotar):
+[`docs/teste-de-campo.md`](docs/teste-de-campo.md). Em Ajustes há **Modo teste** (janelas curtas, para
+repetir uma passada a cada poucos segundos em casa) e **Modo prova** (as janelas da especificação).
+
 ## Montagem em campo
 
 1. Tripé pesado na lateral da linha, celular **deitado (paisagem)**, lente 1x, sem zoom.

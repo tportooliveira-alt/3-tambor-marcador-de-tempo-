@@ -137,17 +137,19 @@ final class CameraManager: NSObject {
 
         // Formato 240 FPS em 420v, menor área.
         let candidates = FormatSelection.candidates(from: device)
-        guard let chosen = FormatSelection.select(candidates) else {
-            Self.log.error("Sem formato 240 FPS/420v. Melhor taxa disponível: \(FormatSelection.bestAvailableFps(candidates))")
+        guard let picked = FormatSelection.selectWithFallback(candidates) else {
+            Self.log.error("Sem formato 420v acima de 60 FPS. Melhor taxa disponível: \(FormatSelection.bestAvailableFps(candidates))")
             throw CameraError.noHighFrameRateFormat
         }
+        let chosen = picked.format
+        let activeFps = picked.fps
         let format = device.formats[chosen.index]
 
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
             device.activeFormat = format   // ATENÇÃO: reseta as frame durations -> setar logo abaixo
-            let frameDuration = CMTime(value: 1, timescale: 240)
+            let frameDuration = CMTime(value: 1, timescale: CMTimeScale(activeFps))
             device.activeVideoMinFrameDuration = frameDuration
             device.activeVideoMaxFrameDuration = frameDuration
             device.videoZoomFactor = 1.0
@@ -187,10 +189,10 @@ final class CameraManager: NSObject {
         let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
         stateLock.lock(); _formatDimensions = (Int(dims.width), Int(dims.height)); stateLock.unlock()
         DispatchQueue.main.async {
-            self.activeInfo = ActiveCaptureInfo(width: Int(dims.width), height: Int(dims.height), fps: 240,
+            self.activeInfo = ActiveCaptureInfo(width: Int(dims.width), height: Int(dims.height), fps: activeFps,
                                                 isBinned: format.isVideoBinned, exposureNs: 0, iso: 0, locked: false)
         }
-        Self.log.info("Formato: \(dims.width)x\(dims.height) @240 420v binned=\(format.isVideoBinned) expo=[\(chosen.minExposureNs)...\(chosen.maxExposureNs)] ns ISO=[\(chosen.minISO)...\(chosen.maxISO)]")
+        Self.log.info("Formato: \(dims.width)x\(dims.height) @\(activeFps) 420v binned=\(format.isVideoBinned) expo=[\(chosen.minExposureNs)...\(chosen.maxExposureNs)] ns ISO=[\(chosen.minISO)...\(chosen.maxISO)]")
         observeDevice(device)
     }
 

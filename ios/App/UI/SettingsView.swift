@@ -24,6 +24,22 @@ struct SettingsView: View {
                         .font(.caption).foregroundColor(.secondary)
                 }
                 Section("Máquina de estados") {
+                    // Bancada/treino: janelas curtas para repetir o teste a cada poucos segundos.
+                    // Prova: as janelas da especificação (1,5 s / 8 s / 10 s / 2 s).
+                    HStack {
+                        Button("Modo teste (janelas curtas)") {
+                            var s = vm.settings
+                            s.startLockoutMs = 500; s.frameResumeS = 1.5; s.finishArmS = 2.0; s.finishLockoutMs = 500
+                            vm.settings = s
+                        }
+                        Spacer()
+                        Button("Modo prova") {
+                            var s = vm.settings
+                            s.startLockoutMs = 1500; s.frameResumeS = 8.0; s.finishArmS = 10.0; s.finishLockoutMs = 2000
+                            vm.settings = s
+                        }
+                    }
+                    .buttonStyle(.bordered)
                     Stepper("Bloqueio na largada: \(vm.settings.startLockoutMs) ms", value: $vm.settings.startLockoutMs, in: 500...5000, step: 100)
                     Stepper(String(format: "Retomar quadros aos %.1f s", vm.settings.frameResumeS), value: $vm.settings.frameResumeS, in: 1...20, step: 0.5)
                     Stepper(String(format: "Armar chegada aos %.1f s", vm.settings.finishArmS), value: $vm.settings.finishArmS, in: 1...20, step: 0.5)

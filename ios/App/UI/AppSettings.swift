@@ -51,9 +51,14 @@ struct AppSettings: Codable, Equatable {
     }
 
     /// `appliedExposureNs`: exposição real lida do aparelho após a trava (0 = ainda não travou → usa a desejada).
-    func makeConfig(appliedExposureNs: Int64 = 0) -> PhotocellConfig {
+    /// [activeFps] é a taxa REAL do formato ativo (240, 120 ou 60): dela saem o período do quadro e
+    /// o número de amostras da calibração (1 s). Nunca assumir 240.
+    func makeConfig(appliedExposureNs: Int64 = 0, activeFps: Double = 240) -> PhotocellConfig {
         let s = clamped()
         var c = PhotocellConfig()
+        let fps = activeFps >= 1 ? Int(activeFps.rounded()) : 240
+        c.frameRateHz = fps
+        c.calibrationSamples = fps
         c.startLockoutNs = Int64(s.startLockoutMs) * 1_000_000
         c.frameResumeNs = Int64(s.frameResumeS * 1e9)
         c.finishArmNs = Int64(s.finishArmS * 1e9)

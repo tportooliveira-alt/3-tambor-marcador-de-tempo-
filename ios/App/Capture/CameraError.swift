@@ -18,7 +18,7 @@ enum CameraError: LocalizedError {
         case .noBackWideCamera:
             return "Câmera traseira grande-angular (1x) não encontrada."
         case .noHighFrameRateFormat:
-            return "Este aparelho não oferece formato de 240 FPS em NV12 (420v)."
+            return "Este aparelho não oferece formato NV12 (420v) de 60 FPS ou mais."
         case .pixelFormatUnavailable:
             return "A saída de vídeo não aceita o formato NV12 (420v)."
         case .cannotAddInput:
@@ -28,7 +28,7 @@ enum CameraError: LocalizedError {
         case .configuration(let msg):
             return "Falha de configuração da câmera: \(msg)"
         case .frameRateNotHeld(let fps):
-            return String(format: "A câmera não manteve 240 FPS (medido %.1f FPS). Reduza a exposição ou troque de formato.", fps)
+            return String(format: "A câmera não manteve a taxa do formato (medido %.1f FPS). Reduza a exposição ou troque de formato.", fps)
         }
     }
 }

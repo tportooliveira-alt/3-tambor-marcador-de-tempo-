@@ -145,7 +145,8 @@ final class PhotocellViewModel: ObservableObject {
         camera.suspendStrategy = settings.suspendStrategy
         if camera.desiredExposureNs != settings.exposureNs { camera.desiredExposureNs = settings.exposureNs }
         let applied = captureInfo.locked ? captureInfo.exposureNs : 0
-        session.updateConfig(settings.makeConfig(appliedExposureNs: applied))
+        let fps = captureInfo.fps > 0 ? captureInfo.fps : 240
+        session.updateConfig(settings.makeConfig(appliedExposureNs: applied, activeFps: fps))
         // a largura da faixa faz parte da ROI: reenviar a última ROI mapeada
         if let r = lastROI {
             session.updateROI(NormalizedROI(centerX: r.centerX, top: r.top, bottom: r.bottom, widthPx: settings.stripWidthPx))

@@ -83,6 +83,16 @@ fun SettingsDialog(vm: PhotocellViewModel, onClose: () -> Unit) {
                         OutlinedButton(onClick = { vm.updateSettings(s.copy(exposureNs = ns)) }) { Text(label.substringBefore(" ("), maxLines = 1) }
                     }
                 }
+                // Bancada/treino: janelas curtas para repetir o teste a cada poucos segundos.
+                // Prova: as janelas da especificação (1,5 s / 8 s / 10 s / 2 s).
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(onClick = {
+                        vm.updateSettings(s.copy(startLockoutMs = 500, frameResumeS = 1.5f, finishArmS = 2.0f, finishLockoutMs = 500))
+                    }) { Text("Modo teste") }
+                    OutlinedButton(onClick = {
+                        vm.updateSettings(s.copy(startLockoutMs = 1500, frameResumeS = 8f, finishArmS = 10f, finishLockoutMs = 2000))
+                    }) { Text("Modo prova") }
+                }
                 Text("Bloqueio na largada: ${s.startLockoutMs} ms")
                 Slider(value = s.startLockoutMs.toFloat(), onValueChange = { vm.updateSettings(s.copy(startLockoutMs = (it / 100).toInt() * 100)) }, valueRange = 500f..5000f)
                 Text("Retomar quadros aos %.1f s · armar chegada aos %.1f s".format(s.frameResumeS, s.finishArmS))

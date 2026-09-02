@@ -33,6 +33,15 @@ enum FormatSelection {
         }
     }
 
+    /// Escada de taxas: 240 se existir, senão 120, senão 60 (nunca abaixo — o refinamento perde sentido).
+    /// Devolve o formato e a taxa a usar; nil quando nem 60 FPS em 420v existe.
+    static func selectWithFallback(_ candidates: [CaptureFormatCandidate]) -> (format: CaptureFormatCandidate, fps: Double)? {
+        for target in [240.0, 120.0, 60.0] {
+            if let f = select(candidates, targetFps: target) { return (f, target) }
+        }
+        return nil
+    }
+
     /// Melhor taxa disponível quando 240 não existe (fallback: 120, depois 60), para o aviso de precisão.
     static func bestAvailableFps(_ candidates: [CaptureFormatCandidate]) -> Double {
         let nv12 = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
