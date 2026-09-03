@@ -81,8 +81,8 @@ decodificação dos codecs da Apple só se confirma no aparelho.
 
 ## Vídeo grande: por que ele cabe na memória
 
-Câmera lenta a 240 FPS gera perto de **200 MB a cada 10 segundos**. O leitor nunca tem o arquivo
-inteiro na memória:
+Câmera lenta a 240 FPS gera oito vezes mais imagem que um vídeo comum: um clipe de 20 s passa de
+50 MB e um clipe longo chega a centenas. O leitor nunca tem o arquivo inteiro na memória:
 
 1. as caixas do contêiner são mapeadas lendo **16 bytes de cada uma** — é assim que se acha o índice
    (`moov`) mesmo quando o iPhone o grava no fim do arquivo, sem ler o que está antes;
