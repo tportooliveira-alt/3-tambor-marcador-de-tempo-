@@ -16,6 +16,9 @@ import {
 } from "./store.ts";
 import { supportsFrameCallback } from "./videoStripReader.ts";
 
+/** Ligado na versão de arquivo único (página embutida): sem service worker, sem manifesto. */
+declare const ARQUIVO_UNICO: boolean;
+
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 const store = new Store();
 
@@ -513,12 +516,55 @@ $("limparHistorico").addEventListener("click", () => {
 });
 
 function baixar(nome: string, texto: string): void {
-  const blob = new Blob(["﻿" + texto], { type: "text/csv;charset=utf-8" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = nome;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  try {
+    const blob = new Blob(["\ufeff" + texto], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = nome;
+    a.rel = "noopener";
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch {
+    /* alguns visualizadores bloqueiam o download: cai para a cópia */
+  }
+  // Sempre oferecer o texto: em página aberta dentro de outro app o download não acontece e o
+  // usuário ficaria sem o arquivo sem saber por quê.
+  mostrarTexto(nome, texto);
+}
+
+/** Mostra o CSV em texto, com botão de copiar — o plano B quando o download não é permitido. */
+function mostrarTexto(nome: string, texto: string): void {
+  const fundo = document.createElement("div");
+  fundo.className = "modal";
+  fundo.innerHTML = `<div class="cartao modal-conteudo">
+    <h2>${nome}</h2>
+    <p class="dica">Se o download não abrir sozinho, copie o texto abaixo e cole numa planilha.</p>
+    <textarea readonly rows="10"></textarea>
+    <div class="linha">
+      <button class="botao primario" data-copiar>Copiar</button>
+      <button class="botao" data-fechar>Fechar</button>
+    </div>
+  </div>`;
+  const area = fundo.querySelector("textarea")!;
+  area.value = texto;
+  fundo.querySelector("[data-copiar]")!.addEventListener("click", async () => {
+    area.select();
+    try {
+      await navigator.clipboard.writeText(texto);
+      aviso("CSV copiado.", true);
+    } catch {
+      document.execCommand?.("copy");
+      aviso("Selecionado — toque em Copiar no menu do iPhone.");
+    }
+  });
+  const fechar = () => fundo.remove();
+  fundo.querySelector("[data-fechar]")!.addEventListener("click", fechar);
+  fundo.addEventListener("click", (e) => {
+    if (e.target === fundo) fechar();
+  });
+  document.body.append(fundo);
 }
 
 // ------------------------------------------------------------------ início
@@ -529,7 +575,9 @@ $("versao").textContent = `Fotocélula Tambor · versão web · núcleo conferid
 if (!supportsFrameCallback()) {
   aviso("Este navegador não consegue ler os quadros do vídeo. No iPhone, abra pelo Safari.");
 }
-if ("serviceWorker" in navigator) {
+// Só registra o service worker quando a página é servida por um site (num visualizador embutido
+// não há sw.js e o pedido só geraria erro). Sem ele o app funciona igual — só não abre sem sinal.
+if ("serviceWorker" in navigator && location.protocol.startsWith("http") && !ARQUIVO_UNICO) {
   navigator.serviceWorker.register("sw.js").catch(() => {
     /* sem service worker o app funciona igual, só não abre offline */
   });

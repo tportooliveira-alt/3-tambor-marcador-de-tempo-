@@ -10,6 +10,11 @@ const servir = process.argv.includes("--serve");
 mkdirSync(dist, { recursive: true });
 cpSync(path.join(raiz, "public"), dist, { recursive: true });
 
+const umArquivo = process.argv.includes("--single");
+// --artifact: mesma página, mas só o conteúdo (sem doctype/html/head/body), para publicar dentro
+// de um visualizador que fornece o esqueleto da página.
+const paraArtifact = process.argv.includes("--artifact");
+
 const opcoes = {
   entryPoints: [path.join(raiz, "src/app.ts")],
   bundle: true,
@@ -19,6 +24,7 @@ const opcoes = {
   sourcemap: servir,
   outfile: path.join(dist, "app.js"),
   logLevel: "info",
+  define: { ARQUIVO_UNICO: String(umArquivo || paraArtifact) },
 };
 
 // versão do cache do service worker = conteúdo do bundle (troca sozinha a cada build)
@@ -39,6 +45,31 @@ if (servir) {
   await ctx.watch();
   const { host, port } = await ctx.serve({ servedir: dist, port: 5173 });
   console.log(`servindo em http://${host}:${port}`);
+} else if (umArquivo || paraArtifact) {
+  // Versão de ARQUIVO ÚNICO: tudo embutido (CSS, JS, ícone) numa página só, para abrir onde não há
+  // como servir uma pasta — inclusive dentro de outro app.
+  opcoes.outfile = path.join(dist, "app-single.js");
+  await build(opcoes);
+  const js = readFileSync(opcoes.outfile, "utf8");
+  const css = readFileSync(path.join(raiz, "public/estilo.css"), "utf8");
+  const icone = readFileSync(path.join(raiz, "public/icone-180.png")).toString("base64");
+  let html = readFileSync(path.join(raiz, "public/index.html"), "utf8");
+  html = html
+    .replace('<link rel="manifest" href="manifest.webmanifest">', "")
+    .replace(/<link rel="apple-touch-icon"[^>]*>/, `<link rel="apple-touch-icon" href="data:image/png;base64,${icone}">`)
+    .replace(/<link rel="icon"[^>]*>/, `<link rel="icon" href="data:image/png;base64,${icone}">`)
+    .replace('<link rel="stylesheet" href="estilo.css">', `<style>\n${css}\n</style>`)
+    .replace('<script type="module" src="app.js"></script>', `<script type="module">\n${js}\n</script>`);
+  let saida = path.join(raiz, "fotocelula-tambor.html");
+  if (paraArtifact) {
+    const titulo = /<title>([^<]*)<\/title>/.exec(html)?.[1] ?? "Fotocélula Tambor";
+    const estilo = /<style>[\s\S]*?<\/style>/.exec(html)?.[0] ?? "";
+    const corpo = /<body>([\s\S]*)<\/body>/.exec(html)?.[1] ?? "";
+    html = `<title>${titulo}</title>\n${estilo}\n${corpo.trim()}\n`;
+    saida = path.join(raiz, "fotocelula-tambor.artifact.html");
+  }
+  writeFileSync(saida, html);
+  console.log(`${paraArtifact ? "página para publicar" : "arquivo único"}: ${saida} (${(html.length / 1024).toFixed(0)} KB)`);
 } else {
   await build(opcoes);
   carimbarSW(readFileSync(path.join(dist, "app.js"), "utf8"));

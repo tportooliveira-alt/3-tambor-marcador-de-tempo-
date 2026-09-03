@@ -14,7 +14,7 @@ import { chromium } from "playwright";
 import http from "node:http";
 
 const aqui = path.dirname(fileURLToPath(import.meta.url));
-const dist = path.resolve(aqui, "../dist");
+const dist = process.env.DIST ?? path.resolve(aqui, "../dist");
 const video = process.argv[2] ?? "/tmp/prova-sintetica.webm";
 const verdade = JSON.parse(readFileSync(video.replace(/\.\w+$/, ".json"), "utf8"));
 
@@ -28,11 +28,17 @@ const TIPOS = {
 
 const servidor = http.createServer((req, res) => {
   const rel = decodeURIComponent(new URL(req.url, "http://x").pathname).replace(/^\/+/, "") || "index.html";
+  if (rel === "favicon.ico") {
+    // o visualizador real fornece o ícone; aqui basta não devolver 404
+    res.writeHead(200, { "content-type": "image/x-icon" }).end();
+    return;
+  }
   try {
     const corpo = readFileSync(path.join(dist, rel));
     res.writeHead(200, { "content-type": TIPOS[path.extname(rel)] ?? "application/octet-stream" });
     res.end(corpo);
   } catch {
+    if (rel !== "favicon.ico") console.log(`    (404 pedido: /${rel})`);
     res.writeHead(404).end("não encontrado");
   }
 });
@@ -46,12 +52,13 @@ const pagina = await navegador.newPage();
 const erros = [];
 pagina.on("pageerror", (e) => erros.push(String(e)));
 pagina.on("console", (m) => {
-  if (m.type() === "error") erros.push(m.text());
+  // o favicon é do servidor de teste, não do app
+  if (m.type() === "error" && !m.text().includes("favicon")) erros.push(m.text());
 });
 // blob: falha quando o próprio app solta o vídeo (removeAttribute + load) — é o cancelamento
 // esperado, não um defeito. Só interessa recurso do site que não carregou.
 pagina.on("requestfailed", (r) => {
-  if (r.url().startsWith("http")) erros.push(`recurso não carregou: ${r.url()}`);
+  if (r.url().startsWith("http") && !r.url().endsWith("favicon.ico")) erros.push(`recurso não carregou: ${r.url()}`);
 });
 
 let falhou = false;
