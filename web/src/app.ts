@@ -229,9 +229,23 @@ $("analisar").addEventListener("click", async () => {
   $("progresso").hidden = false;
   $("resultado").hidden = true;
   const t0 = performance.now();
+  let bytesLidos = 0;
+  let bytesTotal = 0;
+  let quadrosLidos = 0;
+  const pintarProgresso = (): void => {
+    const mb = (n: number): string => (n / 1048576).toFixed(0);
+    if (bytesTotal > 0) {
+      $<HTMLElement>("barraFill").style.width = `${((bytesLidos / bytesTotal) * 100).toFixed(1)}%`;
+    }
+    const lendo = bytesTotal > 0 ? `Lendo o vídeo… ${mb(bytesLidos)} MB de ${mb(bytesTotal)} MB` : "Analisando…";
+    $("progressoTexto").textContent = quadrosLidos > 0 ? `${lendo} · ${quadrosLidos} quadros medidos` : lendo;
+  };
   try {
-    $("progressoTexto").textContent = "Medindo a taxa de quadros do arquivo…";
-    const periodo = await probeFramePeriod(arquivo);
+    $("progressoTexto").textContent = "Abrindo o vídeo…";
+    // A taxa exata já veio do cabeçalho do arquivo quando ele foi escolhido. Só quando o cabeçalho
+    // não pôde ser lido é que vale tocar o vídeo para estimar o período — o que num clipe grande
+    // custa caro.
+    const periodo = fpsArquivo > 0 ? Math.round(1e9 / fpsArquivo) : await probeFramePeriod(arquivo);
     const fps = periodo > 0 ? 1e9 / periodo : 240;
     const cfg = configForFile(defaultConfig(), fps);
     // vídeo sempre traz curva de tom: linearizar antes da fração de exposição
@@ -249,9 +263,18 @@ $("analisar").addEventListener("click", async () => {
       config: cfg,
       periodNs: periodo,
       signal: ctrl.signal,
+      // Leitura e decodificação andam juntas: a barra segue os bytes lidos (a medida global), e o
+      // texto diz quantos quadros já saíram. Sem isso, um vídeo de 300 MB passa minutos sem nenhum
+      // sinal na tela — que é exatamente o "carrega e para" relatado.
+      onRead: (lidos, total) => {
+        bytesLidos = lidos;
+        bytesTotal = total;
+        pintarProgresso();
+      },
       onProgress: (frac, recebidos) => {
-        $<HTMLElement>("barraFill").style.width = `${(frac * 100).toFixed(1)}%`;
-        $("progressoTexto").textContent = `Analisando… ${(frac * 100).toFixed(0)}% · ${recebidos} quadros`;
+        quadrosLidos = recebidos;
+        if (bytesTotal === 0) $<HTMLElement>("barraFill").style.width = `${(frac * 100).toFixed(1)}%`;
+        pintarProgresso();
       },
     });
     // gancho de teste: o teste ponta a ponta lê daqui os números crus da análise

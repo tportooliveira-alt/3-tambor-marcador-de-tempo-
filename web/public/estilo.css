@@ -121,6 +121,14 @@ input[type="text"], input[type="number"] {
 .escolher.pequeno .botao { width: auto; }
 
 .dica { color: var(--suave); font-size: 13px; margin: 8px 0; }
+
+/* Caixa recolhida: o aviso sobre o tamanho do vídeo precisa estar à mão sem empurrar o botão
+   para fora da primeira tela. */
+.caixa-dica { background: #0d120f; border: 1px solid #1e2a22; border-radius: 10px; padding: 10px 12px; }
+.caixa-dica > summary { cursor: pointer; color: var(--texto); font-size: 14px; }
+.caixa-dica[open] > summary { margin-bottom: 6px; }
+.caixa-dica ol { margin: 6px 0 0; padding-left: 20px; }
+.caixa-dica li { margin: 6px 0; }
 code { background: #0d120f; padding: 1px 5px; border-radius: 5px; font-size: 12px; }
 
 #palco { position: relative; width: 100%; margin: 10px 0; touch-action: none; }

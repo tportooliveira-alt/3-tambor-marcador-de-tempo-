@@ -78,3 +78,41 @@ no trecho parado depois da chegada.
 Limite conhecido deste ambiente: o Chromium disponível não decodifica H.264/HEVC, então o teste usa
 VP9 em MP4. O contêiner é o mesmo do `.MOV` do iPhone (o demuxer é o mesmo caminho de código), mas a
 decodificação dos codecs da Apple só se confirma no aparelho.
+
+## Vídeo grande: por que ele cabe na memória
+
+Câmera lenta a 240 FPS gera perto de **200 MB a cada 10 segundos**. O leitor nunca tem o arquivo
+inteiro na memória:
+
+1. as caixas do contêiner são mapeadas lendo **16 bytes de cada uma** — é assim que se acha o índice
+   (`moov`) mesmo quando o iPhone o grava no fim do arquivo, sem ler o que está antes;
+2. o índice (poucos kilobytes) vai para o `mp4box.js`, e só então os dados entram em **fatias de
+   4 MB**;
+3. cada fatia é decodificada na hora e devolvida (`releaseUsedSamples`). O que fica guardado é a
+   faixa da ROI de cada quadro — cerca de **1 KB por quadro**, não o quadro inteiro.
+
+O teste que garante isso compara o pico de memória do navegador entre um clipe pequeno e um grande:
+
+```bash
+python3 ../Tools/gen_test_video.py --out /tmp/longa.mp4 --speed 2400 --object-px 200 --duration-s 40
+node test/e2e-memoria.mjs /tmp/prova.mp4 /tmp/longa.mp4
+```
+
+Medido nesta máquina, comparando o clipe de 25 MB com um de **242 MB na mesma resolução** (40 s,
+9600 quadros):
+
+| | leitor anterior | leitor em fatias |
+|---|---|---|
+| memória a mais por byte de vídeo | **2,30** | **0,19** |
+| memória do navegador no clipe grande | 1624 MB | **1158 MB** (+41 MB sobre o pequeno) |
+| heap de JavaScript | 9 MB | 7 MB |
+
+Os 0,19 que sobram são as faixas guardadas (1 KB por quadro), que a calibragem automática precisa —
+não o arquivo. O `file.arrayBuffer()` do leitor anterior é o que fazia a página "carregar e parar" no
+iPhone: num vídeo de verdade ele pedia mais memória do que o aparelho dá a uma aba.
+
+(O heap de JavaScript sozinho não denuncia o problema — o conteúdo de um `ArrayBuffer` mora fora
+dele. Por isso o teste mede também a memória residente do navegador.)
+
+Na tela, a leitura mostra o progresso em MB o tempo todo (`Lendo o vídeo… 120 MB de 380 MB`), porque
+um vídeo grande leva minutos e silêncio parece travamento.

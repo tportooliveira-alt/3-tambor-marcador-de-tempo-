@@ -36,6 +36,8 @@ export interface AnalysisOptions {
   periodNs: number;
   playbackRate?: number;
   onProgress?: (fraction: number, received: number) => void;
+  /** Progresso da leitura do arquivo em bytes — o único sinal de vida em vídeo grande. */
+  onRead?: (bytesLidos: number, bytesTotal: number) => void;
   signal?: AbortSignal;
 }
 
@@ -100,7 +102,7 @@ export async function analyzeVideo(file: Blob, opts: AnalysisOptions): Promise<A
     if (!supportsWebCodecs()) throw new Error("navegador sem WebCodecs");
     const d = await decodeStrips(
       file,
-      { ...janela, onProgress: opts.onProgress, signal: opts.signal },
+      { ...janela, onProgress: opts.onProgress, onRead: opts.onRead, signal: opts.signal },
       guardar,
     );
     stats = { received: d.received, expected: d.expected, worstGapPeriods: d.worstGapPeriods, medianPeriodNs: d.medianPeriodNs };
