@@ -1,5 +1,6 @@
 # Gera o APK de depuração no GitHub (a máquina do agente não tem o SDK do Android).
-# O APK sai como artefato do workflow: baixe pelo celular na aba Actions → a execução → "apk-debug".
+# O APK sai como artefato do workflow e, na branch de desenvolvimento, também como release
+# "apk-teste" — link direto de .apk para baixar e instalar no celular.
 name: APK de depuração
 
 on:
@@ -12,7 +13,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write   # publica o APK como release (link direto para baixar no celular)
 
 jobs:
   build:
@@ -38,13 +39,41 @@ jobs:
         working-directory: android
         run: ./gradlew :app:assembleDebug --no-daemon
 
-      - name: Publicar o APK
+      - name: Nomear o APK
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/*.apk dist/fotocelula-tambor-debug.apk
+          ls -l dist
+
+      - name: Publicar o APK (artefato do workflow)
         uses: actions/upload-artifact@v4
         with:
           name: apk-debug
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: dist/fotocelula-tambor-debug.apk
           if-no-files-found: error
           retention-days: 30
+
+      # Release com link direto para o .apk: no celular basta abrir o link e instalar,
+      # sem descompactar zip nem navegar pela aba Actions.
+      - name: Publicar o APK (release "apk-teste")
+        if: github.ref_name == 'claude/ios-sports-timing-system-65t7ng'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "APK de depuração do Fotocélula Tambor — commit ${GITHUB_SHA:0:7}, montado em $(date -u '+%d/%m/%Y %H:%M UTC')."
+            echo
+            echo "Baixe **fotocelula-tambor-debug.apk** abaixo e abra no celular."
+            echo
+            echo "É assinado com a chave de depuração: o Android pede para permitir \"instalar apps desconhecidos\" para o app que abrir o arquivo (Chrome, Arquivos, Drive). O iPhone não instala APK — o iOS vai pelo Xcode (docs/teste-de-campo.md)."
+          } > notas-release.md
+          gh release view apk-teste --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create apk-teste --repo "$GITHUB_REPOSITORY" --prerelease \
+                 --title "APK de teste (depuração)" --notes-file notas-release.md
+          gh release upload apk-teste dist/fotocelula-tambor-debug.apk --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit apk-teste --repo "$GITHUB_REPOSITORY" --notes-file notas-release.md
+          echo "APK: $(gh release view apk-teste --repo "$GITHUB_REPOSITORY" --json url --jq .url)"
 
       - name: Relatórios de teste (quando algo falha)
         if: failure()
