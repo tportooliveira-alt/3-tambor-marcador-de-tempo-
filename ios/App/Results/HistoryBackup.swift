@@ -14,24 +14,35 @@ enum HistoryBackup {
         return try? folder.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
     }
 
-    /// Grava `content` como `name` dentro da pasta do marcador. Devolve o erro em pt-BR, ou nil.
+    /// Resultado de uma gravação: erro em pt-BR (ou nil) e, quando o marcador envelheceu, o
+    /// marcador novo para quem chamou guardar — sem isso a permissão da pasta some sem aviso.
+    struct WriteResult {
+        var error: String?
+        var refreshedBookmark: Data?
+    }
+
+    /// Grava `content` como `name` dentro da pasta do marcador. Chamar FORA da main thread: pasta do
+    /// iCloud Drive é provedor de arquivos, e a escrita pode demorar.
     @discardableResult
-    static func write(_ content: String, name: String, bookmark: Data?) -> String? {
-        guard let bookmark else { return nil }
+    static func write(_ content: String, name: String, bookmark: Data?) -> WriteResult {
+        guard let bookmark else { return WriteResult() }
         var stale = false
         guard let folder = try? URL(resolvingBookmarkData: bookmark, options: [], relativeTo: nil,
                                     bookmarkDataIsStale: &stale) else {
-            return "Pasta de backup não encontrada. Escolha a pasta de novo."
+            return WriteResult(error: "Pasta de backup não encontrada. Escolha a pasta de novo.")
         }
         guard folder.startAccessingSecurityScopedResource() else {
-            return "Sem permissão para escrever na pasta de backup. Escolha a pasta de novo."
+            return WriteResult(error: "Sem permissão para escrever na pasta de backup. Escolha a pasta de novo.")
         }
         defer { folder.stopAccessingSecurityScopedResource() }
+        // marcador envelhecido ainda resolve uma vez; renovar agora evita perder a pasta depois
+        let refreshed = stale ? try? folder.bookmarkData(options: .minimalBookmark,
+                                                         includingResourceValuesForKeys: nil, relativeTo: nil) : nil
         do {
             try content.data(using: .utf8)!.write(to: folder.appendingPathComponent(name), options: .atomic)
-            return nil
+            return WriteResult(error: nil, refreshedBookmark: refreshed)
         } catch {
-            return "Backup falhou: \(error.localizedDescription)"
+            return WriteResult(error: "Backup falhou: \(error.localizedDescription)", refreshedBookmark: refreshed)
         }
     }
 

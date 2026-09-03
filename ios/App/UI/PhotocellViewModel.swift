@@ -264,6 +264,13 @@ final class PhotocellViewModel: ObservableObject {
         writeBackup()
     }
 
+    /// Edição em andamento no cartão (nome, cavalo, tambores, SAT): só atualiza o histórico.
+    /// Chamada a cada tecla digitada, então NÃO dispara o backup em pasta.
+    func pendingResultEdited() {
+        if let r = pendingResult { history.update(r) }
+    }
+
+    /// Salvar de verdade (botão): atualiza o histórico e reescreve as cópias na pasta de backup.
     func savePendingResult() {
         if let r = pendingResult { history.update(r) }
         writeBackup()
@@ -305,6 +312,7 @@ final class PhotocellViewModel: ObservableObject {
         }
         settings.backupBookmark = mark
         backupError = nil
+        backupError = nil
         writeBackup()
         infoMessage = "Backup do histórico ligado nesta pasta."
     }
@@ -315,15 +323,28 @@ final class PhotocellViewModel: ObservableObject {
     }
 
     /// Reescreve as cópias na pasta escolhida (histórico e, havendo prova aberta, a classificação).
+    ///
+    /// O CSV é montado aqui (leitura do histórico é main actor), mas a ESCRITA vai para fora da main
+    /// thread: a pasta pode ser do iCloud Drive, e um provedor de arquivos lento travaria a tela que
+    /// desenha o preview e o cronômetro.
     func writeBackup() {
         guard let mark = settings.backupBookmark else { return }
         let csv = CSVExporter.makeCSV(history.records)
-        var err = HistoryBackup.write(csv, name: "fotocelula-historico.csv", bookmark: mark)
-        if err == nil, let ev = events.currentEvent {
-            err = HistoryBackup.write(events.rankingCsv(of: ev.id, records: history.records),
-                                      name: HistoryBackup.eventFileName(ev.name), bookmark: mark)
+        let evento: (String, String)? = events.currentEvent.map {
+            (HistoryBackup.eventFileName($0.name), events.rankingCsv(of: $0.id, records: history.records))
         }
-        backupError = err
+        Task.detached(priority: .utility) {
+            var r = HistoryBackup.write(csv, name: "fotocelula-historico.csv", bookmark: mark)
+            if r.error == nil, let (nome, corpo) = evento {
+                let r2 = HistoryBackup.write(corpo, name: nome, bookmark: r.refreshedBookmark ?? mark)
+                r = HistoryBackup.WriteResult(error: r2.error,
+                                              refreshedBookmark: r2.refreshedBookmark ?? r.refreshedBookmark)
+            }
+            await MainActor.run { [r] in
+                self.backupError = r.error
+                if let novo = r.refreshedBookmark { self.settings.backupBookmark = novo }
+            }
+        }
     }
 
     private static func describe(_ reason: String) -> String {

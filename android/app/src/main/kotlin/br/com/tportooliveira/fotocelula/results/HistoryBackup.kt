@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
+import java.text.Normalizer
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -34,8 +35,12 @@ class HistoryBackup(private val context: Context) {
         false
     }
 
-    /** Reescreve `name` na pasta com o conteúdo dado (fora da main thread; falha em silêncio na tela). */
-    fun write(treeUriString: String, name: String, content: String) {
+    /**
+     * Reescreve `name` na pasta com o conteúdo dado, fora da main thread. `onDone` recebe o erro (ou
+     * null) NA THREAD DE E/S — quem chama devolve para a main thread; sem isso a tela continuaria
+     * dizendo que o backup está bem depois de a pasta ser apagada ou a permissão revogada.
+     */
+    fun write(treeUriString: String, name: String, content: String, onDone: (String?) -> Unit = {}) {
         if (treeUriString.isEmpty()) return
         io.execute {
             try {
@@ -45,24 +50,31 @@ class HistoryBackup(private val context: Context) {
                 val dirUri = DocumentsContract.buildDocumentUriUsingTree(tree, dirId)
                 val existing = findChild(resolver, tree, dirId, name)
                 val target = existing ?: DocumentsContract.createDocument(resolver, dirUri, "text/csv", name)
-                if (target == null) { lastError = "Não consegui criar $name na pasta escolhida."; return@execute }
+                if (target == null) {
+                    lastError = "Não consegui criar $name na pasta escolhida."
+                    onDone(lastError); return@execute
+                }
                 // "wt" trunca: sem isso um histórico menor deixaria lixo do arquivo anterior no fim
                 resolver.openOutputStream(target, "wt")?.use { it.write(content.toByteArray(Charsets.UTF_8)) }
-                    ?: run { lastError = "Pasta de backup indisponível." ; return@execute }
+                    ?: run { lastError = "Pasta de backup indisponível."; onDone(lastError); return@execute }
                 lastError = null
+                onDone(null)
             } catch (e: Exception) {
                 lastError = "Backup falhou: ${e.message}"
                 Log.w("HistoryBackup", "falha ao gravar $name", e)
+                onDone(lastError)
             }
         }
     }
 
     /** Nome de arquivo seguro para uma prova ("Copa de Verão" → "fotocelula-prova-copa-de-verao.csv"). */
     fun eventFileName(eventName: String): String {
-        val slug = eventName.lowercase(Locale.ROOT)
-            .replace(Regex("[áàâãä]"), "a").replace(Regex("[éèêë]"), "e").replace(Regex("[íìîï]"), "i")
-            .replace(Regex("[óòôõö]"), "o").replace(Regex("[úùûü]"), "u").replace("ç", "c")
-            .replace(Regex("[^a-z0-9]+"), "-").trim('-')
+        // Normalizer + remoção das marcas de acento: mesma regra do `folding(.diacriticInsensitive)`
+        // do iOS, para a mesma prova não gravar dois arquivos diferentes na pasta compartilhada.
+        val folded = Normalizer.normalize(eventName, Normalizer.Form.NFD)
+            .replace(Regex("\\p{Mn}+"), "")
+            .lowercase(Locale.ROOT)
+        val slug = folded.replace(Regex("[^a-z0-9]+"), "-").trim('-')
         return "fotocelula-prova-" + (if (slug.isEmpty()) "sem-nome" else slug.take(40)) + ".csv"
     }
 

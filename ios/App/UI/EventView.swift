@@ -28,13 +28,12 @@ struct EventView: View {
             }
             .navigationTitle(events.currentEvent.map { "Prova: \($0.name)" } ?? "Prova")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fechar") { dismiss() } } }
+            // um .fileImporter por view: dois empilhados no mesmo lugar brigam pela apresentação da
+            // sheet e o de cima nunca abre. O da pasta de backup vive dentro da própria seção.
             .fileImporter(isPresented: $importingCSV,
                           allowedContentTypes: [.commaSeparatedText, .plainText, .text],
                           allowsMultipleSelection: false) { result in
                 handleImport(result)
-            }
-            .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
-                if case .success(let url) = result { vm.setBackupFolder(url) }
             }
         }
     }
@@ -111,26 +110,28 @@ struct EventView: View {
 
     // MARK: - classificação
     private func rankingSection(_ ev: Event) -> some View {
-        let placings = events.ranking(of: ev.id, records: history.records)
-        let byOrder = Dictionary(history.records.filter { $0.eventId == ev.id }
-            .map { ($0.entryOrder ?? 0, $0) }, uniquingKeysWith: { a, _ in a })
+        // linhas já pareadas dentro de cada categoria: a mesma ordem de largada existe em categorias
+        // diferentes, então nem a identidade nem o competidor podem vir de um mapa por número
+        let rows = events.rankingRows(of: ev.id, records: history.records)
         return Section("Classificação") {
-            if placings.isEmpty {
+            if rows.isEmpty {
                 Text("Nenhuma passada salva nesta prova ainda.").foregroundColor(.secondary)
             }
-            // índice como identidade: a mesma ordem de largada pode aparecer em categorias diferentes
-            ForEach(Array(placings.enumerated()), id: \.offset) { _, p in
-                let r = byOrder[p.entryOrder]
+            ForEach(rows) { row in
+                let p = row.placing
+                let r = row.run
                 HStack {
                     Text(p.place.map { "\($0)º" } ?? "SAT")
                         .font(.title3.bold()).frame(width: 52, alignment: .leading)
                         .foregroundColor(p.place == nil ? .red : .primary)
                     VStack(alignment: .leading) {
-                        Text("#\(p.entryOrder) " + (r?.rider ?? "") + ((r?.horse).map { $0.isEmpty ? "" : " / \($0)" } ?? ""))
-                        Text([(r?.category ?? "").isEmpty ? nil : r?.category,
-                              "bruto \(TimeFormatter.formatElapsed(r?.elapsedRawNs ?? 0))",
-                              p.penaltyNs > 0 ? "+\(p.penaltyNs / 1_000_000_000)s" : nil]
-                            .compactMap { $0 }.joined(separator: " · "))
+                        Text("#\(p.entryOrder) " + r.rider + (r.horse.isEmpty ? "" : " / \(r.horse)"))
+                        let detalhes: [String?] = [
+                            (r.category ?? "").isEmpty ? nil : r.category,
+                            "bruto \(TimeFormatter.formatElapsed(r.elapsedRawNs))",
+                            p.penaltyNs > 0 ? "+\(p.penaltyNs / 1_000_000_000)s" : nil,
+                        ]
+                        Text(detalhes.compactMap { $0 }.joined(separator: " · "))
                             .font(.caption).foregroundColor(.secondary)
                     }
                     Spacer()
@@ -138,7 +139,7 @@ struct EventView: View {
                         .font(.title3.monospacedDigit().bold())
                 }
             }
-            if !placings.isEmpty {
+            if !rows.isEmpty {
                 if let url = rankingURL {
                     ShareLink(item: url) { Label("Compartilhar classificação", systemImage: "square.and.arrow.up") }
                 } else {
@@ -151,6 +152,8 @@ struct EventView: View {
                 }
             }
         }
+        // passada nova invalida o CSV já gerado: senão o operador compartilha classificação vencida
+        .onChange(of: history.records.count) { _ in rankingURL = nil }
     }
 
     // MARK: - backup
@@ -168,6 +171,9 @@ struct EventView: View {
                     Button("Copiar agora") { vm.writeBackup() }.buttonStyle(.bordered)
                     Button("Desligar") { vm.clearBackupFolder() }.buttonStyle(.bordered)
                 }
+            }
+            .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
+                if case .success(let url) = result { vm.setBackupFolder(url) }
             }
         }
     }

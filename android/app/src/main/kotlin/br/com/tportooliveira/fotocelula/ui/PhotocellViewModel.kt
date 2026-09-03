@@ -49,6 +49,8 @@ class PhotocellViewModel(private val context: Context) {
     var historyVersion by mutableStateOf(0); private set
     /** Muda a cada edição de prova/inscrição (o EventStore não é observável pelo Compose). */
     var eventVersion by mutableStateOf(0); private set
+    /** Último erro do backup em pasta (pasta apagada, permissão perdida); null quando está tudo certo. */
+    var backupError: String? by mutableStateOf(null); private set
 
     val history = RunHistoryStore(context)
     val events = EventStore(context)
@@ -291,26 +293,32 @@ class PhotocellViewModel(private val context: Context) {
     fun writeBackup() {
         val uri = settings.backupTreeUri
         if (uri.isEmpty()) return
-        backup.write(uri, "fotocelula-historico.csv", history.toCsv())
+        val report: (String?) -> Unit = { e -> main.post { if (e != null || backupError != null) backupError = e } }
+        backup.write(uri, "fotocelula-historico.csv", history.toCsv(), report)
         val ev = currentEvent
-        if (ev != null) backup.write(uri, backup.eventFileName(ev.name), events.rankingCsv(ev.id, history.records))
+        if (ev != null) {
+            backup.write(uri, backup.eventFileName(ev.name), events.rankingCsv(ev.id, history.records), report)
+        }
     }
 
     /** Guarda a permissão da pasta escolhida em ACTION_OPEN_DOCUMENT_TREE e faz a primeira cópia. */
     fun setBackupFolder(uri: android.net.Uri?) {
         if (uri == null) return
         if (backup.takePermission(uri)) {
+            backupError = null
             updateSettings(settings.copy(backupTreeUri = uri.toString()))
             writeBackup()
             infoMessage = "Backup do histórico ligado nesta pasta."
         } else {
-            errorMessage = backupError ?: "Não foi possível usar essa pasta."
+            backupError = backup.lastError
+            errorMessage = backup.lastError ?: "Não foi possível usar essa pasta."
         }
     }
 
-    fun clearBackupFolder() { updateSettings(settings.copy(backupTreeUri = "")) }
-
-    val backupError: String? get() = backup.lastError
+    fun clearBackupFolder() {
+        backupError = null
+        updateSettings(settings.copy(backupTreeUri = ""))
+    }
 
     private fun handleSnapshot(s: Snapshot) {
         snapshot = s

@@ -272,6 +272,7 @@ private fun Stopwatch(vm: PhotocellViewModel) {
 
 @Composable
 private fun ResultCard(vm: PhotocellViewModel, r: br.com.tportooliveira.fotocelula.results.RunRecord, onAssign: () -> Unit) {
+    @Suppress("UNUSED_VARIABLE") val version = vm.eventVersion
     Column(Modifier.fillMaxWidth().background(Color(0xFF1F1F1F), RoundedCornerShape(12.dp)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         // quem correu vem antes do número: é o que o operador confere antes de salvar
         val who = if (r.entryId != null) "#${r.entryOrder} ${r.rider}" + (if (r.horse.isNotBlank()) " / ${r.horse}" else "") +

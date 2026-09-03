@@ -46,7 +46,7 @@ import java.io.File
 @Composable
 fun EventDialog(vm: PhotocellViewModel, onClose: () -> Unit) {
     val ctx = LocalContext.current
-    val version = vm.eventVersion + vm.historyVersion
+    @Suppress("UNUSED_VARIABLE") val version = vm.eventVersion + vm.historyVersion
     var tab by remember { mutableStateOf(0) }
     var newName by remember { mutableStateOf("") }
     var newPlace by remember { mutableStateOf("") }
@@ -67,7 +67,7 @@ fun EventDialog(vm: PhotocellViewModel, onClose: () -> Unit) {
 
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text(current?.let { "Prova: ${it.name}" } ?: "Prova (nenhuma aberta) · v$version") },
+        title = { Text(current?.let { "Prova: ${it.name}" } ?: "Prova (nenhuma aberta)") },
         text = {
             Column(Modifier.height(360.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -129,6 +129,7 @@ fun EventDialog(vm: PhotocellViewModel, onClose: () -> Unit) {
 
 @Composable
 private fun EntriesTab(vm: PhotocellViewModel, onImport: () -> Unit) {
+    @Suppress("UNUSED_VARIABLE") val version = vm.eventVersion + vm.historyVersion
     val ev = vm.events.currentEventId
     if (ev == null) { Text("Abra ou crie uma prova na primeira aba."); return }
     var order by remember { mutableStateOf("") }
@@ -167,22 +168,23 @@ private fun EntriesTab(vm: PhotocellViewModel, onImport: () -> Unit) {
 
 @Composable
 private fun RankingTab(vm: PhotocellViewModel) {
+    @Suppress("UNUSED_VARIABLE") val version = vm.eventVersion + vm.historyVersion
     val ev = vm.events.currentEventId
     if (ev == null) { Text("Abra ou crie uma prova na primeira aba."); return }
     val records = vm.history.records
-    val placings = vm.events.ranking(ev, records)
-    if (placings.isEmpty()) { Text("Nenhuma passada salva nesta prova ainda."); return }
-    val byOrder = records.filter { it.eventId == ev }.associateBy { it.entryOrder }
+    // linhas já pareadas dentro de cada categoria pelo EventStore: a mesma ordem de largada existe
+    // em categorias diferentes, então nem a chave nem o competidor podem sair de um mapa por número
+    val rows = vm.events.rankingRows(ev, records)
+    if (rows.isEmpty()) { Text("Nenhuma passada salva nesta prova ainda."); return }
     LazyColumn(Modifier.fillMaxWidth()) {
-        items(placings, key = { "${it.entryOrder}-${it.place ?: -1}" }) { p ->
-            val r = byOrder[p.entryOrder]
+        items(rows.size, key = { i -> rows[i].second.id }) { i ->
+            val (p, r) = rows[i]
             Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(p.place?.let { "${it}º" } ?: "SAT", fontWeight = FontWeight.Bold, modifier = Modifier.width(48.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("#${p.entryOrder} ${r?.rider ?: ""}${if (!r?.horse.isNullOrBlank()) " / ${r?.horse}" else ""}")
-                    val cat = r?.category ?: ""
-                    Text((if (cat.isNotBlank()) "$cat · " else "") +
-                        "bruto ${TimeFormatter.formatElapsed(r?.elapsedRawNs ?: 0)}" +
+                    Text("#${p.entryOrder} ${r.rider}${if (r.horse.isNotBlank()) " / ${r.horse}" else ""}")
+                    Text((if (r.category.isNotBlank()) "${r.category} · " else "") +
+                        "bruto ${TimeFormatter.formatElapsed(r.elapsedRawNs)}" +
                         (if (p.penaltyNs > 0) " · +${p.penaltyNs / 1_000_000_000}s" else ""),
                         style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                 }
@@ -215,6 +217,7 @@ private fun BackupTab(vm: PhotocellViewModel, onChooseFolder: () -> Unit) {
 /** Escolher outra inscrição para a passada em aberto (quando a ordem de largada muda na hora). */
 @Composable
 fun AssignEntryDialog(vm: PhotocellViewModel, onClose: () -> Unit) {
+    @Suppress("UNUSED_VARIABLE") val version = vm.eventVersion + vm.historyVersion
     val ev = vm.events.currentEventId
     val entries: List<Entry> = if (ev == null) emptyList() else vm.events.entriesOf(ev)
     AlertDialog(
@@ -242,6 +245,9 @@ fun AssignEntryDialog(vm: PhotocellViewModel, onClose: () -> Unit) {
 /** Faixa "Próximo: #12 João / Estrela" — o operador lê de longe, com luva, no sol. */
 @Composable
 fun NextEntryBanner(vm: PhotocellViewModel, modifier: Modifier = Modifier) {
+    // o EventStore e o histórico não são observáveis: ler os contadores AQUI (antes de qualquer
+    // return) é o que faz a faixa avançar para o próximo competidor quando uma passada é salva
+    @Suppress("UNUSED_VARIABLE") val version = vm.eventVersion + vm.historyVersion
     val e = vm.nextEntry ?: return
     Column(modifier.background(Color(0xE6143024), RoundedCornerShape(10.dp)).padding(horizontal = 12.dp, vertical = 6.dp)) {
         Text("PRÓXIMO", color = Color(0xFF9FD3B0), fontSize = 11.sp, fontWeight = FontWeight.Bold)

@@ -35,7 +35,7 @@ import java.util.Locale
 @Composable
 fun HistoryDialog(vm: PhotocellViewModel, onClose: () -> Unit) {
     val ctx = LocalContext.current
-    val version = vm.historyVersion
+    @Suppress("UNUSED_VARIABLE") val version = vm.historyVersion
     val records = vm.history.records
     val createDoc = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
         if (uri != null) {
@@ -45,7 +45,7 @@ fun HistoryDialog(vm: PhotocellViewModel, onClose: () -> Unit) {
     val df = SimpleDateFormat("dd/MM HH:mm", Locale.getDefault())
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text("Histórico (${records.size}) · v$version") },
+        title = { Text("Histórico (${records.size})") },
         text = {
             LazyColumn(Modifier.height(300.dp)) {
                 items(records, key = { it.id }) { r ->

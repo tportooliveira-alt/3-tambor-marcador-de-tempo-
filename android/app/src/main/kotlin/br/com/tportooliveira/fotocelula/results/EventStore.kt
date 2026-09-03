@@ -152,18 +152,39 @@ class EventStore(context: Context) {
 
     /** Classificação da prova por categoria (regra do núcleo compartilhado). */
     fun ranking(eventId: String, records: List<RunRecord>): List<EventScoring.Placing> =
-        EventScoring.rankByCategory(records.filter { it.eventId == eventId }.map { it.toScoringRun() })
+        rankingRows(eventId, records).map { it.first }
+
+    /**
+     * Classificação já pareada com a passada de cada colocação.
+     *
+     * O pareamento é feito DENTRO de cada categoria: a ordem de largada costuma ser numerada por
+     * categoria (o #1 da Amador e o #1 da Aberta existem os dois), então um mapa por `entryOrder`
+     * sobre a prova inteira mostraria o competidor errado. Tela e CSV usam esta mesma função para
+     * não divergirem entre si.
+     */
+    fun rankingRows(eventId: String, records: List<RunRecord>): List<Pair<EventScoring.Placing, RunRecord>> {
+        val mine = records.filter { it.eventId == eventId }
+        val out = ArrayList<Pair<EventScoring.Placing, RunRecord>>(mine.size)
+        for (cat in mine.map { it.category }.distinct().sorted()) {
+            val inCat = mine.filter { it.category == cat }
+            // dentro da categoria a ordem ainda pode repetir (duas passadas do mesmo número): a
+            // colocação sai na mesma ordem do ranking, então consome-se a lista por posição
+            val remaining = inCat.groupBy { it.entryOrder }.mapValues { (_, v) -> ArrayDeque(v) }
+            for (p in EventScoring.rank(inCat.map { it.toScoringRun() })) {
+                val r = remaining[p.entryOrder]?.removeFirstOrNull() ?: continue
+                out.add(p to r)
+            }
+        }
+        return out
+    }
 
     /** CSV da prova: colocação, competidor, tempos, penalidade — o que se imprime ou se manda no zap. */
     fun rankingCsv(eventId: String, records: List<RunRecord>): String {
         fun dec(v: Double, places: Int) = String.format(Locale.ROOT, "%.${places}f", v).replace('.', ',')
         fun q(s: String) = "\"" + s.replace("\"", "\"\"") + "\""
-        val mine = records.filter { it.eventId == eventId }
-        val byOrder = mine.associateBy { it.entryOrder }
         val sb = StringBuilder()
         sb.append("categoria;colocacao;ordem;competidor;cavalo;tempo_final;tempo_bruto_s;tambores;penalidade_s;sem_tempo\n")
-        for (p in ranking(eventId, records)) {
-            val r = byOrder[p.entryOrder] ?: continue
+        for ((p, r) in rankingRows(eventId, records)) {
             val e = _entries.firstOrNull { it.id == r.entryId }
             sb.append(listOf(
                 q(r.category), p.place?.toString() ?: "SAT", "${p.entryOrder}",

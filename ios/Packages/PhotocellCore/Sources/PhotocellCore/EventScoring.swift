@@ -44,15 +44,20 @@ public enum EventScoring {
     public static func finalNs(_ r: Run) -> Nanos { r.elapsedRefinedNs + penaltyNs(r) }
 
     /// Classifica uma lista já filtrada por categoria. Ordem determinística nas três linguagens.
+    ///
+    /// O índice de entrada entra como último critério de desempate: `Array.sorted` do Swift não é
+    /// estável, e sem ele duas passadas idênticas (mesmo tempo e mesmo número de largada) poderiam
+    /// sair em ordem diferente da do Kotlin, cuja ordenação é estável.
     public static func rank(_ runs: [Run]) -> [Placing] {
-        let sorted = runs.sorted { a, b in
-            let ka = (a.noTime ? 1 : 0, finalNs(a), a.elapsedRawNs, a.entryOrder)
-            let kb = (b.noTime ? 1 : 0, finalNs(b), b.elapsedRawNs, b.entryOrder)
+        let sorted = runs.enumerated().sorted { a, b in
+            let ka = (a.element.noTime ? 1 : 0, finalNs(a.element), a.element.elapsedRawNs, a.element.entryOrder, a.offset)
+            let kb = (b.element.noTime ? 1 : 0, finalNs(b.element), b.element.elapsedRawNs, b.element.entryOrder, b.offset)
             if ka.0 != kb.0 { return ka.0 < kb.0 }
             if ka.1 != kb.1 { return ka.1 < kb.1 }
             if ka.2 != kb.2 { return ka.2 < kb.2 }
-            return ka.3 < kb.3
-        }
+            if ka.3 != kb.3 { return ka.3 < kb.3 }
+            return ka.4 < kb.4
+        }.map(\.element)
         var out: [Placing] = []
         out.reserveCapacity(sorted.count)
         var place = 0
@@ -70,7 +75,11 @@ public enum EventScoring {
     /// Classifica dentro de cada categoria; a saída sai agrupada por categoria (ordem alfabética).
     public static func rankByCategory(_ runs: [Run]) -> [Placing] {
         var out: [Placing] = []
-        for cat in Set(runs.map { $0.category }).sorted() {
+        // ordenação por unidades escalares (não por colação): é a mesma ordem que o Kotlin produz
+        // com `sorted()`, para categoria acentuada não sair em posição diferente entre plataformas
+        var cats: [String] = []
+        for r in runs where !cats.contains(r.category) { cats.append(r.category) }
+        for cat in cats.sorted(by: { $0.unicodeScalars.lexicographicallyPrecedes($1.unicodeScalars) }) {
             out.append(contentsOf: rank(runs.filter { $0.category == cat }))
         }
         return out

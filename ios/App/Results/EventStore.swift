@@ -2,6 +2,15 @@ import Combine
 import Foundation
 import PhotocellCore
 
+/// Uma linha da classificação: a colocação e a passada que a produziu.
+/// Tipo nomeado, não tupla — `ForEach(_:id:)` precisa de um key path, e key path para elemento de
+/// tupla não existe em Swift.
+struct RankingRow: Identifiable {
+    let placing: EventScoring.Placing
+    let run: RunRecord
+    var id: UUID { run.id }
+}
+
 /// Uma prova (evento). Vive só no aparelho: sem conta, sem servidor, sem rede.
 struct Event: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
@@ -127,7 +136,33 @@ final class EventStore: ObservableObject {
     // MARK: - classificação
     /// Classificação da prova por categoria (regra do núcleo compartilhado).
     func ranking(of eventId: UUID, records: [RunRecord]) -> [EventScoring.Placing] {
-        EventScoring.rankByCategory(records.filter { $0.eventId == eventId }.map(\.scoringRun))
+        rankingRows(of: eventId, records: records).map(\.placing)
+    }
+
+    /// Classificação já pareada com a passada de cada colocação.
+    ///
+    /// O pareamento é feito DENTRO de cada categoria: a ordem de largada costuma ser numerada por
+    /// categoria (o #1 da Amador e o #1 da Aberta existem os dois), então um mapa por `entryOrder`
+    /// sobre a prova inteira mostraria o competidor errado. Tela e CSV usam esta mesma função.
+    func rankingRows(of eventId: UUID, records: [RunRecord]) -> [RankingRow] {
+        let mine = records.filter { $0.eventId == eventId }
+        var cats: [String] = []
+        for r in mine where !cats.contains(r.category ?? "") { cats.append(r.category ?? "") }
+        var out: [RankingRow] = []
+        for cat in cats.sorted(by: { $0.unicodeScalars.lexicographicallyPrecedes($1.unicodeScalars) }) {
+            let inCat = mine.filter { ($0.category ?? "") == cat }
+            // dentro da categoria a ordem ainda pode repetir (duas passadas do mesmo número): a
+            // colocação sai na mesma ordem do ranking, então consome-se a fila por posição
+            var remaining: [Int: [RunRecord]] = [:]
+            for r in inCat { remaining[r.entryOrder ?? 0, default: []].append(r) }
+            for p in EventScoring.rank(inCat.map(\.scoringRun)) {
+                guard var queue = remaining[p.entryOrder], !queue.isEmpty else { continue }
+                let r = queue.removeFirst()
+                remaining[p.entryOrder] = queue
+                out.append(RankingRow(placing: p, run: r))
+            }
+        }
+        return out
     }
 
     /// CSV da prova: colocação, competidor, tempos, penalidade — o que se imprime ou se manda no zap.
@@ -136,12 +171,10 @@ final class EventStore: ObservableObject {
             String(format: "%.\(places)f", v).replacingOccurrences(of: ".", with: ",")
         }
         func q(_ s: String) -> String { "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
-        let mine = records.filter { $0.eventId == eventId }
-        var byOrder: [Int: RunRecord] = [:]
-        for r in mine { byOrder[r.entryOrder ?? 0] = r }
         var out = "categoria;colocacao;ordem;competidor;cavalo;tempo_final;tempo_bruto_s;tambores;penalidade_s;sem_tempo\n"
-        for p in ranking(of: eventId, records: records) {
-            guard let r = byOrder[p.entryOrder] else { continue }
+        for row in rankingRows(of: eventId, records: records) {
+            let p = row.placing
+            let r = row.run
             let e = entry(r.entryId)
             let cols = [
                 q(r.category ?? ""), p.place.map(String.init) ?? "SAT", "\(p.entryOrder)",

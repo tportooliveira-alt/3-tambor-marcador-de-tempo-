@@ -62,6 +62,7 @@ struct ResultView: View {
         .padding(14)
         .background(.ultraThinMaterial)
         .cornerRadius(14)
-        .onChange(of: record) { _ in vm.savePendingResult() }
+        // a cada tecla digitada só o histórico é atualizado; o backup em pasta espera o botão Salvar
+        .onChange(of: record) { _ in vm.pendingResultEdited() }
     }
 }
