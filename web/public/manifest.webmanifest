@@ -1,0 +1,17 @@
+{
+  "name": "Fotocélula Tambor",
+  "short_name": "Fotocélula",
+  "description": "Cronômetro de Três Tambores por análise de vídeo em câmera lenta, com milésimo, prova e classificação — tudo no aparelho.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0e1411",
+  "theme_color": "#141b17",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "icone-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icone-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icone-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
