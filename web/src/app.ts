@@ -290,7 +290,11 @@ function desenharCartao(segundos: number, res: AnalysisResult): void {
     <p class="detalhe">
       refinado ${formatElapsed(p.elapsedRefinedNs)} · bruto ${formatElapsed(p.elapsedRawNs)}<br>
       ${res.measuredFps.toFixed(0)} FPS · ${res.reader.received} quadros lidos${res.missedFrames > 0 ? ` · <b>${res.missedFrames} não entregues pelo navegador</b>` : ""} · análise em ${segundos.toFixed(0)} s<br>
-      leitura por ${res.leitura}${res.codec ? ` · ${res.codec}` : ""}
+      leitura por ${res.leitura}${res.codec ? ` · ${res.codec}` : ""}${
+        res.calibracao
+          ? `<br>calibrado com o trecho de ${res.calibracao.inicioS.toFixed(1)} s a ${res.calibracao.fimS.toFixed(1)} s do vídeo`
+          : ""
+      }
     </p>
     <div class="linha">
       <button class="botao" id="menosTambor">− tambor</button>

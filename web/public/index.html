@@ -114,8 +114,7 @@
     <h2>Como usar</h2>
     <ol>
       <li><b>Grave em câmera lenta.</b> App Câmera do iPhone → modo <b>Câm. Lenta</b> → nos Ajustes do
-          iPhone, <i>Câmera → Gravar Câm. Lenta → 1080p a 240 fps</i>. Comece a gravar com a pista
-          <b>vazia</b> por 1 segundo antes da largada.</li>
+          iPhone, <i>Câmera → Gravar Câm. Lenta → 1080p a 240 fps</i>.</li>
       <li><b>Celular parado.</b> Tripé, apoiado ou encostado — se a câmera se mexer, a faixa deixa de
           ser uma linha fixa e a medição perde o sentido.</li>
       <li><b>Enquadre a linha de largada/chegada</b> no meio da imagem, com o celular deitado e
@@ -124,6 +123,14 @@
           (as duas alças) deve pegar a altura do peito, numa parte uniforme.</li>
       <li><b>Analisar.</b> O tempo sai com o milésimo, a qualidade e a incerteza.</li>
     </ol>
+    <h2>E se eu apertar o gravar tarde?</h2>
+    <p>O app precisa de um trecho com a pista <b>vazia</b> para aprender o "normal" da cena — é a
+       calibragem, e ela é automática. Mas esse trecho <b>não precisa estar no começo</b>: o app
+       procura o pedaço mais parado em qualquer ponto do clipe (antes da largada, entre a ida e a
+       volta, ou depois da chegada) e calibra ali. O cartão de resultado diz qual trecho ele usou.</p>
+    <p class="dica">Só não adianta se a cena nunca ficar parada — celular na mão, tripé esbarrado,
+       gente passando na frente. Aí ele avisa em vez de dar um tempo furado.</p>
+
     <h2>O que a qualidade quer dizer</h2>
     <ul>
       <li><b>Qualidade 2</b> — refinamento completo: milésimo confiável (±0,1 a 0,5 ms).</li>
@@ -134,6 +141,8 @@
     <h2>Limites, ditos na cara</h2>
     <ul>
       <li>Isto <b>não</b> é fotocélula ao vivo: não apita no cruzamento. O tempo sai depois.</li>
+      <li>A calibragem é refeita a cada vídeo, de propósito: ela mede <b>aquela</b> cena, naquela luz.
+          Não é uma configuração que fique salva.</li>
       <li>A exposição do quadro não vem no arquivo: o app assume o pior caso e <b>aumenta a
           incerteza</b> em vez de fingir que sabe.</li>
       <li>Se o navegador não entregar todos os quadros do vídeo, a passada sai marcada como

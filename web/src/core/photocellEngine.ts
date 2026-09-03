@@ -225,6 +225,30 @@ export class PhotocellEngine {
     this.go(PhotocellState.IDLE);
   }
 
+  /**
+   * Arma a máquina com um limiar já medido, sem passar por CALIBRATING.
+   *
+   * EXCLUSIVO DA ANÁLISE DE ARQUIVO (versão web). Ao vivo — nos apps nativos — a calibragem é feita
+   * pela própria FSM com a pista vazia antes de armar, e este método não existe lá. Aqui o clipe
+   * inteiro já está na memória, então o trecho mais parado pode ser encontrado em QUALQUER ponto do
+   * vídeo (não só no começo) e medido antes; a máquina só precisa receber o resultado.
+   *
+   * Não muda nenhuma regra do algoritmo: limiar, σ e lag entram exatamente como a calibragem ao vivo
+   * os produziria.
+   */
+  seedCalibration(threshold: number, noiseSigmaPx: number, lag: number): void {
+    this.threshold = threshold;
+    this.noiseSigmaPx = noiseSigmaPx;
+    const l = lag === 2 ? 2 : 1;
+    if (l !== this.lag) {
+      this.lag = l;
+      this.emit({ kind: "setReferenceLag", lag: l });
+    }
+    this.setDelivery(true);
+    this.emit({ kind: "resetDifferencer" });
+    this.go(PhotocellState.ARMED);
+  }
+
   captureInterrupted(): void {
     if (isActive(this.state) || this.state === PhotocellState.CALIBRATING) this.fail("captureInterrupted");
   }
