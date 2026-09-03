@@ -1,0 +1,73 @@
+# Compila o app de iPhone e roda os testes do núcleo Swift num Mac do GitHub — a máquina do agente
+# não tem toolchain Swift nem Xcode, então este é o único lugar onde o código iOS é de fato compilado.
+#
+# Produz também um .ipa SEM ASSINATURA: serve para instalar pelo AltStore/Sideloadly (a partir de um
+# PC Windows ou Mac, com Apple ID gratuito). Sem computador nenhum não há como instalar em iPhone.
+name: App iOS (compilar e testar)
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "ios/**"
+      - "shared/test-vectors/**"
+      - ".github/workflows/ios-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versões
+        run: |
+          xcodebuild -version
+          swift --version
+
+      # Os mesmos 30 vetores compartilhados que o Kotlin roda: é aqui que a paridade Swift↔Kotlin
+      # deixa de ser promessa. Nunca foram executados antes.
+      - name: Testes do núcleo Swift
+        working-directory: ios/Packages/PhotocellCore
+        run: swift test
+
+      - name: Compilar o app (sem assinatura)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/FotocelulaTambor.xcodeproj \
+            -scheme FotocelulaTambor \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Empacotar .ipa sem assinatura
+        run: |
+          set -euo pipefail
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+          test -n "$APP"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry fotocelula-tambor-unsigned.ipa Payload
+          ls -lh fotocelula-tambor-unsigned.ipa
+
+      - name: Publicar o .ipa (artefato)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipa-unsigned
+          path: fotocelula-tambor-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publicar o .ipa na release "apk-teste"
+        if: github.ref_name == 'claude/ios-sports-timing-system-65t7ng'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload apk-teste fotocelula-tambor-unsigned.ipa --repo "$GITHUB_REPOSITORY" --clobber \
+            || echo "release ainda não existe; o build do Android a cria"
