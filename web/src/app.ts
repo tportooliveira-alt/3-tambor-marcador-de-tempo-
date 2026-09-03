@@ -14,6 +14,7 @@ import {
   type Inscricao,
   type Passada,
 } from "./store.ts";
+import { probeFileInfo } from "./videoDecoderReader.ts";
 import { supportsFrameCallback } from "./videoStripReader.ts";
 
 /** Ligado na versão de arquivo único (página embutida): sem service worker, sem manifesto. */
@@ -29,6 +30,8 @@ let arquivo: File | null = null;
 let videoW = 0;
 let videoH = 0;
 let analisando: AbortController | null = null;
+/** Taxa de quadros lida do cabeçalho do arquivo (0 = ainda não sei). */
+let fpsArquivo = 0;
 let passadaAberta: Passada | null = null;
 
 // ------------------------------------------------------------------ avisos
@@ -90,9 +93,16 @@ async function mostrarPrimeiroQuadro(f: File): Promise<void> {
     $("editor").hidden = false;
     desenharOverlay();
     const dur = v.duration || 0;
-    $("info-video").textContent =
-      `${videoW}×${videoH} · ${dur.toFixed(1)} s · ${f.size >= 1048576 ? `${(f.size / 1048576).toFixed(0)} MB` : `${Math.round(f.size / 1024)} KB`}` +
+    const tamanho = f.size >= 1048576 ? `${(f.size / 1048576).toFixed(0)} MB` : `${Math.round(f.size / 1024)} KB`;
+    // A taxa vem do cabeçalho do arquivo, na hora: é a diferença entre o milésimo e ±17 ms, e o
+    // usuário precisa saber ANTES de esperar a análise inteira.
+    const info = await probeFileInfo(f);
+    fpsArquivo = info?.fps ?? 0;
+    $("info-video").innerHTML =
+      `${videoW}×${videoH} · ${dur.toFixed(1)} s · ${tamanho}` +
+      (fpsArquivo > 0 ? ` · <b>${Math.round(fpsArquivo)} quadros por segundo</b>` : "") +
       ` — arraste a linha vermelha até onde o cavalo cruza; as alças ajustam a altura da banda.`;
+    mostrarAvisoTaxa();
   } catch (e) {
     aviso((e as Error).message);
   } finally {
@@ -101,6 +111,35 @@ async function mostrarPrimeiroQuadro(f: File): Promise<void> {
     v.removeAttribute("src");
     v.load();
     URL.revokeObjectURL(url);
+  }
+}
+
+/**
+ * Diz, em cima da hora, o que a taxa do vídeo significa para o tempo. Gravar em velocidade normal
+ * (30 fps) não impede a medição — só a limita a ±17 ms por gatilho, que não serve para prova. Melhor
+ * dizer isso antes de o usuário esperar a análise e ir para a pista confiando no número.
+ */
+function mostrarAvisoTaxa(): void {
+  const el = $("aviso-taxa");
+  if (fpsArquivo <= 0) {
+    el.hidden = true;
+    return;
+  }
+  const fps = Math.round(fpsArquivo);
+  el.hidden = false;
+  if (fps >= 200) {
+    el.className = "faixa-aviso bom";
+    el.innerHTML = `<b>${fps} quadros por segundo.</b> É câmera lenta: dá para chegar ao milésimo.`;
+  } else if (fps >= 100) {
+    el.className = "faixa-aviso";
+    el.innerHTML = `<b>${fps} quadros por segundo.</b> Serve, mas o dobro seria melhor: em Ajustes →
+      Câmera → Gravar Câm. Lenta, escolha <b>1080p a 240 fps</b>.`;
+  } else {
+    el.className = "faixa-aviso ruim";
+    el.innerHTML = `<b>${fps} quadros por segundo — isto não é câmera lenta.</b> O tempo vai sair com
+      cerca de ±${(1000 / fps / 2).toFixed(0)} ms de incerteza em cada gatilho, o que não serve para
+      prova. Grave de novo no app <b>Câmera → CÂM. LENTA</b> (Ajustes → Câmera → Gravar Câm. Lenta →
+      1080p a 240 fps). Você pode analisar assim mesmo, só não confie no milésimo.`;
   }
 }
 

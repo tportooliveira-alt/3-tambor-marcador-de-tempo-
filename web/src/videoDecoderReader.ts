@@ -32,6 +32,68 @@ export interface DecodeOptions {
   signal?: AbortSignal;
 }
 
+/** O que dá para saber do arquivo só pelo cabeçalho, sem decodificar nada (rápido). */
+export interface FileInfo {
+  width: number;
+  height: number;
+  fps: number;
+  durationS: number;
+  codec: string;
+  frames: number;
+}
+
+/**
+ * Lê só os cabeçalhos do MP4/MOV e devolve a taxa REAL de quadros do arquivo. É instantâneo (não
+ * decodifica nada) e é o que permite avisar o usuário ANTES de analisar que ele gravou em velocidade
+ * normal em vez de câmera lenta — a diferença entre o milésimo e ±17 ms por gatilho.
+ */
+export async function probeFileInfo(file: Blob): Promise<FileInfo | null> {
+  try {
+    const arquivo = createFile();
+    const info = await new Promise<MP4Info | null>((resolve) => {
+      arquivo.onError = () => resolve(null);
+      arquivo.onReady = (i: MP4Info) => resolve(i);
+      file
+        .slice(0, Math.min(file.size, 8 * 1024 * 1024))
+        .arrayBuffer()
+        .then((buf) => {
+          const mp4 = buf as MP4ArrayBuffer;
+          mp4.fileStart = 0;
+          arquivo.appendBuffer(mp4);
+          arquivo.flush();
+          // cabeçalho pode estar no fim do arquivo (comum em MOV gravado pelo celular)
+          if (file.size > 8 * 1024 * 1024) {
+            file
+              .slice(file.size - 4 * 1024 * 1024)
+              .arrayBuffer()
+              .then((fim) => {
+                const parte = fim as MP4ArrayBuffer;
+                parte.fileStart = file.size - 4 * 1024 * 1024;
+                arquivo.appendBuffer(parte);
+                arquivo.flush();
+              })
+              .catch(() => resolve(null));
+          }
+        })
+        .catch(() => resolve(null));
+      setTimeout(() => resolve(null), 4000);
+    });
+    const t = info?.videoTracks?.[0];
+    if (!t) return null;
+    const durationS = t.duration / t.timescale;
+    return {
+      width: t.video.width,
+      height: t.video.height,
+      fps: durationS > 0 ? t.nb_samples / durationS : 0,
+      durationS,
+      codec: t.codec,
+      frames: t.nb_samples,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function supportsWebCodecs(): boolean {
   return typeof VideoDecoder !== "undefined" && typeof VideoFrame !== "undefined";
 }

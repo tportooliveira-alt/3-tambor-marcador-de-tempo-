@@ -77,6 +77,12 @@ try {
   const info = await pagina.textContent("#info-video");
   checar(info.includes(`${verdade.width}×${verdade.height}`), `primeiro quadro exibido (${info.split("—")[0].trim()})`);
 
+  const avisoTaxa = await pagina.evaluate(() => {
+    const el = document.getElementById("aviso-taxa");
+    return el && !el.hidden ? { classe: el.className, texto: el.innerText.replace(/\s+/g, " ").trim() } : null;
+  });
+  if (avisoTaxa) console.log(`    aviso da taxa [${avisoTaxa.classe}]: ${avisoTaxa.texto}`);
+
   await pagina.click("#analisar");
   await pagina.waitForSelector("#resultado:not([hidden])", { timeout: 300_000 });
   const texto = await pagina.textContent("#resultado");
