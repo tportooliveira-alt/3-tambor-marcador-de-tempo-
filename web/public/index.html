@@ -130,12 +130,22 @@
 
 <!-- ------------------------------------------------------------------ histórico -->
 <section id="aba-historico" class="aba">
+  <!-- Conferência contra a cronometragem oficial. Fica escondido até existir a primeira passada
+       com tempo oficial digitado. -->
+  <div class="cartao" id="cartaoConferencia" hidden>
+    <h2>Conferência com a cronometragem oficial</h2>
+    <div id="resumoConferencia"></div>
+    <div class="linha">
+      <button id="copiarConferencia" class="botao">Ver / copiar a tabela</button>
+    </div>
+  </div>
+
   <div class="cartao">
     <h2>Histórico</h2>
     <div id="listaHistorico"></div>
     <div class="linha">
       <button id="exportarHistorico" class="botao">Baixar CSV</button>
-      <button id="limparHistorico" class="botao perigo">Limpar tudo</button>
+      <button id="limparHistorico" class="botao perigo">Apagar tudo</button>
     </div>
   </div>
 </section>

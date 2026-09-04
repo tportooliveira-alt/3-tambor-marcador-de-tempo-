@@ -233,3 +233,25 @@ tr.sat td { color: var(--suave); }
 }
 .faixa-aviso.bom { border-left-color: var(--verde); background: #14261b; color: #d7f5df; }
 .faixa-aviso.ruim { border-left-color: var(--feixe); background: #2b1216; color: #ffd7dc; }
+
+/* ---------------------------------------------------------------- conferência com o oficial */
+.linha.conferencia { border-top: 1px solid var(--borda); padding-top: 10px; margin-top: 12px; }
+.linha.conferencia label { flex: 0 0 100%; }
+.linha.conferencia input { flex: 0 0 130px; font-variant-numeric: tabular-nums; }
+.detalhe.conf-ok { color: var(--verde); }
+.detalhe.conf-fora { color: #f5c451; }
+
+/* campo pequeno para corrigir o tempo oficial direto no histórico */
+.oficial-mini {
+  flex: 0 0 86px;
+  width: 86px;
+  padding: 7px 8px !important;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* os três números do resumo, lado a lado e legíveis de longe */
+.linha-numeros { display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0; }
+.linha-numeros > div { display: flex; flex-direction: column; }
+.linha-numeros b { font-size: 22px; font-variant-numeric: tabular-nums; }
+.linha-numeros span { color: var(--suave); font-size: 12px; }

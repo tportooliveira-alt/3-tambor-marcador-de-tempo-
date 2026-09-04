@@ -45,6 +45,17 @@ export interface Passada {
   fps: number;
   quadrosPerdidos: number;
   arquivo: string;
+  /**
+   * Tempo da cronometragem oficial (fotocélula), em nanossegundos, quando conferido.
+   * Opcional de propósito: `carregar()` não migra nada, então passada antiga chega sem estes campos
+   * e todo leitor usa `?? null`.
+   */
+  oficialNs?: number | null;
+  /**
+   * O que foi digitado, palavra por palavra ("14,32"). Não é redundância: saber que o oficial veio
+   * com 2 casas muda a leitura de um erro de 5 ms — pode ser arredondamento da própria referência.
+   */
+  oficialTexto?: string;
 }
 
 interface Dados {
@@ -224,10 +235,12 @@ export function csvHistorico(passadas: Passada[]): string {
     "tempo_refinado_s", "tambores_derrubados", "penalidade_s", "sem_tempo", "degradada",
     "qualidade_largada", "qualidade_chegada", "incerteza_largada_ms", "incerteza_chegada_ms",
     "fps", "quadros_perdidos", "arquivo",
+    "tempo_oficial_s", "erro_refinado_ms", "erro_bruto_ms",
   ];
   const linhas = [cab.join(";")];
   for (const p of passadas) {
     const final = p.semTempo ? "SAT" : formatElapsed(p.elapsedRefinedNs + p.tamboresDerrubados * 5_000_000_000).replace(".", ",");
+    const oficial = p.semTempo ? null : p.oficialNs ?? null;
     linhas.push(
       [
         new Date(p.dataMs).toISOString().slice(0, 19),
@@ -237,6 +250,9 @@ export function csvHistorico(passadas: Passada[]): string {
         p.degradada ? "sim" : "não", String(p.qualidadeLargada), String(p.qualidadeChegada),
         dec(p.incertezaLargadaNs / 1e6, 3), dec(p.incertezaChegadaNs / 1e6, 3),
         dec(p.fps, 1), String(p.quadrosPerdidos), aspas(p.arquivo),
+        oficial === null ? "" : dec(oficial / 1e9, 3),
+        oficial === null ? "" : dec((p.elapsedRefinedNs - oficial) / 1e6, 2),
+        oficial === null ? "" : dec((p.elapsedRawNs - oficial) / 1e6, 2),
       ].join(";"),
     );
   }

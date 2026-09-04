@@ -14,6 +14,7 @@ import {
   type Inscricao,
   type Passada,
 } from "./store.ts";
+import { comparacoes, erroEmMs, parseTempo, resumoValidacao, textoConferencia } from "./validacao.ts";
 import { probeFileInfo } from "./videoDecoderReader.ts";
 import { supportsFrameCallback } from "./videoStripReader.ts";
 
@@ -379,6 +380,12 @@ function desenharCartao(segundos: number, res: AnalysisResult): void {
       <button class="botao" id="maisTambor">+ tambor</button>
       <button class="botao" id="botaoSat">${p.semTempo ? "SAT ✓" : "SAT"}</button>
     </div>
+    <div class="linha conferencia">
+      <label for="tempoOficial">Tempo da cronometragem oficial</label>
+      <input type="text" id="tempoOficial" inputmode="decimal" placeholder="14,325"
+             value="${escapar(p.oficialTexto ?? "")}">
+      <span class="detalhe" id="erroOficial"></span>
+    </div>
     <div class="linha">
       <button class="botao grande primario" id="salvarPassada">
         ${p.inscricaoId ? `Salvar para #${p.ordem}` : "Salvar no histórico"}
@@ -397,7 +404,36 @@ function desenharCartao(segundos: number, res: AnalysisResult): void {
     p.semTempo = !p.semTempo;
     desenharCartao(segundos, res);
   });
+  // O campo do tempo oficial NUNCA repinta o cartão: `desenharCartao` refaz o `innerHTML` inteiro,
+  // e repintar a cada tecla mataria o foco e o que está sendo digitado. Aqui só o `<span>` do erro
+  // muda; o valor é espelhado na passada a cada tecla para sobreviver a uma repintura disparada
+  // por outro botão (tambor/SAT).
+  const campoOficial = $<HTMLInputElement>("tempoOficial");
+  const pintarErro = (): void => {
+    const oficial = parseTempo(campoOficial.value);
+    const alvo = $("erroOficial");
+    if (oficial === null) {
+      alvo.textContent = campoOficial.value.trim() === "" ? "" : "não entendi esse tempo";
+      alvo.className = "detalhe";
+      return;
+    }
+    const erroNs = p.elapsedRefinedNs - oficial;
+    const incertezaNs = p.incertezaLargadaNs + p.incertezaChegadaNs;
+    const dentro = Math.abs(erroNs) <= incertezaNs;
+    const lado = erroNs >= 0 ? "o app mediu mais" : "o app mediu menos";
+    alvo.textContent = `${erroEmMs(erroNs)} — ${lado} · ${dentro ? "dentro" : "FORA"} do ±${(incertezaNs / 1e6).toFixed(2)} ms declarado`;
+    alvo.className = `detalhe ${dentro ? "conf-ok" : "conf-fora"}`;
+  };
+  campoOficial.addEventListener("input", () => {
+    p.oficialTexto = campoOficial.value;
+    p.oficialNs = parseTempo(campoOficial.value);
+    pintarErro();
+  });
+  pintarErro();
+
   $("salvarPassada").addEventListener("click", () => {
+    p.oficialTexto = campoOficial.value;
+    p.oficialNs = parseTempo(campoOficial.value);
     store.salvarPassada(p);
     aviso("Passada salva no histórico.", true);
     atualizarProximo();
@@ -555,6 +591,7 @@ $("exportarProva").addEventListener("click", () => {
 
 // ------------------------------------------------------------------ histórico
 function desenharHistorico(): void {
+  desenharConferencia();
   const el = $("listaHistorico");
   el.innerHTML = "";
   if (store.passadas.length === 0) {
@@ -565,13 +602,37 @@ function desenharHistorico(): void {
     const div = document.createElement("div");
     div.className = "item";
     const finalNs = p.elapsedRefinedNs + p.tamboresDerrubados * 5_000_000_000;
+    const oficial = p.oficialNs ?? null;
+    const conferencia =
+      oficial !== null && !p.semTempo
+        ? ` · oficial ${(oficial / 1e9).toFixed(3).replace(".", ",")} · erro ${erroEmMs(p.elapsedRefinedNs - oficial)}`
+        : "";
     div.innerHTML = `<div class="cresce">
       <div><b>${p.semTempo ? "SAT" : formatElapsed(finalNs)}</b> ${escapar(
         [p.competidor, p.cavalo].filter(Boolean).join(" · "),
       )}</div>
       <div class="sub">${new Date(p.dataMs).toLocaleString("pt-BR")} · bruto ${formatElapsed(
         p.elapsedRawNs,
-      )} · q${p.qualidadeLargada}/${p.qualidadeChegada}${p.degradada ? " · degradada" : ""}</div></div>`;
+      )} · q${p.qualidadeLargada}/${p.qualidadeChegada}${p.degradada ? " · degradada" : ""}${conferencia}</div></div>`;
+
+    // Campo embutido em vez de `prompt()`: a página roda dentro de um visualizador com restrições,
+    // onde `prompt()` pode simplesmente não abrir — e um botão que não faz nada é pior que nenhum.
+    const oficialInput = document.createElement("input");
+    oficialInput.type = "text";
+    oficialInput.className = "oficial-mini";
+    oficialInput.inputMode = "decimal";
+    oficialInput.placeholder = "oficial";
+    oficialInput.value = p.oficialTexto ?? "";
+    oficialInput.addEventListener("blur", () => {
+      const novoNs = parseTempo(oficialInput.value);
+      if ((p.oficialTexto ?? "") === oficialInput.value) return;
+      p.oficialTexto = oficialInput.value;
+      p.oficialNs = novoNs;
+      store.salvarPassada(p);
+      desenharHistorico();
+    });
+    div.append(oficialInput);
+
     const x = document.createElement("button");
     x.textContent = "Excluir";
     x.addEventListener("click", () => {
@@ -584,13 +645,69 @@ function desenharHistorico(): void {
   }
 }
 
+/**
+ * O painel de conferência: o que vinte passadas dizem que uma sozinha não diz.
+ *
+ * O número que mais importa é o "dentro da incerteza": um app que erra 3 ms avisando "±4 ms" está
+ * certo; um que erra 3 ms declarando "±0,8 ms" está mentindo, e é isso que precisa aparecer.
+ */
+function desenharConferencia(): void {
+  const cartao = $("cartaoConferencia");
+  const r = resumoValidacao(store.passadas);
+  if (!r) {
+    cartao.hidden = true;
+    return;
+  }
+  cartao.hidden = false;
+  const ms = (v: number): string => v.toFixed(1).replace(".", ",");
+  const fatias = r.porQualidade
+    .map(
+      (f) =>
+        `<div class="sub">qualidade ${f.qualidade}: ${f.n} caso(s) · viés ${erroEmMs(f.viesMs * 1e6)} · |erro| médio ${ms(f.erroAbsMedioMs)} ms</div>`,
+    )
+    .join("");
+  const honesto = r.dentroDaIncerteza === r.n;
+  $("resumoConferencia").innerHTML = `
+    <div class="detalhe">${r.n} passada(s) com tempo oficial</div>
+    <div class="linha-numeros">
+      <div><b>${erroEmMs(r.viesMs * 1e6)}</b><span>viés (sistemático)</span></div>
+      <div><b>${ms(r.erroAbsMedioMs)} ms</b><span>erro médio</span></div>
+      <div><b>${erroEmMs(r.maiorErroMs * 1e6)}</b><span>maior erro</span></div>
+    </div>
+    <div class="selo ${honesto ? "q2" : "q0"}">${r.dentroDaIncerteza} de ${r.n} dentro da incerteza declarada</div>
+    ${fatias}`;
+}
+
 $("exportarHistorico").addEventListener("click", () => {
   if (store.passadas.length === 0) return aviso("Histórico vazio.");
   baixar("fotocelula-historico.csv", csvHistorico(store.passadas));
 });
 
+$("copiarConferencia").addEventListener("click", () => {
+  if (comparacoes(store.passadas).length === 0) return aviso("Nenhuma passada com tempo oficial ainda.");
+  mostrarTexto("conferencia.txt", textoConferencia(store.passadas));
+});
+
+// Dois toques em vez de `confirm()`: dentro do visualizador o `confirm` pode não abrir, e aí o
+// comportamento não seria "não apaga" — seria APAGAR SEM PERGUNTAR. Agora o histórico carrega dados
+// de prova que não dá para refazer.
+let armadoParaLimpar = false;
+let timerLimpar = 0;
 $("limparHistorico").addEventListener("click", () => {
-  if (!confirm("Apagar todas as passadas do histórico?")) return;
+  const botao = $("limparHistorico");
+  if (!armadoParaLimpar) {
+    armadoParaLimpar = true;
+    botao.textContent = "Tem certeza? Toque de novo";
+    clearTimeout(timerLimpar);
+    timerLimpar = window.setTimeout(() => {
+      armadoParaLimpar = false;
+      botao.textContent = "Apagar tudo";
+    }, 5000);
+    return;
+  }
+  clearTimeout(timerLimpar);
+  armadoParaLimpar = false;
+  botao.textContent = "Apagar tudo";
   store.limparHistorico();
   desenharHistorico();
   atualizarProximo();

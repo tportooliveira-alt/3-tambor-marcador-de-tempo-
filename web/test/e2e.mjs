@@ -114,12 +114,23 @@ try {
 
   const refinado = /refinado ([\d.]+)/.exec(medido.detalhe);
   checar(refinado !== null, "o app mostrou o tempo refinado");
-  if (refinado) {
-    const medidoS = Number(refinado[1]);
-    const verdadeS = verdade.elapsedNs / 1e9;
-    const erroMs = (medidoS - verdadeS) * 1000;
-    console.log(`    verdade ${verdadeS.toFixed(4)} s · medido ${medidoS.toFixed(4)} s · erro ${erroMs.toFixed(3)} ms`);
+  // O ERRO É MEDIDO EM NANOSSEGUNDOS, não no texto da tela: `formatElapsed` arredonda para o
+  // milésimo, então comparar o texto com a verdade dava "0,000 ms" por construção — um zero de
+  // arredondamento, não de exatidão. O número cru vem do gancho `window.ultimaAnalise`.
+  if (cru?.inicio && cru?.fim) {
+    const medidoNs = cru.fim.ref - cru.inicio.ref;
+    const erroMs = (medidoNs - verdade.elapsedNs) / 1e6;
+    const uncMs = (cru.inicio.unc + cru.fim.unc) / 1e6;
+    console.log(
+      `    verdade ${(verdade.elapsedNs / 1e9).toFixed(6)} s · medido ${(medidoNs / 1e9).toFixed(6)} s` +
+        ` · erro ${erroMs.toFixed(3)} ms · incerteza declarada ±${uncMs.toFixed(2)} ms`,
+    );
     checar(Math.abs(erroMs) < 0.5, `erro do ΔT abaixo de 0,5 ms (${erroMs.toFixed(3)} ms)`);
+    // A incerteza declarada tem de COBRIR o erro real: um app que erra mais do que promete é pior
+    // que um que erra e avisa.
+    checar(Math.abs(erroMs) <= uncMs, `o erro real cabe na incerteza declarada (${Math.abs(erroMs).toFixed(3)} ≤ ${uncMs.toFixed(2)} ms)`);
+  } else {
+    checar(false, "os números crus da análise não chegaram");
   }
 
   const quadros = /(\d+) quadros lidos/.exec(medido.detalhe);

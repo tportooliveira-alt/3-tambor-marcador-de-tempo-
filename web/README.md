@@ -38,7 +38,7 @@ Swift (iOS) — differencer da faixa, calibração de ruído, estimador sub-quad
 regra de classificação. Conferido pelos **mesmos 30 vetores compartilhados**:
 
 ```bash
-npm test        # node --test test/vectors.test.ts  → 30 vetores
+npm test        # 30 vetores compartilhados + os testes da conferência
 npm run build   # dist/ (site estático)
 npm run dev     # servidor local em http://127.0.0.1:5173
 ```
@@ -71,9 +71,14 @@ node test/e2e.mjs /tmp/tarde.mp4
 
 Gera uma prova sintética (a mesma física dos vetores: bordo em movimento, exposição integrada,
 ruído, curva de tom) como vídeo de 240 FPS, abre o app **real** num Chromium e confere o tempo medido
-contra a verdade da simulação. Última execução: **erro de 0,000 ms**, qualidade 2, 1008/1008 quadros
-na passada normal — e **erro de 0,000 ms** também na gravação atrasada, com o app calibrando sozinho
-no trecho parado depois da chegada.
+contra a verdade da simulação. Última execução: **erro de −0,418 ms** na passada normal (qualidade 2,
+incerteza declarada ±0,84 ms, 1008/1008 quadros) e **−0,419 ms** na gravação atrasada, com o app
+calibrando sozinho no trecho parado depois da chegada.
+
+O erro é medido **em nanossegundos**, pelo gancho `window.ultimaAnalise`, e não pelo texto da tela:
+`formatElapsed` arredonda para o milésimo, então comparar o texto com a verdade dava "0,000 ms" por
+construção — um zero de arredondamento, não de exatidão. O teste também exige que **a incerteza
+declarada cubra o erro real**: um app que erra mais do que promete é pior que um que erra e avisa.
 
 Limite conhecido deste ambiente: o Chromium disponível não decodifica H.264/HEVC, então o teste usa
 VP9 em MP4. O contêiner é o mesmo do `.MOV` do iPhone (o demuxer é o mesmo caminho de código), mas a
@@ -116,3 +121,37 @@ dele. Por isso o teste mede também a memória residente do navegador.)
 
 Na tela, a leitura mostra o progresso em MB o tempo todo (`Lendo o vídeo… 120 MB de 380 MB`), porque
 um vídeo grande leva minutos e silêncio parece travamento.
+
+## Conferência contra a cronometragem oficial
+
+Vídeo sintético prova o **algoritmo**, não a cadeia inteira — câmera do iPhone, exposição real,
+poeira, luz de arena, cavalo em vez de barra. Quem prova isso é uma fotocélula eletrônica ao lado,
+que erra menos de 1 ms: toda diferença que sobra é do app.
+
+Depois de analisar, o cartão traz um campo **"Tempo da cronometragem oficial"**. Digitado o tempo, o
+app mostra na hora a diferença com sinal e — o que mais importa — se ela **coube na incerteza que ele
+mesmo declarou**. Um app que erra 3 ms avisando "±4 ms" está certo; um que erra 3 ms declarando
+"±0,8 ms" está mentindo, e é isso que precisa aparecer.
+
+A comparação é feita com o **tempo refinado, sem penalidade**: a fotocélula mede o cruzamento da
+linha na ida e na volta; os +5 s por tambor são decisão de juiz, não medição.
+
+Na aba Histórico, um painel acumula o que várias passadas dizem e uma sozinha não diz:
+
+- **viés** — o app é sistematicamente rápido ou lento? Erro sistemático é o que dá para corrigir;
+- **erro absoluto médio** e **maior erro**;
+- **quantos ficaram dentro da incerteza declarada**;
+- a mesma quebra **por qualidade (0/1/2)**, que separa "o app erra" de "o app erra quando ele mesmo
+  avisou que a medição foi ruim" — diagnósticos opostos, correções opostas.
+
+O botão **"Ver / copiar a tabela"** gera o texto colável com o resumo e uma linha por caso. É por ali
+que os casos saem: dentro do visualizador de Artifact o download de arquivo é bloqueado, e o CSV
+completo (`Baixar CSV`, com as colunas novas `tempo_oficial_s`, `erro_refinado_ms`, `erro_bruto_ms`)
+cai no mesmo caminho de texto.
+
+```bash
+node test/e2e-validacao.mjs /tmp/prova.mp4   # digita a verdade da simulação como "tempo oficial"
+```
+
+Esse teste vale como prova dupla: exercita o campo novo e, como a "fotocélula" é a verdade da
+simulação, confirma que a conta do erro está certa.
