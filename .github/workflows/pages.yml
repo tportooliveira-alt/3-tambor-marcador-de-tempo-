@@ -1,0 +1,78 @@
+# Publica a versão web no GitHub Pages a cada envio.
+#
+# Por que Pages e não só o Artifact: numa arena não há sinal, e o Artifact precisa de rede para
+# abrir. Servida por Pages, a página roda em https:// — então o service worker vale, o app instala
+# na tela de início e ABRE SEM SINAL, que é a única forma de ele servir na beira da pista.
+#
+# Os testes rodam ANTES da publicação de propósito: já houve um empacotamento sem teste que deixou
+# o app inteiro morto na tela do usuário. Nada vai ao ar vermelho.
+name: Publicar a versão web (Pages)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Uma publicação por vez; não cancela a que já está no ar.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  construir:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Instalar
+        run: npm ci
+
+      - name: Testes do núcleo e da conferência
+        run: npm test
+
+      - name: Construir o site
+        run: npm run build
+
+      - name: Conferir que o empacotamento não corrompeu o código
+        # Guarda contra a classe de defeito que já derrubou o app: o bundle embutido tem de ser
+        # byte a byte igual ao gerado.
+        run: |
+          node build.mjs --single
+          node - <<'FIM'
+          import { readFileSync } from "node:fs";
+          const js = readFileSync("dist/app-single.js", "utf8");
+          const html = readFileSync("fotocelula-tambor.html", "utf8");
+          if (!html.includes(js)) {
+            console.error("o JavaScript embutido NÃO é idêntico ao gerado");
+            process.exit(1);
+          }
+          console.log("empacotamento íntegro");
+          FIM
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  publicar:
+    needs: construir
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

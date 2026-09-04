@@ -225,6 +225,28 @@ function moverROI(p: { x: number; y: number }): void {
   desenharOverlay();
 }
 
+/**
+ * Gancho de automação: `Tools/analisar_video.mjs` posiciona a ROI por aqui.
+ *
+ * Simular o arrasto do dedo seria frágil e não é o que se quer exercitar — o que interessa é rodar
+ * a MESMA análise do produto sobre um vídeo real, com a linha onde eu escolher.
+ */
+(window as unknown as { definirROI?: (l: number, t: number, b: number, w: number) => void }).definirROI = (
+  l,
+  t,
+  b,
+  w,
+) => {
+  roi.lineXFraction = Math.min(0.99, Math.max(0.01, l));
+  roi.bandTopFraction = Math.min(0.98, Math.max(0, Math.min(t, b)));
+  roi.bandBottomFraction = Math.max(0.02, Math.min(1, Math.max(t, b)));
+  roi.stripWidthPx = Math.round(Math.min(40, Math.max(5, w)));
+  const campo = $<HTMLInputElement>("largura");
+  campo.value = String(roi.stripWidthPx);
+  $("larguraOut").textContent = String(roi.stripWidthPx);
+  desenharOverlay();
+};
+
 $<HTMLInputElement>("largura").addEventListener("input", (ev) => {
   roi.stripWidthPx = Number((ev.target as HTMLInputElement).value);
   $("larguraOut").textContent = String(roi.stripWidthPx);

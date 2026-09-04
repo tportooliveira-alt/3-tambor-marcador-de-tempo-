@@ -155,3 +155,30 @@ node test/e2e-validacao.mjs /tmp/prova.mp4   # digita a verdade da simulação c
 
 Esse teste vale como prova dupla: exercita o campo novo e, como a "fotocélula" é a verdade da
 simulação, confirma que a conta do erro está certa.
+
+## Analisar um vídeo real aqui (sem depender do celular)
+
+O iPhone trava ao exportar clipes longos de câmera lenta para a página. O caminho prático para
+calibrar é o dono do vídeo subir o arquivo no Drive e a análise acontecer numa máquina, onde dá para
+ver todos os diagnósticos, testar posições de linha e comparar com o tempo oficial:
+
+```bash
+node ../Tools/analisar_video.mjs /tmp/passada.MOV --oficial 14,325 --linha 0.5 --png /tmp/roi.png
+node ../Tools/analisar_video.mjs /tmp/passada.MOV --varrer-linha     # acha sozinho onde medir
+```
+
+O comando não reimplementa nada: ele abre o app publicado num Chromium e lê o resultado — o número
+que sai dali é o mesmo que sairia na mão do usuário. Antes disso ele faz duas coisas que importam:
+
+1. **Diz o que o arquivo é.** Taxa real pelo cabeçalho: `240 fps` com a duração da gravação significa
+   que o iPhone entregou o original; `30 fps` com a duração oito vezes maior significa que ele
+   renderizou a câmera lenta antes de entregar, e a precisão cai para ±17 ms por gatilho. Essa é a
+   pergunta que a pesquisa bibliográfica não conseguiu responder e que um `ffmpeg -i` responde em um
+   segundo.
+2. **Converte sem perdas quando precisa.** O Chromium deste ambiente não decodifica H.264 nem HEVC —
+   os codecs do iPhone. A conversão para VP9 usa `-lossless 1` e `-fps_mode passthrough`, e a
+   contagem de quadros é conferida antes e depois: nenhum quadro criado, nenhum descartado, nenhum
+   carimbo de tempo mexido. Recompressão com perda inventaria níveis de cinza e mentiria o milésimo.
+
+Verificado: o mesmo clipe sintético dá `−0,42 ms` pelo caminho direto e `−0,41 ms` depois de passar
+por H.264 sem perdas e voltar, com 1008/1008 quadros nos dois casos.
