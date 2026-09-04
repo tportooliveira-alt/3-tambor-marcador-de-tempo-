@@ -15,6 +15,7 @@ import {
   type Passada,
 } from "./store.ts";
 import { comparacoes, erroEmMs, parseTempo, resumoValidacao, textoConferencia } from "./validacao.ts";
+import { Visor } from "./visor.ts";
 import { probeFileInfo } from "./videoDecoderReader.ts";
 import { supportsFrameCallback } from "./videoStripReader.ts";
 
@@ -55,6 +56,9 @@ for (const b of document.querySelectorAll<HTMLButtonElement>("#abas button")) {
     $(`aba-${b.dataset.aba}`).classList.add("ativa");
     if (b.dataset.aba === "prova") desenharProva();
     if (b.dataset.aba === "historico") desenharHistorico();
+    // Sair da aba desliga a câmera: câmera ligada aquece o aparelho, e aparelho quente é o que faz
+    // o iPhone baixar a taxa na hora de gravar a passada.
+    if (b.dataset.aba !== "visor") fecharVisor();
   });
 }
 
@@ -795,6 +799,168 @@ $("versao").textContent = `Fotocélula Tambor · versão web · núcleo conferid
 if (!supportsFrameCallback()) {
   aviso("Este navegador não consegue ler os quadros do vídeo. No iPhone, abra pelo Safari.");
 }
+// ------------------------------------------------------------------ visor ao vivo
+/**
+ * O visor compartilha o MESMO objeto `roi` da análise. Mirar ao vivo já deixa a faixa no lugar
+ * certo para o vídeo que vem a seguir — em vez de posicionar a linha depois, num quadro congelado.
+ */
+const visor = new Visor(
+  $<HTMLVideoElement>("visorVideo"),
+  $<HTMLCanvasElement>("visorFaixa"),
+  roi,
+  {
+    onQuadro: (fps, delta, limiar, cruzando) => {
+      const barra = $("visorBarra");
+      const nivel = limiar === null ? 0 : Math.min(1, delta / (limiar * 2));
+      $<HTMLElement>("visorBarra").firstElementChild!.setAttribute(
+        "style",
+        `width:${(nivel * 100).toFixed(0)}%`,
+      );
+      barra.classList.toggle("cruzando", cruzando);
+      $("visorEstado").textContent =
+        limiar === null
+          ? `medindo a cena parada… · ${fps.toFixed(0)} quadros por segundo`
+          : `${cruzando ? "CRUZANDO" : "livre"} · movimento ${delta.toFixed(1)} (limiar ${limiar.toFixed(1)}) · ${fps.toFixed(0)} quadros por segundo`;
+    },
+    onCronometro: (estado, decorridoNs, resultado) => {
+      $("visorTempo").hidden = false;
+      const fase: Record<string, string> = {
+        ARMED: "armado — esperando a largada",
+        CONFIRMING_START: "confirmando a largada…",
+        DEBOUNCE_START: "largou! (bloqueio para o resto do cavalo passar)",
+        RUNNING: "correndo",
+        AWAITING_FINISH: "esperando a chegada",
+        CONFIRMING_FINISH: "confirmando a chegada…",
+        DEBOUNCE_FINISH: "chegou!",
+        FINISHED: "tempo fechado",
+      };
+      $("visorFase").textContent = `${fase[estado] ?? estado} · precisão ao vivo ±${(500 / Math.max(15, visor.taxaMedida)).toFixed(0)} ms`;
+      if (resultado) {
+        $("visorRelogio").textContent = formatElapsed(resultado.elapsedRawNs);
+      } else if (decorridoNs !== null) {
+        $("visorRelogio").textContent = formatElapsed(decorridoNs);
+      }
+    },
+    onErro: (m) => {
+      aviso(m);
+      $("abrirVisor").hidden = false;
+      $("fecharVisor").hidden = true;
+      $("palcoVisor").hidden = true;
+      $("visorSinal").hidden = true;
+    },
+  },
+);
+
+function fecharVisor(): void {
+  if (!visor.ativo) return;
+  visor.desarmar();
+  visor.fechar();
+  $("armarVisor").hidden = false;
+  $("desarmarVisor").hidden = true;
+  $("visorTempo").hidden = true;
+  $("abrirVisor").hidden = false;
+  $("fecharVisor").hidden = true;
+  $("palcoVisor").hidden = true;
+  $("visorSinal").hidden = true;
+}
+
+$("abrirVisor").addEventListener("click", async () => {
+  $("abrirVisor").hidden = true;
+  $("palcoVisor").hidden = false;
+  $("visorSinal").hidden = false;
+  $("visorEstado").textContent = "abrindo a câmera…";
+  await visor.abrir();
+  if (visor.ativo) $("fecharVisor").hidden = false;
+});
+$("fecharVisor").addEventListener("click", fecharVisor);
+
+$("armarVisor").addEventListener("click", () => {
+  visor.armar();
+  $("armarVisor").hidden = true;
+  $("desarmarVisor").hidden = false;
+  $("visorTempo").hidden = false;
+  $("visorRelogio").textContent = "0.000";
+});
+$("desarmarVisor").addEventListener("click", () => {
+  visor.desarmar();
+  $("armarVisor").hidden = false;
+  $("desarmarVisor").hidden = true;
+});
+
+// arrastar a linha e as alças TAMBÉM no visor, com a mesma matemática do editor
+{
+  const palcoV = $("palcoVisor");
+  const over = $<HTMLCanvasElement>("visorOverlay");
+  let arr: "linha" | "topo" | "base" | null = null;
+  const pos = (ev: PointerEvent): { x: number; y: number } => {
+    const r = palcoV.getBoundingClientRect();
+    return { x: (ev.clientX - r.left) / r.width, y: (ev.clientY - r.top) / r.height };
+  };
+  const pintar = (): void => {
+    const v = $<HTMLVideoElement>("visorVideo");
+    const w = over.clientWidth || 1;
+    const h = over.clientHeight || 1;
+    if (over.width !== w || over.height !== h) {
+      over.width = w;
+      over.height = h;
+    }
+    const ctx = over.getContext("2d")!;
+    ctx.clearRect(0, 0, w, h);
+    const x = roi.lineXFraction * w;
+    const top = roi.bandTopFraction * h;
+    const bot = roi.bandBottomFraction * h;
+    const vw = v.videoWidth || 1280;
+    const meia = Math.max(2, (roi.stripWidthPx / 2) * (w / vw));
+    ctx.setLineDash([10, 10]);
+    ctx.strokeStyle = "rgba(255, 214, 64, 0.5)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(215, 38, 61, 0.35)";
+    ctx.fillRect(x - meia, top, meia * 2, bot - top);
+    ctx.strokeStyle = "#d7263d";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x - meia, top, meia * 2, bot - top);
+    for (const y of [top, bot]) {
+      ctx.beginPath();
+      ctx.arc(x, y, 13, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    if (visor.ativo) requestAnimationFrame(pintar);
+  };
+  palcoV.addEventListener("pointerdown", (ev) => {
+    const p = pos(ev);
+    const perto = (a: number, b: number): boolean => Math.abs(a - b) < 0.06;
+    arr = perto(p.y, roi.bandTopFraction) && perto(p.x, roi.lineXFraction)
+      ? "topo"
+      : perto(p.y, roi.bandBottomFraction) && perto(p.x, roi.lineXFraction)
+        ? "base"
+        : "linha";
+    palcoV.setPointerCapture(ev.pointerId);
+    moverVisor(p);
+  });
+  palcoV.addEventListener("pointermove", (ev) => {
+    if (arr === null) return;
+    ev.preventDefault();
+    moverVisor(pos(ev));
+  });
+  for (const e of ["pointerup", "pointercancel"]) palcoV.addEventListener(e, () => (arr = null));
+  function moverVisor(p: { x: number; y: number }): void {
+    const lim = (v: number, a: number, b: number): number => Math.min(b, Math.max(a, v));
+    if (arr === "topo") roi.bandTopFraction = lim(p.y, 0, roi.bandBottomFraction - 0.05);
+    else if (arr === "base") roi.bandBottomFraction = lim(p.y, roi.bandTopFraction + 0.05, 1);
+    else roi.lineXFraction = lim(p.x, 0.03, 0.97);
+    // mexer na faixa invalida a calibragem: a cena medida passou a ser outra
+    visor.reiniciarMedicao();
+    desenharOverlay();
+  }
+  $("abrirVisor").addEventListener("click", () => requestAnimationFrame(pintar));
+}
+
 // Só registra o service worker quando a página é servida por um site (num visualizador embutido
 // não há sw.js e o pedido só geraria erro). Sem ele o app funciona igual — só não abre sem sinal.
 if ("serviceWorker" in navigator && location.protocol.startsWith("http") && !ARQUIVO_UNICO) {

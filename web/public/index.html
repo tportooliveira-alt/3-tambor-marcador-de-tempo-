@@ -18,6 +18,7 @@
   <h1>Fotocélula&nbsp;Tambor</h1>
   <nav id="abas">
     <button data-aba="passada" class="ativa">Passada</button>
+    <button data-aba="visor">Mirar</button>
     <button data-aba="prova">Prova</button>
     <button data-aba="historico">Histórico</button>
     <button data-aba="ajuda">Ajuda</button>
@@ -147,6 +148,40 @@
       <button id="exportarHistorico" class="botao">Baixar CSV</button>
       <button id="limparHistorico" class="botao perigo">Apagar tudo</button>
     </div>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------------ visor ao vivo -->
+<section id="aba-visor" class="aba">
+  <div class="cartao">
+    <h2>Mirar a câmera</h2>
+    <p class="dica">Aponte o celular e ajuste a linha <b>antes</b> de gravar. A faixa que você
+       posicionar aqui é a mesma que a análise vai usar no vídeo.</p>
+    <div class="linha">
+      <button id="abrirVisor" class="botao grande primario">Abrir a câmera</button>
+      <button id="fecharVisor" class="botao" hidden>Desligar</button>
+    </div>
+    <div id="palcoVisor" hidden>
+      <video id="visorVideo" playsinline muted></video>
+      <canvas id="visorOverlay"></canvas>
+      <canvas id="visorFaixa" hidden></canvas>
+    </div>
+    <div id="visorSinal" hidden>
+      <div id="visorBarra"><div></div></div>
+      <p class="detalhe" id="visorEstado"></p>
+      <div class="linha">
+        <button id="armarVisor" class="botao grande">Armar o cronômetro</button>
+        <button id="desarmarVisor" class="botao" hidden>Parar</button>
+      </div>
+      <div id="visorTempo" hidden>
+        <div class="tempo" id="visorRelogio">0.000</div>
+        <p class="detalhe" id="visorFase"></p>
+      </div>
+    </div>
+    <p class="dica"><b>O cronômetro ao vivo mede em ±17 ms, não no milésimo.</b> Pelo navegador a
+       câmera entrega 30 ou 60 quadros por segundo, contra 240 do vídeo em câmera lenta. Serve para
+       treino e conferência; para prova valendo, grave e use a aba <b>Passada</b>, que chega a
+       ±0,8 ms.</p>
   </div>
 </section>
 
