@@ -1,6 +1,6 @@
 // Empacota o app numa pasta estática (dist/): sem servidor, sem back-end — é só um site.
 import { build, context } from "esbuild";
-import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const raiz = path.dirname(new URL(import.meta.url).pathname);
@@ -24,8 +24,31 @@ const opcoes = {
   sourcemap: servir,
   outfile: path.join(dist, "app.js"),
   logLevel: "info",
-  define: { ARQUIVO_UNICO: String(umArquivo || paraArtifact) },
+  define: {
+    ARQUIVO_UNICO: String(umArquivo || paraArtifact),
+    // Carimbo e contagem vêm DA CONSTRUÇÃO, não escritos à mão na tela. O texto da Ajuda já ficou
+    // desatualizado uma vez ("30 vetores" quando eram 31), e número errado na tela do usuário é o
+    // mesmo defeito de sempre: o app afirmando o que não confere.
+    VERSAO: JSON.stringify(carimbo()),
+    VETORES: JSON.stringify(String(contarVetores())),
+  },
 };
+
+/** Data da construção + hash curto do conteúdo: é o que o usuário lê para saber se está na versão nova. */
+function carimbo() {
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${p2(d.getUTCDate())}/${p2(d.getUTCMonth() + 1)} ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())} UTC`;
+}
+
+function contarVetores() {
+  try {
+    const dir = path.join(raiz, "../shared/test-vectors");
+    return readdirSync(dir).filter((f) => f.endsWith(".json") && f !== "index.json").length;
+  } catch {
+    return 0;
+  }
+}
 
 // versão do cache do service worker = conteúdo do bundle (troca sozinha a cada build)
 function carimbarSW(bundle) {

@@ -209,15 +209,23 @@
        gente passando na frente. Aí ele avisa em vez de dar um tempo furado.</p>
 
     <h2>O que a qualidade quer dizer</h2>
+    <p class="dica">O número que vale é a <b>incerteza que o cartão mostra em cada passada</b> — ela
+       é calculada para aquele vídeo, não é uma promessa fixa. Os valores abaixo são o que foi
+       medido nos testes, para dar ordem de grandeza.</p>
     <ul>
-      <li><b>Qualidade 2</b> — refinamento completo: milésimo confiável (±0,1 a 0,5 ms).</li>
-      <li><b>Qualidade 1</b> — só um intervalo honesto: o app sabe que não conseguiu fechar.</li>
-      <li><b>Qualidade 0</b> — só o tempo do quadro (±2 ms a 240 fps): a banda pegou textura
-          (pelagem malhada, arreios), contraste baixo ou pouca luz.</li>
+      <li><b>Qualidade 2</b> — refinamento completo. Medido: <b>±0,8 ms</b> num clipe de 240 fps
+          (chega a ±0,1 ms em cena limpa).</li>
+      <li><b>Qualidade 1</b> — só um intervalo honesto: o app sabe que não conseguiu fechar, e o
+          intervalo que ele declara contém o tempo certo.</li>
+      <li><b>Qualidade 0</b> — sem refinamento, só a janela do quadro. Medido: <b>±7 a ±14 ms</b> —
+          bem mais que os ±2 ms da quantização, porque quando o refinamento falha a janela honesta é
+          maior. Causa mais comum: <b>pelagem malhada ou arreios</b> na faixa, e baixo contraste.</li>
     </ul>
     <h2>Limites, ditos na cara</h2>
     <ul>
-      <li>Isto <b>não</b> é fotocélula ao vivo: não apita no cruzamento. O tempo sai depois.</li>
+      <li>A aba <b>Mirar</b> tem câmera ao vivo, mas ela mede em <b>±8 a ±17 ms</b> — o navegador
+          entrega 30 ou 60 quadros por segundo, não 240. Serve para apontar o tripé e para treino.
+          <b>O milésimo só sai do vídeo gravado em câmera lenta</b>, na aba Passada.</li>
       <li>A calibragem é refeita a cada vídeo, de propósito: ela mede <b>aquela</b> cena, naquela luz.
           Não é uma configuração que fique salva.</li>
       <li>A exposição do quadro não vem no arquivo: o app assume o pior caso e <b>aumenta a

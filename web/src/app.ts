@@ -21,6 +21,10 @@ import { supportsFrameCallback } from "./videoStripReader.ts";
 
 /** Ligado na versão de arquivo único (página embutida): sem service worker, sem manifesto. */
 declare const ARQUIVO_UNICO: boolean;
+/** Carimbo da construção (data + hash do bundle), injetado pelo `build.mjs`. */
+declare const VERSAO: string;
+/** Quantos vetores compartilhados o núcleo passa — contado na construção, não escrito à mão. */
+declare const VETORES: string;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 const store = new Store();
@@ -798,7 +802,8 @@ function mostrarTexto(nome: string, texto: string): void {
 atualizarProximo();
 desenharProva();
 desenharHistorico();
-$("versao").textContent = `Fotocélula Tambor · versão web · núcleo conferido pelos mesmos 30 vetores do app nativo.`;
+$("versao").textContent =
+  `Fotocélula Tambor · versão ${VERSAO} · núcleo conferido pelos mesmos ${VETORES} vetores do app nativo.`;
 if (!supportsFrameCallback()) {
   aviso("Este navegador não consegue ler os quadros do vídeo. No iPhone, abra pelo Safari.");
 }
@@ -969,5 +974,15 @@ $("desarmarVisor").addEventListener("click", () => {
 if ("serviceWorker" in navigator && location.protocol.startsWith("http") && !ARQUIVO_UNICO) {
   navigator.serviceWorker.register("sw.js").catch(() => {
     /* sem service worker o app funciona igual, só não abre offline */
+  });
+  // O service worker é cache-first: sem isto, uma versão nova fica esperando o usuário fechar e
+  // reabrir a aba — e ele testaria a versão velha achando que é a nova. Já aconteceu neste projeto.
+  let jaControlado = navigator.serviceWorker.controller !== null;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!jaControlado) {
+      jaControlado = true;
+      return;
+    }
+    aviso("Versão nova disponível — recarregue a página para usá-la.", true);
   });
 }

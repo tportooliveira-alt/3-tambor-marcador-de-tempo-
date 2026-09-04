@@ -1,34 +1,30 @@
-# Publica a versão web no GitHub Pages a cada envio.
+# Constrói a versão web e publica no branch `gh-pages` a cada envio.
 #
-# Por que Pages e não só o Artifact: numa arena não há sinal, e o Artifact precisa de rede para
-# abrir. Servida por Pages, a página roda em https:// — então o service worker vale, o app instala
-# na tela de início e ABRE SEM SINAL, que é a única forma de ele servir na beira da pista.
+# Por que empurrar um branch em vez de usar `actions/deploy-pages`: o Pages deste repositório está
+# configurado como "Deploy from a branch" -> gh-pages. Com essa origem, a ação de deploy oficial
+# FALHA — daria um X vermelho a cada envio, por um motivo que não é defeito de código. E, sem
+# automação, o site só mudaria se alguém reconstruísse e empurrasse à mão: bastaria um esquecimento
+# para o usuário testar uma versão velha e nós dois tirarmos conclusões erradas dela. Isso já
+# aconteceu neste projeto e custou dias.
 #
-# Os testes rodam ANTES da publicação de propósito: já houve um empacotamento sem teste que deixou
-# o app inteiro morto na tela do usuário. Nada vai ao ar vermelho.
-name: Publicar a versão web (Pages)
+# Os testes rodam ANTES: nada vai ao ar vermelho.
+name: Publicar a versão web
 
 on:
   push:
-    branches: [main]
+    branches: [main, claude/ios-sports-timing-system-65t7ng]
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
-# Uma publicação por vez; não cancela a que já está no ar.
 concurrency:
-  group: pages
+  group: publicar-web
   cancel-in-progress: false
 
 jobs:
-  construir:
+  publicar:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -38,17 +34,21 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Instalar
+        working-directory: web
         run: npm ci
 
       - name: Testes do núcleo e da conferência
+        working-directory: web
         run: npm test
 
-      - name: Construir o site
+      - name: Construir
+        working-directory: web
         run: npm run build
 
       - name: Conferir que o empacotamento não corrompeu o código
-        # Guarda contra a classe de defeito que já derrubou o app: o bundle embutido tem de ser
-        # byte a byte igual ao gerado.
+        working-directory: web
+        # Guarda contra a classe de defeito que já deixou o app inteiro morto: o `$&` do
+        # String.replace expandia e cravava HTML no meio do JavaScript.
         run: |
           node build.mjs --single
           node - <<'FIM'
@@ -62,17 +62,14 @@ jobs:
           console.log("empacotamento íntegro");
           FIM
 
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: web/dist
-
-  publicar:
-    needs: construir
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Publicar em gh-pages
+        run: |
+          cd web/dist
+          rm -f app-single.js
+          touch .nojekyll
+          git init -q -b gh-pages
+          git config user.email "noreply@anthropic.com"
+          git config user.name "Claude"
+          git add -A
+          git commit -q -m "Publicação automática de ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
