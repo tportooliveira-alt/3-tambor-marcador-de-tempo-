@@ -24,6 +24,9 @@ declare const ARQUIVO_UNICO: boolean;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 const store = new Store();
+// Gravação que falha em silêncio é o pior defeito possível numa prova: o operador acha que salvou,
+// fecha o app, e o tempo não existe mais. Aqui a falha vira aviso na cara, e insistente.
+store.aoFalharGravacao = (m) => aviso(m);
 
 // ROI em fração (a mesma convenção do app nativo)
 const roi = { lineXFraction: 0.5, bandTopFraction: 0.3, bandBottomFraction: 0.7, stripWidthPx: 15 };

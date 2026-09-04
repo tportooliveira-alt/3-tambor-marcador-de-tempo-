@@ -97,11 +97,30 @@ export class Store {
     }
   }
 
+  /**
+   * Quem avisar quando a gravação falhar. Sem isto, a passada some SEM NINGUÉM SABER — o pior
+   * defeito possível numa prova: o operador acha que salvou, fecha o app, e o tempo não existe mais.
+   *
+   * A falha é real e não é hipótese distante: o Safari em navegação privada lança a cada escrita.
+   * (Cota cheia é improvável: uma passada ocupa 563 bytes, então cabem ~9.300 em 5 MB.)
+   */
+  aoFalharGravacao: ((mensagem: string) => void) | null = null;
+
+  /** Verdadeiro enquanto a última gravação tiver falhado. A tela usa isto para insistir no aviso. */
+  gravacaoFalhou = false;
+
   private salvar(): void {
     try {
       localStorage.setItem(CHAVE, JSON.stringify(this.dados));
-    } catch {
-      /* cota cheia ou modo privado: o app segue funcionando na sessão */
+      this.gravacaoFalhou = false;
+    } catch (e) {
+      this.gravacaoFalhou = true;
+      const cota = (e as DOMException)?.name === "QuotaExceededError";
+      this.aoFalharGravacao?.(
+        cota
+          ? "MEMÓRIA CHEIA: não consegui salvar. Exporte o histórico agora e apague passadas antigas."
+          : "NÃO CONSEGUI SALVAR neste navegador (aba privada?). Os tempos existem só até você fechar a página — exporte o histórico agora.",
+      );
     }
   }
 
