@@ -58,13 +58,18 @@ for (const b of document.querySelectorAll<HTMLButtonElement>("#abas button")) {
 }
 
 // ------------------------------------------------------------------ escolher o vídeo
-$<HTMLInputElement>("arquivo").addEventListener("change", async (ev) => {
-  const f = (ev.target as HTMLInputElement).files?.[0];
-  if (!f) return;
-  arquivo = f;
-  $("resultado").hidden = true;
-  await mostrarPrimeiroQuadro(f);
-});
+// Dois botões para a MESMA coisa, porque os dois caminhos do iPhone são diferentes por dentro: o da
+// Fototeca exporta o item antes de entregar (e trava em clipe longo de câmera lenta), o do app
+// Arquivos entrega o arquivo como está.
+for (const id of ["arquivo", "arquivoDoc"]) {
+  $<HTMLInputElement>(id).addEventListener("change", async (ev) => {
+    const f = (ev.target as HTMLInputElement).files?.[0];
+    if (!f) return;
+    arquivo = f;
+    $("resultado").hidden = true;
+    await mostrarPrimeiroQuadro(f);
+  });
+}
 
 /** Mostra o primeiro quadro do vídeo para o usuário posicionar a linha e a banda. */
 async function mostrarPrimeiroQuadro(f: File): Promise<void> {

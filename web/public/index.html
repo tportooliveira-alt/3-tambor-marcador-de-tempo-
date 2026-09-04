@@ -33,29 +33,38 @@
     <input type="file" id="arquivo" accept="video/*">
     <span class="botao grande">Escolher vídeo da passada</span>
   </label>
+
+  <!-- Segundo caminho, de propósito. Ao escolher da FOTOTECA o iOS EXPORTA o item antes de
+       entregá-lo, e num clipe longo de câmera lenta essa exportação demora ou não termina — é o
+       "Preparando…" que trava. Pedindo tipos de ARQUIVO (e não "video/*"), o iPhone abre o app
+       Arquivos, que entrega o arquivo como ele está, sem exportar nada. -->
+  <label class="escolher pequeno" id="escolher-arquivos">
+    <input type="file" id="arquivoDoc" accept=".mov,.mp4,.m4v,video/quicktime,video/mp4">
+    <span class="botao">Travou nas Fotos? Escolher pelo app Arquivos</span>
+  </label>
   <p class="dica">Grave a passada no app <b>Câmera</b> do iPhone, aba <b>CÂM. LENTA</b>. Uma vez só,
      nos Ajustes do iPhone: <b>Câmera → Gravar Câm. Lenta → 1080p a 240 fps</b>.
      O vídeo é analisado aqui dentro, no seu aparelho — <b>nada é enviado para lugar nenhum</b>.</p>
 
-  <details class="dica caixa-dica">
-    <summary><b>O vídeo é grande — leia antes de escolher</b></summary>
-    <p>Câmera lenta grava 240 quadros por segundo — oito vezes mais imagem que um vídeo comum. Um
-       clipe de 20 segundos costuma passar de <b>50 MB</b>, e um clipe longo chega fácil a centenas.
-       É esse tamanho que faz o iPhone demorar (ou desistir) na hora de entregar o arquivo.</p>
-    <p><b>Se o vídeo parece ter uns 3 minutos, está certo:</b> 20 segundos gravados em câmera lenta
-       <i>tocam</i> por 2 min e 40 s. Quem manda no tempo da prova são os quadros do arquivo, não a
-       duração da reprodução.</p>
+  <details class="dica caixa-dica" open>
+    <summary><b>Travou em “Preparando…” e não abre? Leia isto</b></summary>
+    <p>Quando você escolhe pela <b>Fototeca</b>, o iPhone <b>exporta</b> o vídeo antes de entregar.
+       Num clipe longo de câmera lenta essa exportação demora — e às vezes desiste. Isso acontece
+       fora desta página; não adianta esperar. Dois jeitos de contornar, do mais rápido para o mais
+       certo:</p>
     <ol>
-      <li><b>Grave só a passada</b> — de 20 a 25 segundos bastam. Se o clipe ficou longo, apare em
-          <b>Fotos → Editar</b> e salve como novo clipe.</li>
-      <li><b>Se a Fototeca travar em “Preparando…”</b>, faça assim uma vez: no app <b>Fotos</b>, abra o
-          vídeo, <b>Compartilhar → Salvar em Arquivos</b>. Depois volte aqui e escolha por
-          <b>Arquivos</b> em vez de Fototeca — esse caminho entrega o arquivo original, sem o iPhone
-          ter que reprocessar nada.</li>
-      <li>Depois de escolher, a tela mostra <b>quantos MB já foram lidos</b>. Enquanto esse número
-          sobe, está funcionando.</li>
+      <li><b>Encurte o clipe.</b> No app <b>Fotos</b>, abra o vídeo → <b>Editar</b> → arraste as duas
+          pontas até sobrar só a passada (<b>5 a 10 segundos bastam</b>) → <b>Concluído</b> →
+          <b>Salvar como Novo Clipe</b>. Escolha esse clipe novo. Clipe curto exporta rápido.</li>
+      <li><b>Fuja da exportação.</b> No app <b>Fotos</b>, com o vídeo aberto:
+          <b>Compartilhar → Salvar em Arquivos</b>. Depois volte aqui e use o botão
+          <b>“Escolher pelo app Arquivos”</b>. Esse caminho pega o arquivo como ele está.</li>
     </ol>
-    <p>A tela confere a taxa do arquivo e avisa em vermelho se o que chegou não for câmera lenta.</p>
+    <p><b>Se o vídeo parece ter 3 ou 4 minutos, está certo:</b> em câmera lenta, 20 segundos gravados
+       <i>tocam</i> por quase 3 minutos. O que vale para o tempo da prova são os quadros do arquivo,
+       não a duração da reprodução — e a linha embaixo da imagem mostra os dois números.</p>
+    <p>Depois de escolher, a tela mostra <b>quantos MB já foram lidos</b>. Enquanto esse número sobe,
+       está funcionando.</p>
   </details>
   <div id="aviso-taxa" class="faixa-aviso" hidden></div>
 
