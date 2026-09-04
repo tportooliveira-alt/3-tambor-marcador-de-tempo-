@@ -58,6 +58,15 @@ type VideoComCallback = HTMLVideoElement & {
  */
 const AMOSTRAS_CALIBRACAO = 60;
 
+/**
+ * Quanto o limiar sobe no modo "na mão".
+ *
+ * O tremor da mão produz diferença em TODA a faixa, quadro a quadro — o mesmo sinal que um cavalo
+ * cruzando. Sem subir o limiar, ele dispara sozinho no primeiro tremor; subindo, só um objeto de
+ * verdade passa. O preço é perder cruzamento fraco, e é por isso que é modo de teste.
+ */
+const FATOR_MAO = 2.5;
+
 /** Intervalo plausível entre dois quadros de câmera, em ms. Fora disso houve buraco. */
 const DT_MIN_MS = 0.5;
 const DT_MAX_MS = 500;
@@ -91,6 +100,7 @@ export class Visor {
   /** `mediaTime` é o carimbo do próprio quadro; só se ele se mostrar inútil é que se usa o da tela. */
   private usarMediaTime = true;
   private quadrosVistos = 0;
+  private recomecos = 0;
   private ultimoPresented = -1;
   private perdidos = 0;
   /**
@@ -99,6 +109,13 @@ export class Visor {
    * depois da largada, e com janela curta parariam o cronômetro.
    */
   ensaio = false;
+  /**
+   * Sem tripé: a imagem inteira treme, então o "normal" da cena é muito mais agitado. O limiar sobe
+   * e a coleta passa a tolerar variação, senão nunca se consegue armar. O tempo que sai daí serve
+   * para ver o app funcionando — não para conferir com a fotocélula, e por isso a passada é gravada
+   * num caminho separado.
+   */
+  naMao = false;
 
   constructor(video: HTMLVideoElement, canvas: HTMLCanvasElement, roi: VisorRoi, cb: VisorCallbacks) {
     this.video = video as VideoComCallback;
@@ -115,6 +132,21 @@ export class Visor {
   /** A taxa real medida (não a pedida): é ela que diz o que o navegador está realmente entregando. */
   get taxaMedida(): number {
     return this.fps;
+  }
+
+  /** A calibragem terminou e existe limiar? É a condição para armar. */
+  get calibragemPronta(): boolean {
+    return this.limiar !== null;
+  }
+
+  /** Quantas amostras da cena parada já entraram, de quantas são precisas. */
+  get calibragemProgresso(): { feitas: number; total: number } {
+    return { feitas: this.calibrador?.stats.count ?? 0, total: AMOSTRAS_CALIBRACAO };
+  }
+
+  /** Quantas vezes a medição da cena recomeçou por causa de movimento. */
+  get calibragemRecomecos(): number {
+    return this.recomecos;
   }
 
   /** Quadros que a câmera produziu e a página não recebeu. Entra no registro da passada. */
@@ -198,6 +230,7 @@ export class Visor {
     this.ultimoPresented = -1;
     this.perdidos = 0;
     this.usarMediaTime = true;
+    this.recomecos = 0;
   }
 
   /**
@@ -209,9 +242,10 @@ export class Visor {
    * hipótese não se sustenta, ele cai para qualidade 1 ou 0 com intervalo largo, que é o
    * comportamento honesto.
    */
-  armar(): void {
-    if (this.differencer === null || this.limiar === null) return;
+  armar(): boolean {
+    if (this.differencer === null || this.limiar === null) return false;
     const cfg = { ...this.cfg };
+    const limiar = this.naMao ? this.limiar * FATOR_MAO : this.limiar;
     cfg.frameRateHz = Math.max(15, Math.round(this.fps || 30));
     cfg.exposureNs = Math.round(1e9 / cfg.frameRateHz);
     // vídeo de câmera traz curva de tom, como o arquivo: linearizar antes da fração de exposição
@@ -223,10 +257,11 @@ export class Visor {
       cfg.finishLockoutNs = 500_000_000;
     }
     this.engine = new PhotocellEngine(cfg, new RoiRect(0, this.largura, 0, this.altura), this.altura);
-    this.engine.seedCalibration(this.limiar, this.calibrador?.stats.sigma ?? 1.0, 1);
+    this.engine.seedCalibration(limiar, this.calibrador?.stats.sigma ?? 1.0, 1);
     this.engine.effects.length = 0;
     this.perdidos = 0;
     this.cronometrando = true;
+    return true;
   }
 
   desarmar(): void {
@@ -316,6 +351,8 @@ export class Visor {
       this.altura = h;
       const cfg = defaultConfig();
       cfg.calibrationSamples = AMOSTRAS_CALIBRACAO;
+      // Na mão, a regra de outlier reiniciaria a coleta a cada tremor e nunca sairia limiar nenhum.
+      if (this.naMao) cfg.calibrationOutlierSigma = 30.0;
       this.differencer = new StripDifferencer(new RoiRect(0, w, 0, h), w, h, cfg.coreWidth);
       this.calibrador = new NoiseCalibrator(cfg);
       this.limiar = null;
@@ -341,6 +378,11 @@ export class Visor {
     if (this.limiar === null && this.calibrador !== null) {
       const estado = this.calibrador.addSample(m.deltaFull);
       if (estado === "DONE") this.limiar = this.calibrador.threshold;
+      // Movimento na faixa reinicia a coleta, e depois de três reinícios o calibrador DESISTE. Ao
+      // vivo isso é fatal: a mão passando na frente durante a medição travaria a tela para sempre,
+      // sem limiar e sem como armar. Aqui ele recomeça — e a tela diz que recomeçou.
+      if (estado === "RESTARTED" || estado === "FAILED") this.recomecos += 1;
+      if (estado === "FAILED") this.calibrador.reset();
     }
     const cruzando = this.limiar !== null && m.deltaCore > this.limiar;
     this.cb.onQuadro(this.fps, m.deltaCore, this.limiar, cruzando);

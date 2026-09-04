@@ -180,6 +180,9 @@
       <button id="abrirVisor" class="botao grande primario">Abrir a câmera</button>
       <button id="fecharVisor" class="botao" hidden>Desligar</button>
     </div>
+    <div id="aviso-paisagem" class="faixa-aviso" hidden><b>Vire o celular na horizontal.</b>
+       A linha da fotocélula é vertical e a banda tem de pegar a altura do peito do cavalo — em pé,
+       sobra pouca imagem para a banda e a medição piora.</div>
     <div id="palcoVisor" hidden>
       <video id="visorVideo" playsinline muted></video>
       <canvas id="visorOverlay"></canvas>
@@ -192,6 +195,15 @@
         <button id="armarVisor" class="botao grande">Armar o cronômetro</button>
         <button id="desarmarVisor" class="botao" hidden>Parar</button>
       </div>
+      <p class="dica" id="visorPendente" hidden><b>Ainda medindo a cena parada.</b> Deixe o celular
+         quieto e não passe nada na frente da linha. Assim que terminar, o cronômetro arma sozinho —
+         a linha acima mostra o quanto falta.</p>
+      <label class="linha" for="visorMao">
+        <input type="checkbox" id="visorMao">
+        <span class="detalhe"><b>Estou segurando na mão (sem tripé).</b> O limiar sobe para o tremor
+              não disparar sozinho, e a passada é gravada num caminho separado — serve para ver o app
+              funcionando, <b>não</b> para conferir com a fotocélula.</span>
+      </label>
       <label class="linha" for="visorEnsaio">
         <input type="checkbox" id="visorEnsaio">
         <span class="detalhe">Ensaio: aceita a chegada 2 s depois da largada (para testar com a

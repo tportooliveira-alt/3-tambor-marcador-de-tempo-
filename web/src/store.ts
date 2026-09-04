@@ -67,8 +67,14 @@ export interface Passada {
   origem?: Origem;
 }
 
-/** Caminho que produziu o tempo. */
-export type Origem = "video" | "ao-vivo";
+/**
+ * Caminho que produziu o tempo.
+ *
+ * "ao-vivo-mao" é separado de "ao-vivo" de propósito: sem tripé a imagem inteira treme, o limiar
+ * precisa ser bem mais alto e o instante do cruzamento fica pior. Misturar as duas colunas
+ * estragaria justamente a comparação que se quer fazer.
+ */
+export type Origem = "video" | "ao-vivo" | "ao-vivo-mao";
 
 /** A linha e a banda, em fração da imagem — a mesma convenção do app nativo. */
 export interface RoiSalva {

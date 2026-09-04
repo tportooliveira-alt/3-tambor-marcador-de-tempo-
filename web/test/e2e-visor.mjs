@@ -77,12 +77,23 @@ try {
   console.log(`    câmera: ${dim.w}×${dim.h}, tocando=${dim.tocando}`);
   checar(dim.w > 0 && dim.h > 0, `o vídeo da câmera está entregando quadros (${dim.w}×${dim.h})`);
 
+  // ARMAR ANTES DE A CALIBRAGEM TERMINAR — o defeito relatado em campo: a tela trocava o botão e
+  // mostrava 0.000, mas por dentro `armar()` tinha desistido em silêncio, e o cronômetro nunca
+  // disparava. Agora o pedido fica de pé e a tela diz o que falta.
+  await pagina.click("#armarVisor");
+  checar(await pagina.isVisible("#visorPendente"), "armar cedo avisa que ainda está medindo a cena");
+  checar(!(await pagina.isVisible("#visorTempo")), "e NÃO mostra um cronômetro que não está armado");
+  console.log(`    esperando: ${(await pagina.textContent("#visorEstado")).trim()}`);
+
   // a calibragem tem de terminar sozinha e o limiar aparecer no texto de estado
   await pagina.waitForFunction(
     () => /limiar/.test(document.getElementById("visorEstado")?.textContent ?? ""),
     null,
     { timeout: 30_000 },
   );
+  await pagina.waitForSelector("#visorTempo:not([hidden])", { timeout: 10_000 });
+  checar(!(await pagina.isVisible("#visorPendente")), "o cronômetro armou sozinho quando a cena foi medida");
+  await pagina.click("#desarmarVisor");
   const estado = await pagina.textContent("#visorEstado");
   console.log(`    estado: ${estado}`);
   checar(/quadros por segundo/.test(estado), "o visor mostra a taxa real medida");
@@ -163,6 +174,26 @@ try {
   await pagina.click('#abas button[data-aba="visor"]');
   await pagina.click("#abrirVisor");
   await pagina.waitForFunction(() => document.getElementById("visorVideo")?.srcObject !== null, null, { timeout: 15_000 });
+
+  // --- a mesma prova, agora no modo "na mão" ---------------------------------------------------
+  // Sem tripé o limiar sobe (o tremor produz diferença em toda a faixa), e a passada tem de ficar
+  // num caminho SEPARADO: misturada com as do tripé, estragaria a comparação que se quer fazer.
+  await pagina.check("#visorMao");
+  await pagina.click("#armarVisor");
+  await pagina.waitForSelector("#resultadoVisor:not([hidden])", { timeout: 120_000 });
+  const quemMao = await pagina.evaluate(
+    () => document.getElementById("resultadoVisor")?.querySelector(".quem")?.textContent ?? "",
+  );
+  checar(/na mão/.test(quemMao), `o cartão avisa que foi na mão (${quemMao.trim()})`);
+  await pagina.fill("#visorOficial", "3,000");
+  await pagina.click("#visorSalvar");
+  const origens = await pagina.evaluate(() =>
+    (JSON.parse(localStorage.getItem("fotocelula.dados.v1") ?? "{}").passadas ?? []).map((p) => p.origem),
+  );
+  checar(
+    origens.includes("ao-vivo-mao") && origens.includes("ao-vivo"),
+    `tripé e na mão ficam em caminhos separados (${origens.join(", ")})`,
+  );
 
   // sair da aba TEM de desligar a câmera (aparelho quente estraga a medição depois)
   await pagina.click('#abas button[data-aba="passada"]');

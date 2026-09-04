@@ -46,10 +46,12 @@ export function parseTempo(texto: string): number | null {
  * De onde veio o tempo. Passada antiga não tem o campo e é, por definição, análise de arquivo — era
  * o único caminho que existia quando ela foi salva.
  */
-export const origemDe = (p: Passada): Origem => (p.origem === "ao-vivo" ? "ao-vivo" : "video");
+export const origemDe = (p: Passada): Origem =>
+  p.origem === "ao-vivo" || p.origem === "ao-vivo-mao" ? p.origem : "video";
 
 /** Nome do caminho para a tela e para o texto colável. */
-export const nomeOrigem = (o: Origem): string => (o === "ao-vivo" ? "ao vivo" : "vídeo");
+export const nomeOrigem = (o: Origem): string =>
+  o === "ao-vivo" ? "ao vivo" : o === "ao-vivo-mao" ? "ao vivo, na mão" : "vídeo";
 
 /**
  * Separa as passadas pelos dois caminhos, na ordem em que interessa ler.
@@ -60,7 +62,7 @@ export const nomeOrigem = (o: Origem): string => (o === "ao-vivo" ? "ao vivo" : 
  */
 export function porOrigem(passadas: Passada[]): { origem: Origem; passadas: Passada[] }[] {
   const saida: { origem: Origem; passadas: Passada[] }[] = [];
-  for (const o of ["video", "ao-vivo"] as Origem[]) {
+  for (const o of ["video", "ao-vivo", "ao-vivo-mao"] as Origem[]) {
     const fatia = passadas.filter((p) => origemDe(p) === o);
     if (fatia.length > 0) saida.push({ origem: o, passadas: fatia });
   }

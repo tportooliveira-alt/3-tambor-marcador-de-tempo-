@@ -806,7 +806,7 @@ function desenharHistorico(): void {
       <div class="sub">${new Date(p.dataMs).toLocaleString("pt-BR")} · bruto ${formatElapsed(
         p.elapsedRawNs,
       )} · q${p.qualidadeLargada}/${p.qualidadeChegada}${p.degradada ? " · degradada" : ""} · ${
-      p.origem === "ao-vivo" ? "ao vivo" : "vídeo"
+      p.origem === "ao-vivo-mao" ? "ao vivo, na mão" : p.origem === "ao-vivo" ? "ao vivo" : "vídeo"
     }${conferencia}</div></div>`;
 
     // Campo embutido em vez de `prompt()`: a página roda dentro de um visualizador com restrições,
@@ -1018,6 +1018,19 @@ $("versao").textContent =
 if (!supportsFrameCallback()) {
   aviso("Este navegador não consegue ler os quadros do vídeo. No iPhone, abra pelo Safari.");
 }
+/**
+ * Celular em pé: a linha da fotocélula é vertical e a banda precisa da altura do peito do cavalo.
+ * Em retrato sobra pouca imagem para a banda, e menos linhas é menos pixel para o refinamento.
+ * Não dá para forçar a orientação pelo navegador no iPhone — o que dá é dizer.
+ */
+function conferirPaisagem(): void {
+  const emPe = window.innerHeight > window.innerWidth;
+  $("aviso-paisagem").hidden = !emPe;
+}
+window.addEventListener("resize", conferirPaisagem);
+window.addEventListener("orientationchange", () => setTimeout(conferirPaisagem, 300));
+conferirPaisagem();
+
 // ------------------------------------------------------------------ visor ao vivo
 /**
  * O visor compartilha o MESMO objeto `roi` da análise. Mirar ao vivo já deixa a faixa no lugar
@@ -1025,6 +1038,14 @@ if (!supportsFrameCallback()) {
  */
 /** O último resultado já transformado em passada — para não abrir a mesma duas vezes. */
 let resultadoVisor: RunResult | null = null;
+/**
+ * Tocou em Armar antes de a calibragem terminar.
+ *
+ * Antes o `armar()` desistia em silêncio nesse caso e a tela trocava o botão e mostrava 0.000 assim
+ * mesmo: parecia armado e nunca disparava. Agora o pedido fica guardado e o cronômetro arma sozinho
+ * no instante em que a cena for medida.
+ */
+let armarPendente = false;
 let passadaVisor: Passada | null = null;
 
 const visor = new Visor(
@@ -1040,10 +1061,16 @@ const visor = new Visor(
         `width:${(nivel * 100).toFixed(0)}%`,
       );
       barra.classList.toggle("cruzando", cruzando);
+      const prog = visor.calibragemProgresso;
+      const recomecos = visor.calibragemRecomecos;
       $("visorEstado").textContent =
         limiar === null
-          ? `medindo a cena parada… · ${fps.toFixed(0)} quadros por segundo`
+          ? `medindo a cena parada… ${prog.feitas}/${prog.total}` +
+            (recomecos > 0 ? ` · recomeçou ${recomecos}× (algo se mexeu na linha)` : "") +
+            ` · ${fps.toFixed(0)} quadros por segundo`
           : `${cruzando ? "CRUZANDO" : "livre"} · movimento ${delta.toFixed(1)} (limiar ${limiar.toFixed(1)}) · ${fps.toFixed(0)} quadros por segundo`;
+      // Pedido de armar que estava esperando a cena: arma no instante em que o limiar aparece.
+      if (armarPendente && limiar !== null) armarAgora();
     },
     onCronometro: (estado, decorridoNs, resultado) => {
       $("visorTempo").hidden = false;
@@ -1084,10 +1111,13 @@ const visor = new Visor(
 
 function fecharVisor(): void {
   if (!visor.ativo) return;
+  armarPendente = false;
   visor.desarmar();
   visor.fechar();
   $("armarVisor").hidden = false;
   $("desarmarVisor").hidden = true;
+  $("desarmarVisor").textContent = "Parar";
+  $("visorPendente").hidden = true;
   $("visorTempo").hidden = true;
   $("abrirVisor").hidden = false;
   $("fecharVisor").hidden = true;
@@ -1105,6 +1135,20 @@ $("abrirVisor").addEventListener("click", async () => {
 });
 $("fecharVisor").addEventListener("click", fecharVisor);
 
+/** Arma de verdade, e só então a tela diz que está armado. Devolve se conseguiu. */
+function armarAgora(): boolean {
+  if (!visor.armar()) return false;
+  armarPendente = false;
+  $("armarVisor").hidden = true;
+  $("desarmarVisor").hidden = false;
+  $("desarmarVisor").textContent = "Parar";
+  $("visorPendente").hidden = true;
+  $("visorTempo").hidden = false;
+  $("visorRelogio").textContent = "0.000";
+  $("visorFase").textContent = `armado — esperando a largada · ${visor.taxaMedida.toFixed(0)} quadros por segundo`;
+  return true;
+}
+
 $("armarVisor").addEventListener("click", () => {
   // Armar recomeça a passada: o cartão anterior sai da tela para não haver dúvida de qual tempo é
   // qual — e para que "Salvar" nunca grave o tempo da passada passada.
@@ -1112,11 +1156,32 @@ $("armarVisor").addEventListener("click", () => {
   passadaVisor = null;
   $("resultadoVisor").hidden = true;
   $("resultadoVisor").innerHTML = "";
-  visor.armar();
+  if (armarAgora()) return;
+  // A calibragem ainda não terminou. Em vez de fingir que armou (o defeito de antes), o pedido fica
+  // de pé e a tela diz o que está faltando.
+  armarPendente = true;
   $("armarVisor").hidden = true;
   $("desarmarVisor").hidden = false;
-  $("visorTempo").hidden = false;
-  $("visorRelogio").textContent = "0.000";
+  $("desarmarVisor").textContent = "Cancelar";
+  $("visorPendente").hidden = false;
+  $("visorTempo").hidden = true;
+});
+
+$<HTMLInputElement>("visorMao").addEventListener("change", (ev) => {
+  visor.naMao = (ev.target as HTMLInputElement).checked;
+  // A medição da cena tem de recomeçar: o que conta como "parado" é outro quando o celular treme.
+  visor.reiniciarMedicao();
+  armarPendente = false;
+  $("armarVisor").hidden = false;
+  $("desarmarVisor").hidden = true;
+  $("desarmarVisor").textContent = "Parar";
+  $("visorPendente").hidden = true;
+  $("visorTempo").hidden = true;
+  aviso(
+    visor.naMao
+      ? "Modo na mão: medindo a cena de novo. O tempo daqui não entra na conferência com a fotocélula."
+      : "Modo tripé: medindo a cena de novo.",
+  );
 });
 
 $<HTMLInputElement>("visorEnsaio").addEventListener("change", (ev) => {
@@ -1153,7 +1218,7 @@ function abrirPassadaAoVivo(r: RunResult): void {
     fps: visor.taxaMedida,
     quadrosPerdidos: visor.quadrosPerdidos,
     arquivo: "",
-    origem: "ao-vivo",
+    origem: visor.naMao ? "ao-vivo-mao" : "ao-vivo",
   };
   desenharCartaoVisor();
 }
@@ -1170,7 +1235,7 @@ function desenharCartaoVisor(): void {
     ? `#${p.ordem} ${p.competidor}${p.cavalo ? ` / ${p.cavalo}` : ""}${p.categoria ? ` — ${p.categoria}` : ""}`
     : "Sem competidor";
   el.innerHTML = `<div class="resultado">
-    <div class="quem">${escapar(quem)} · ao vivo</div>
+    <div class="quem">${escapar(quem)} · ${p.origem === "ao-vivo-mao" ? "ao vivo, na mão" : "ao vivo"}</div>
     <div class="tempo ${p.semTempo ? "sat" : ""}">${p.semTempo ? "SAT" : formatElapsed(finalNs)}</div>
     <div>
       <span class="selo q${qualidade}">qualidade ${qualidade} · ±${incerteza.toFixed(2)} ms</span>
@@ -1247,9 +1312,12 @@ function desenharCartaoVisor(): void {
   });
 }
 $("desarmarVisor").addEventListener("click", () => {
+  armarPendente = false;
   visor.desarmar();
   $("armarVisor").hidden = false;
   $("desarmarVisor").hidden = true;
+  $("desarmarVisor").textContent = "Parar";
+  $("visorPendente").hidden = true;
 });
 
 // arrastar a linha e as alças TAMBÉM no visor, com a mesma matemática do editor
