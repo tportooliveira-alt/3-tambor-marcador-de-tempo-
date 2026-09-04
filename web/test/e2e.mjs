@@ -74,6 +74,10 @@ try {
   // escolher o vídeo da prova (o mesmo que o usuário faz nas Fotos)
   await pagina.setInputFiles("#arquivo", video);
   await pagina.waitForSelector("#editor:not([hidden])", { timeout: 30_000 });
+  // a linha de informação só fica pronta depois de ler o cabeçalho do arquivo
+  await pagina.waitForFunction(() => (document.getElementById("info-video")?.textContent ?? "").includes("·"), null, {
+    timeout: 60_000,
+  });
   const info = await pagina.textContent("#info-video");
   checar(info.includes(`${verdade.width}×${verdade.height}`), `primeiro quadro exibido (${info.split("—")[0].trim()})`);
 

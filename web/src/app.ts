@@ -92,6 +92,8 @@ async function mostrarPrimeiroQuadro(f: File): Promise<void> {
     o.height = videoH;
     $("editor").hidden = false;
     desenharOverlay();
+    // ler o cabeçalho leva um instante em arquivo grande; linha em branco parece travamento
+    $("info-video").textContent = "Lendo as informações do vídeo…";
     const dur = v.duration || 0;
     const tamanho = f.size >= 1048576 ? `${(f.size / 1048576).toFixed(0)} MB` : `${Math.round(f.size / 1024)} KB`;
     // A taxa vem do cabeçalho do arquivo, na hora: é a diferença entre o milésimo e ±17 ms, e o

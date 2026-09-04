@@ -54,12 +54,18 @@ if (servir) {
   const css = readFileSync(path.join(raiz, "public/estilo.css"), "utf8");
   const icone = readFileSync(path.join(raiz, "public/icone-180.png")).toString("base64");
   let html = readFileSync(path.join(raiz, "public/index.html"), "utf8");
+  // ATENÇÃO: o texto de substituição TEM de entrar por função.
+  // Passar o conteúdo como string faz o String.replace interpretar `$&`, `$\``, `$'` e `$1` dentro
+  // dele. O minificador batiza variáveis de `$`, então uma linha como `at>$&&($=at)` virava
+  // `at><script src="app.js"></script>&(...)` no meio do bundle e a página inteira morria com
+  // "Unexpected token '<'" — nenhum botão respondia. Uma função devolve o texto literal.
+  const literal = (texto) => () => texto;
   html = html
     .replace('<link rel="manifest" href="manifest.webmanifest">', "")
-    .replace(/<link rel="apple-touch-icon"[^>]*>/, `<link rel="apple-touch-icon" href="data:image/png;base64,${icone}">`)
-    .replace(/<link rel="icon"[^>]*>/, `<link rel="icon" href="data:image/png;base64,${icone}">`)
-    .replace('<link rel="stylesheet" href="estilo.css">', `<style>\n${css}\n</style>`)
-    .replace('<script type="module" src="app.js"></script>', `<script type="module">\n${js}\n</script>`);
+    .replace(/<link rel="apple-touch-icon"[^>]*>/, literal(`<link rel="apple-touch-icon" href="data:image/png;base64,${icone}">`))
+    .replace(/<link rel="icon"[^>]*>/, literal(`<link rel="icon" href="data:image/png;base64,${icone}">`))
+    .replace('<link rel="stylesheet" href="estilo.css">', literal(`<style>\n${css}\n</style>`))
+    .replace('<script type="module" src="app.js"></script>', literal(`<script type="module">\n${js}\n</script>`));
   let saida = path.join(raiz, "fotocelula-tambor.html");
   if (paraArtifact) {
     const titulo = /<title>([^<]*)<\/title>/.exec(html)?.[1] ?? "Fotocélula Tambor";
