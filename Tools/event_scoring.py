@@ -14,7 +14,7 @@ O tempo refinado é sempre o usado (mesmo em qualidade 0, onde ele é o centro d
 gatilho): é o mesmo número que o app mostra na tela, e classificar por outro seria mentir para o
 competidor.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
 
 PENALTY_PER_BARREL_NS = 5_000_000_000

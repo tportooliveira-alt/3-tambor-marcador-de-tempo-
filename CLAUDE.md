@@ -7,7 +7,7 @@ tempo. Textos de interface e comentários em **pt-BR**; identificadores em ingl�
 ## O que existe, e por quê
 
 **Uma especificação, quatro implementações.** O mesmo algoritmo em Python (referência), Kotlin
-(Android), Swift (iOS) e TypeScript (web), conferidas pelos **mesmos 31 vetores** em
+(Android), Swift (iOS) e TypeScript (web), conferidas pelos **mesmos 30 vetores** em
 `shared/test-vectors/`. É isso que garante que o número não muda de aparelho para aparelho. Ao mexer
 no núcleo, a ordem é sempre **Python → Kotlin → Swift → TypeScript**, regenerando os vetores.
 
@@ -43,7 +43,7 @@ python3 Tools/gen_test_vectors.py
 
 # cenários adversariais contra a referência Python
 python3 Tools/scenario_harness.py '{"noise_sigma": 5}'
-python3 Tools/test_cena.py            # o renderizador numpy tem de bater com a Scene
+python3 Tools/test_cena.py            # a física em numpy tem de bater com a Scene (ver o limite abaixo)
 
 # vídeo sintético de prova + análise ponta a ponta no navegador
 python3 Tools/gen_test_video.py --out /tmp/prova.mp4 --speed 2400 --object-px 200
@@ -135,5 +135,13 @@ Branch de trabalho: `claude/ios-sports-timing-system-65t7ng`. Página publicada 
 4. **Metal no iOS** foi pedido e recusado com números: a ROI tem 1.400 a 10.000 pixels, custa
    dezenas de µs na CPU contra 50-200 µs só de despacho na GPU, num orçamento de 4.166 µs por
    quadro. O app já mostra `custo/quadro µs` no painel — é esse número que decide, no aparelho.
-5. `web/src/app.ts` tem 934 linhas e acumula tela, estado e persistência. Quebrar em módulos só
-   depois de os testes de botão estarem consolidados — não às vésperas de uma prova.
+5. **`Tools/test_cena.py` não testa o gerador de verdade.** Ele compara uma TERCEIRA cópia da
+   física, escrita dentro do próprio teste, com a `Scene` — e não o `_render_arena` de
+   `gen_test_video.py`, que é quem produz os vídeos. Uma divergência que apareça só no gerador passa
+   despercebida. Conserto: `_render_arena` expõe os quadros (hoje escreve direto no ffmpeg) e o teste
+   passa a consumi-los; ou o teste gera o vídeo de verdade (VP9 sem perdas, luma intacta), decodifica
+   de volta e compara. Não afeta o app — afeta a confiança nas cenas sintéticas.
+6. `web/src/app.ts` passou de **1.400 linhas** e acumula tela, estado e persistência. Quebrar em
+   módulos só depois de os testes de botão estarem consolidados — não às vésperas de uma prova. Os
+   candidatos naturais a sair primeiro são o cartão de resultado (que já existe em duas versões
+   quase iguais, arquivo e ao vivo) e o bloco do visor.

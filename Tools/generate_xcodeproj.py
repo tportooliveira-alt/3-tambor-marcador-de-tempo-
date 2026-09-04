@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "ios"))
 APP_DIR = os.path.join(ROOT, "App")
@@ -97,7 +96,6 @@ def main() -> None:
     pkg_buildfile = oid("buildfile:" + PACKAGE_PRODUCT)
     proj_cfg_list = oid("cfglist:project")
     target_cfg_list = oid("cfglist:target")
-    cfg = {name: oid("cfg:" + scope + ":" + name) for scope in ("project", "target") for name in ("Debug", "Release")}
     pcfg = {n: oid("cfg:project:" + n) for n in ("Debug", "Release")}
     tcfg = {n: oid("cfg:target:" + n) for n in ("Debug", "Release")}
 

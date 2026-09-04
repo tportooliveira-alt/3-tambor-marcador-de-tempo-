@@ -17,7 +17,7 @@ Convenções:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 NS_PER_SEC = 1_000_000_000
@@ -434,11 +434,9 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
     P = cfg.frame_period_ns
     # Sem refinamento possível, o cruzamento está entre o FIM da exposição do último quadro visto
     # (senão teria disparado lá) e o fim da exposição do candidato: centro (t_prev + t_c)/2 + E,
-    # meia-largura (t_c - t_prev)/2 (= P/2 sem drops; cresce com quadros perdidos). Offset das linhas
-    # se o skew é conhecido. Sem quadro anterior conhecido: meio da janela de exposição ± P/2.
-    mid_row_offset = 0
-    if cfg.skew_ns is not None:
-        mid_row_offset = ((roi.y0 + roi.height // 2) * cfg.skew_ns) // plane_height
+    # meia-largura (t_c - t_prev)/2 (= P/2 sem drops; cresce com quadros perdidos). Sem quadro
+    # anterior conhecido: ts - P, que dá o meio da janela de exposição ± P/2. O offset por linha
+    # entra abaixo, pela PRIMEIRA e pela ÚLTIMA linha da banda (`row_offset`), não pelo meio dela.
     # Intervalo físico do gatilho, sem hipóteses sobre contraste: o cruzamento da coluna que disparou
     # não pode ser anterior ao início da exposição do último quadro VISTO (nele o pixel estaria coberto
     # o tempo todo e já teria disparado) nem posterior ao fim da exposição do candidato; linhas: a

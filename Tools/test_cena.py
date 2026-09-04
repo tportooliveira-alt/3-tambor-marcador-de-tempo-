@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """
-Confere que o renderizador de vídeo e o simulador dos vetores concordam.
+Confere que a física em numpy e o simulador dos vetores concordam.
 
     python3 Tools/test_cena.py
 
 Por que isto existe: a física realista (rolling shutter, flicker, exposição integrada, curva de tom)
 já estava provada em `Scene` (gen_test_vectors.py), que é laço por pixel em Python e produz só uma
-faixa de 15x96 px — nunca um vídeo. Para virar vídeo ela foi portada para numpy em
-`gen_test_video.py`. Duas implementações da mesma física divergem com o tempo, e uma cena de arena
-realista E ERRADA é pior que uma cena simples e certa: ela produziria números convincentes e falsos.
+faixa de 15x96 px — nunca um vídeo. Para virar vídeo ela foi portada para numpy. Duas implementações
+da mesma física divergem com o tempo, e uma cena de arena realista E ERRADA é pior que uma cena
+simples e certa: ela produziria números convincentes e falsos.
 
-Este teste roda as duas com os MESMOS parâmetros num caso de bordo único e exige que os quadros
-batam. A tolerância é de 1 nível de luma, que é o arredondamento — não folga de modelo.
+O teste roda as duas com os MESMOS parâmetros num caso de bordo único e exige que os quadros batam,
+com tolerância de 1 nível de luma (o arredondamento) — não folga de modelo.
+
+LIMITE CONHECIDO, e não é pequeno: `quadros_numpy` abaixo é uma TERCEIRA cópia da física, escrita
+aqui dentro, e não o `_render_arena` de `gen_test_video.py` que realmente produz os vídeos. O que
+este teste prova é que a formulação vetorizada bate com a `Scene`; ele NÃO pega uma divergência que
+apareça só no gerador de verdade. Para fechar isso, `_render_arena` precisa expor os quadros (hoje
+ele só escreve direto no ffmpeg) e este teste passar a consumi-los — está anotado em CLAUDE.md.
 """
 import math
 import os
@@ -22,7 +28,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 
 import gen_test_vectors as G
-import gen_test_video as V
 from photocell_reference import RoiRect
 
 NS = 1_000_000_000

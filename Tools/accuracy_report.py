@@ -15,7 +15,7 @@ import time
 from statistics import mean
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from photocell_reference import NS_PER_SEC, PhotocellConfig, RoiRect  # noqa: E402
+from photocell_reference import PhotocellConfig, RoiRect  # noqa: E402
 import gen_test_vectors as G  # noqa: E402
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "validacao-numerica.md")

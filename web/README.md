@@ -15,8 +15,35 @@ O vídeo **não sai do aparelho**: toda a análise acontece no navegador.
 | Precisão | milésimo | **o mesmo milésimo** |
 | Instalar | precisa de um computador uma vez | nada: é um link |
 
-A captura ao vivo continua sendo nativa porque o navegador não entrega 240 FPS, não deixa travar a
-exposição e não dá o relógio do sensor. Ler um arquivo já gravado a 240 FPS não depende de nada disso.
+O **milésimo** vem do arquivo em câmera lenta, e a razão é física: pelo navegador a câmera entrega 30
+ou 60 quadros por segundo, não deixa travar a exposição e não dá o relógio do sensor. Ler um arquivo
+já gravado a 240 FPS não depende de nada disso.
+
+Mas a aba **Mirar** também cronometra ao vivo, com a mesma máquina de estados — ver abaixo.
+
+## Mirar e cronometrar ao vivo
+
+A mesma faixa da análise, sobre a imagem da câmera: apontar o tripé ao vivo já deixa a linha no lugar
+certo para o vídeo que vem a seguir, em vez de posicioná-la depois, num quadro congelado.
+
+Com a linha posta, dá para **armar e cronometrar na hora**. O que muda em relação ao arquivo é a
+física da captura, e o app não finge o contrário: a taxa é a que o navegador entregar, a duração de
+exposição não é informada por API nenhuma (assume-se `E = P`) e cada passada sai com a incerteza que o
+estimador conseguiu sustentar — no teste sintético a 30 FPS, qualidade 0 e **±51 ms declarados** para
+um erro real de 2 ms. Quanto isso custa em campo é o que a conferência com a fotocélula vai dizer.
+
+- os quadros chegam por `requestVideoFrameCallback`, um por quadro **da câmera**, com o carimbo
+  daquele quadro. Com `requestAnimationFrame` (o laço da tela) uma câmera de 30 quadros num monitor
+  de 60 Hz seria processada duas vezes por quadro, e a repetição entraria na calibragem de ruído como
+  se a cena estivesse parada;
+- **tripé** e **na mão** são caminhos separados. Sem tripé a imagem inteira treme e produz, em toda a
+  faixa, o mesmo sinal que um cavalo cruzando: o limiar sobe 2,5× para não disparar sozinho, e a
+  passada é gravada como `origem: "ao-vivo-mao"` para não contaminar a comparação;
+- a conferência (aba Histórico) mostra viés, erro médio e "quantos couberam na incerteza"
+  **por caminho** — vídeo, ao vivo, ao vivo na mão. É essa tabela que decide se o ao vivo serve.
+
+Um celular não faz as duas coisas na mesma passada: com o navegador usando a câmera, o app Câmera não
+está gravando. Para comparar, alterne — uma ao vivo, a seguinte gravada.
 
 ## Como os quadros são lidos (e por que assim)
 
@@ -99,24 +126,41 @@ Câmera lenta a 240 FPS gera oito vezes mais imagem que um vídeo comum: um clip
 O teste que garante isso compara o pico de memória do navegador entre um clipe pequeno e um grande:
 
 ```bash
-python3 ../Tools/gen_test_video.py --out /tmp/longa.mp4 --speed 2400 --object-px 200 --duration-s 40
-node test/e2e-memoria.mjs /tmp/prova.mp4 /tmp/longa.mp4
+# dois arquivos com a MESMA resolução e o MESMO número de quadros, mudando só o tamanho em bytes
+python3 ../Tools/gen_test_video.py --out /tmp/mem-leve.mp4 --width 960 --height 540 --fps 240 \
+  --duration-s 4.2 --start-s 1.0 --finish-s 3.5 --speed 2400 --object-px 200 --noise 0
+python3 ../Tools/gen_test_video.py --out /tmp/mem-pesado.mp4 --width 960 --height 540 --fps 240 \
+  --duration-s 4.2 --start-s 1.0 --finish-s 3.5 --speed 2400 --object-px 200 --noise 6
+node test/e2e-memoria.mjs /tmp/mem-leve.mp4 /tmp/mem-pesado.mp4
 ```
 
-Medido nesta máquina, comparando o clipe de 25 MB com um de **242 MB na mesma resolução** (40 s,
-9600 quadros):
+Os dois arquivos têm de ter a **mesma resolução e o mesmo número de quadros**. É a armadilha central
+desta medição, e ela já foi paga duas vezes: comparando 320×180 com 960×540, "memória por byte de
+arquivo" está medindo **resolução** — um quadro decodificado 960×540 ocupa 9× um 320×180, e isso não
+tem nada a ver com o leitor. A régua zero também tem de ser tirada na **mesma página, antes de o
+arquivo ser escolhido**; comparando os picos absolutos de duas medições diferentes, a memória que o
+navegador não devolve entre uma e outra entra na conta como se fosse do arquivo (o mesmo código dava
+2,6 numa execução e 7,6 na seguinte).
 
-| | leitor anterior | leitor em fatias |
-|---|---|---|
-| memória a mais por byte de vídeo | **2,30** | **0,19** |
-| memória do navegador no clipe grande | 1624 MB | **1158 MB** (+41 MB sobre o pequeno) |
-| heap de JavaScript | 9 MB | 7 MB |
+Medido com o par correto (960×540, 1008 quadros, **1 MB contra 225 MB**), e reproduzindo:
 
-Os 0,19 que sobram são as faixas guardadas (1 KB por quadro), que a calibragem automática precisa —
-não o arquivo. O `file.arrayBuffer()` do leitor anterior é o que fazia a página "carregar e parar" no
-iPhone: num vídeo de verdade ele pedia mais memória do que o aparelho dá a uma aba.
+| | por byte de arquivo |
+|---|---|
+| só **abrir** o arquivo (antes de analisar) | **0,002** |
+| durante a análise, memória do navegador | **0,31** |
+| heap de JavaScript | ~0 (4 MB no clipe grande) |
 
-(O heap de JavaScript sozinho não denuncia o problema — o conteúdo de um `ArrayBuffer` mora fora
+O que **não** escala com o arquivo, mas é grande em termos absolutos: a análise custa ~620 MB de
+memória do navegador nesse clipe, e isso cresce com **resolução × quantidade de quadros**. Por isso a
+recomendação de clipes de 20 a 25 s não é conselho, é requisito.
+
+Duas coisas já custaram esse teto: o `file.arrayBuffer()` do leitor antigo (2,30 bytes por byte, o
+que fazia a página "carregar e parar" no iPhone) e manter o `<video>` do editor aberto enquanto o
+arquivo estivesse escolhido (0,9 byte por byte — 258 MB presos num clipe de 225 MB, **antes** de a
+análise começar). Hoje o editor desenha o primeiro quadro, solta o elemento e o recria só quando
+alguém percorre o clipe.
+
+(O heap de JavaScript sozinho não denuncia nada disso — o conteúdo de um `ArrayBuffer` mora fora
 dele. Por isso o teste mede também a memória residente do navegador.)
 
 Na tela, a leitura mostra o progresso em MB o tempo todo (`Lendo o vídeo… 120 MB de 380 MB`), porque

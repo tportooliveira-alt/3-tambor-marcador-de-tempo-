@@ -91,7 +91,6 @@ export class Visor {
   private cronometrando = false;
   private largura = 0;
   private altura = 0;
-  private ultimoTs = 0;
   private fps = 0;
   /** Verdadeiro quando os quadros chegam por `requestVideoFrameCallback` (um por quadro da câmera). */
   private porQuadro = false;
@@ -132,11 +131,6 @@ export class Visor {
   /** A taxa real medida (não a pedida): é ela que diz o que o navegador está realmente entregando. */
   get taxaMedida(): number {
     return this.fps;
-  }
-
-  /** A calibragem terminou e existe limiar? É a condição para armar. */
-  get calibragemPronta(): boolean {
-    return this.limiar !== null;
   }
 
   /** Quantas amostras da cena parada já entraram, de quantas são precisas. */
@@ -258,6 +252,9 @@ export class Visor {
     }
     this.engine = new PhotocellEngine(cfg, new RoiRect(0, this.largura, 0, this.altura), this.altura);
     this.engine.seedCalibration(limiar, this.calibrador?.stats.sigma ?? 1.0, 1);
+    // `seedCalibration` pede para zerar o differencer, e aqui isso é errado: ele vem rodando sem
+    // parar desde que a câmera abriu, com o quadro anterior sendo o imediatamente anterior. Zerar
+    // custaria um quadro sem medição logo no instante do armar.
     this.engine.effects.length = 0;
     this.perdidos = 0;
     this.cronometrando = true;

@@ -2,7 +2,7 @@
  * Tela do app. Sem framework de propósito: uma página, sem dependências, funciona offline e abre
  * instantaneamente num celular na arena.
  */
-import { analyzeVideo, configForFile, probeFramePeriod, roiPixels, type AnalysisResult } from "./analyze.ts";
+import { analyzeVideo, configForFile, probeFramePeriod, type AnalysisResult } from "./analyze.ts";
 import { defaultConfig } from "./core/photocellConfig.ts";
 import type { RunResult } from "./core/photocellEngine.ts";
 import { formatElapsed } from "./core/timeFormatter.ts";
@@ -12,10 +12,18 @@ import {
   lerCsvInscricoes,
   novoId,
   Store,
-  type Inscricao,
   type Passada,
 } from "./store.ts";
-import { comparacoes, erroEmMs, nomeOrigem, parseTempo, porOrigem, resumoValidacao, textoConferencia } from "./validacao.ts";
+import {
+  comparacoes,
+  erroEmMs,
+  nomeOrigem,
+  origemDe,
+  parseTempo,
+  porOrigem,
+  resumoValidacao,
+  textoConferencia,
+} from "./validacao.ts";
 import { Visor } from "./visor.ts";
 import { probeFileInfo } from "./videoDecoderReader.ts";
 import { supportsFrameCallback } from "./videoStripReader.ts";
@@ -39,9 +47,18 @@ const roi = { lineXFraction: 0.5, bandTopFraction: 0.3, bandBottomFraction: 0.7,
 // retrabalho garantido no meio da prova — e recarregar acontece (bateria, aba fechada, atualização).
 Object.assign(roi, store.roi ?? {});
 
-/** Guarda a linha mirada. Chamada ao soltar o arrasto e ao mexer na largura, não a cada pixel. */
-function guardarRoi(): void {
-  store.salvarRoi({ ...roi });
+/**
+ * Guarda a linha mirada.
+ *
+ * Com espera: cada gravação serializa o histórico inteiro, e o slider de largura dispara dezenas de
+ * eventos por arrasto. Num dia de prova com muitas passadas salvas, gravar a cada pixel travaria o
+ * arrasto justamente quando ele precisa ser preciso.
+ */
+let timerRoi = 0;
+function guardarRoi(agora = false): void {
+  clearTimeout(timerRoi);
+  if (agora) return store.salvarRoi({ ...roi });
+  timerRoi = window.setTimeout(() => store.salvarRoi({ ...roi }), 300);
 }
 
 /** Põe o slider de largura de acordo com a ROI em vigor (na abertura e quando ela muda de fora). */
@@ -355,7 +372,7 @@ palco.addEventListener("pointermove", (ev) => {
 });
 for (const e of ["pointerup", "pointercancel"]) {
   palco.addEventListener(e, () => {
-    if (arrastando !== null) guardarRoi();
+    if (arrastando !== null) guardarRoi(true);
     arrastando = null;
   });
 }
@@ -386,7 +403,7 @@ function moverROI(p: { x: number; y: number }): void {
   roi.stripWidthPx = Math.round(Math.min(40, Math.max(5, w)));
   sincronizarLargura();
   desenharOverlay();
-  guardarRoi();
+  guardarRoi(true);
 };
 
 $<HTMLInputElement>("instante").addEventListener("input", (ev) => {
@@ -806,7 +823,7 @@ function desenharHistorico(): void {
       <div class="sub">${new Date(p.dataMs).toLocaleString("pt-BR")} · bruto ${formatElapsed(
         p.elapsedRawNs,
       )} · q${p.qualidadeLargada}/${p.qualidadeChegada}${p.degradada ? " · degradada" : ""} · ${
-      p.origem === "ao-vivo-mao" ? "ao vivo, na mão" : p.origem === "ao-vivo" ? "ao vivo" : "vídeo"
+      nomeOrigem(origemDe(p))
     }${conferencia}</div></div>`;
 
     // Campo embutido em vez de `prompt()`: a página roda dentro de um visualizador com restrições,
@@ -1235,7 +1252,7 @@ function desenharCartaoVisor(): void {
     ? `#${p.ordem} ${p.competidor}${p.cavalo ? ` / ${p.cavalo}` : ""}${p.categoria ? ` — ${p.categoria}` : ""}`
     : "Sem competidor";
   el.innerHTML = `<div class="resultado">
-    <div class="quem">${escapar(quem)} · ${p.origem === "ao-vivo-mao" ? "ao vivo, na mão" : "ao vivo"}</div>
+    <div class="quem">${escapar(quem)} · ${nomeOrigem(origemDe(p))}</div>
     <div class="tempo ${p.semTempo ? "sat" : ""}">${p.semTempo ? "SAT" : formatElapsed(finalNs)}</div>
     <div>
       <span class="selo q${qualidade}">qualidade ${qualidade} · ±${incerteza.toFixed(2)} ms</span>

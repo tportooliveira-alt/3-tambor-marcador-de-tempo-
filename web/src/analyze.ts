@@ -269,7 +269,6 @@ function medirCena(
     }
   }
   if (melhorInicio < 0) return null;
-  const melhorFim = fila.length > 0 ? melhorInicio : melhorInicio;
 
   // reunir os índices válidos da janela escolhida
   const idx: number[] = [];

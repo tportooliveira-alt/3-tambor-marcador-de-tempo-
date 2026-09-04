@@ -24,8 +24,7 @@ from typing import Dict, List, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from photocell_reference import (  # noqa: E402
     NS_PER_SEC, PhotocellConfig, RoiRect, StripDifferencer, NoiseCalibrator,
-    PhotocellEngine, FrameMeasurement, format_elapsed, compute_threshold,
-    IDLE, ARMED, FINISHED,
+    PhotocellEngine, FrameMeasurement, format_elapsed,
 )
 
 from event_scoring import PENALTY_PER_BARREL_NS, Run, rank_by_category  # noqa: E402
@@ -321,7 +320,6 @@ def run_fsm(cfg: PhotocellConfig, roi: RoiRect, plane_height: int, steps: List[D
         if t == "frames":
             for k in range(s["count"]):
                 ts = s["ts0"] + k * s["period"]
-                rows = s.get("rows", [])
                 m = FrameMeasurement(ts, ts - s["period"], s["full"], s["core"], s["bg"],
                                      list(s.get("stripPrev", [])), list(s.get("stripCur", [])),
                                      list(s.get("stripBg", [])))
