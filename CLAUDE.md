@@ -79,6 +79,21 @@ cd web && node test/e2e-visor.mjs && node test/e2e-sessao.mjs /tmp/prova-sinteti
   botão funcionava**. Sempre usar função de substituição. `e2e-empacotado.mjs` guarda contra isso.
 - **Ler o vídeo inteiro na memória**: `file.arrayBuffer()` gastava 2,3 bytes de RAM por byte de
   vídeo e matava a aba. O leitor lê em fatias de 4 MB e devolve as amostras (`releaseUsedSamples`).
+- **Manter o `<video>` do editor aberto**: custava **0,9 byte por byte de arquivo** (258 MB
+  residentes num clipe de 225 MB) antes mesmo de a análise começar. O editor desenha o primeiro
+  quadro, solta o elemento, e `garantirVideoEditor()` o recria quando alguém percorre o clipe ou
+  pede "ver a largada". Depois: 0,09.
+- **Medir memória por picos absolutos**: `e2e-memoria.mjs` comparava o pico de RSS de duas medições
+  diferentes, então a memória que o navegador não devolve entre uma e outra entrava na conta como se
+  fosse do arquivo — o mesmo código dava 2,6 numa execução e 7,6 na seguinte. Agora a régua zero é
+  tirada na mesma página, antes de o arquivo ser escolhido.
+- **Comparar arquivos de resoluções diferentes** (a armadilha voltou pela porta dos parâmetros
+  padrão): o par era 320×180 contra 960×540, então "memória por byte de arquivo" estava medindo
+  **resolução** — um quadro decodificado 960×540 ocupa 9× um 320×180. Com dois arquivos 960×540 de
+  1.008 quadros, mudando só o tamanho em bytes (1 MB contra 225 MB, pelo `--noise`), o número cai
+  para **0,31** e o custo de só abrir o arquivo para **0,002**. O que NÃO some: a análise custa
+  ~620 MB de memória do navegador nesse clipe, e isso cresce com resolução × quantidade de quadros —
+  por isso a recomendação de clipes de 20 a 25 s não é conselho, é requisito.
 - **Erro medido pelo texto da tela**: `formatElapsed` arredonda para o milésimo, então o "0,000 ms"
   era do arredondamento. Medir sempre em nanossegundos, pelo gancho `window.ultimaAnalise`.
 - **Dois tetos de margem no estimador**: ruído é aleatório (a média corrige), textura é viés (não

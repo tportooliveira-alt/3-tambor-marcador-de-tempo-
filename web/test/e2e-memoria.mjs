@@ -18,7 +18,13 @@ import http from "node:http";
 
 const aqui = path.dirname(fileURLToPath(import.meta.url));
 const dist = process.env.DIST ?? path.resolve(aqui, "../dist");
-const pequeno = process.argv[2] ?? "/tmp/prova-sintetica.mp4";
+// Os dois arquivos têm de ter a MESMA resolução e o MESMO número de quadros, mudando só o tamanho
+// em bytes — senão a conta "memória por byte de arquivo" está medindo resolução, que é outra coisa
+// (um quadro 960×540 decodificado ocupa 9× um 320×180, e isso não tem nada a ver com o leitor):
+//   python3 Tools/gen_test_video.py --out /tmp/mem-leve.mp4 --width 960 --height 540 --fps 240 \
+//     --duration-s 4.2 --start-s 1.0 --finish-s 3.5 --speed 2400 --object-px 200 --noise 0
+//   (o mesmo com --noise 6 gera o pesado: ruído não comprime, e o arquivo passa de 1 MB para 225 MB)
+const pequeno = process.argv[2] ?? "/tmp/mem-leve.mp4";
 const grande = process.argv[3] ?? "/tmp/prova-grande.mp4";
 
 const TIPOS = {
@@ -91,11 +97,24 @@ async function medir(video) {
   try {
     await pagina.goto(`http://127.0.0.1:${porta}/index.html`);
     await pagina.waitForSelector("#analisar", { state: "attached" });
-    await pagina.setInputFiles("#arquivo", video);
-    await pagina.waitForSelector("#editor:not([hidden])", { timeout: 60_000 });
 
+    // A régua zero é ANTES de o arquivo ser escolhido, e nesta MESMA página. Antes ela era tirada
+    // depois de o vídeo estar aberto — o que escondia justamente o custo de mantê-lo aberto — e a
+    // comparação final usava os picos ABSOLUTOS de duas medições diferentes, então a memória que o
+    // navegador não devolve entre uma e outra entrava na conta como se fosse do arquivo. Daí o
+    // número pular de 2,6 para 7,6 entre execuções do mesmo código.
+    await new Promise((r) => setTimeout(r, 800));
     const base = await heap();
     const baseRss = rssNavegador();
+
+    await pagina.setInputFiles("#arquivo", video);
+    await pagina.waitForSelector("#editor:not([hidden])", { timeout: 60_000 });
+    // Quanto custa só TER o arquivo aberto, antes de qualquer análise.
+    let aberturaRss = 0;
+    for (let i = 0; i < 6; i++) {
+      aberturaRss = Math.max(aberturaRss, rssNavegador() - baseRss);
+      await new Promise((r) => setTimeout(r, 250));
+    }
     let pico = base;
     let picoRss = baseRss;
     let vivo = true;
@@ -121,7 +140,7 @@ async function medir(video) {
     await relogio;
 
     const res = await pagina.evaluate(() => window.ultimaAnalise ?? null);
-    return { base, pico, baseRss, picoRss, res, progresso: [...textos].filter(Boolean) };
+    return { base, pico, baseRss, picoRss, aberturaRss, res, progresso: [...textos].filter(Boolean) };
   } finally {
     await pagina.close();
   }
@@ -134,9 +153,9 @@ try {
   checar(tamG > tamP * 2, `o arquivo grande é mesmo bem maior (${MB(tamG)} MB contra ${MB(tamP)} MB)`);
 
   const p = await medir(pequeno);
-  console.log(`pequeno — heap ${MB(p.pico)} MB · navegador ${MB(p.picoRss)} MB · ${p.res?.reader.received} quadros`);
+  console.log(`pequeno — heap ${MB(p.pico)} MB · navegador +${MB(p.picoRss - p.baseRss)} MB (abrir: +${MB(p.aberturaRss)} MB) · ${p.res?.reader.received} quadros`);
   const g = await medir(grande);
-  console.log(`grande  — heap ${MB(g.pico)} MB · navegador ${MB(g.picoRss)} MB · ${g.res?.reader.received} quadros`);
+  console.log(`grande  — heap ${MB(g.pico)} MB · navegador +${MB(g.picoRss - g.baseRss)} MB (abrir: +${MB(g.aberturaRss)} MB) · ${g.res?.reader.received} quadros`);
 
   console.log(`\nprogresso mostrado ao usuário (arquivo grande):`);
   for (const t of g.progresso.slice(0, 6)) console.log(`    "${t}"`);
@@ -145,10 +164,15 @@ try {
   // arquivo, esse número passaria de 1. As faixas guardadas também crescem (≈5 KB por quadro num
   // clipe 960×540), então a margem aceita é folgada — mas muito longe de 1.
   const crescimento = (g.pico - p.pico) / (tamG - tamP);
-  const crescimentoRss = (g.picoRss - p.picoRss) / (tamG - tamP);
-  console.log(`\ncrescimento por byte de arquivo — heap ${crescimento.toFixed(3)} · navegador ${crescimentoRss.toFixed(3)}`);
+  const crescimentoRss = (g.picoRss - g.baseRss - (p.picoRss - p.baseRss)) / (tamG - tamP);
+  const crescimentoAbertura = (g.aberturaRss - p.aberturaRss) / (tamG - tamP);
+  console.log(`\ncrescimento por byte de arquivo — heap ${crescimento.toFixed(3)} · navegador ${crescimentoRss.toFixed(3)} · só abrir ${crescimentoAbertura.toFixed(3)}`);
   checar(crescimento < 0.35, `o heap de JavaScript não acompanha o tamanho do arquivo (${crescimento.toFixed(3)} < 0,35)`);
   checar(crescimentoRss < 0.35, `a memória do navegador não acompanha o tamanho do arquivo (${crescimentoRss.toFixed(3)} < 0,35)`);
+  // Manter o arquivo aberto num `<video>` custava 0,9 byte por byte de arquivo — 258 MB residentes
+  // num clipe de 225 MB, antes de a análise começar. É por isso que o editor solta o elemento e o
+  // recria só quando alguém percorre o clipe.
+  checar(crescimentoAbertura < 0.35, `abrir o arquivo não o traz inteiro para a memória (${crescimentoAbertura.toFixed(3)} < 0,35)`);
   checar(g.pico < 400 * 1048576, `heap abaixo de 400 MB no arquivo grande (${MB(g.pico)} MB)`);
   checar(
     g.progresso.some((t) => /Lendo o vídeo… \d+ MB de \d+ MB/.test(t)),

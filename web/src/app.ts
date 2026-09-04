@@ -107,17 +107,24 @@ for (const id of ["arquivo", "arquivoDoc"]) {
 
 /** Mostra o primeiro quadro do vídeo para o usuário posicionar a linha e a banda. */
 /**
- * O `<video>` do editor fica VIVO enquanto o arquivo estiver aberto.
+ * O `<video>` do editor existe SÓ ENQUANTO ALGUÉM ESTÁ OLHANDO.
  *
- * Antes ele era descartado logo depois de desenhar o primeiro quadro, e com isso o usuário
- * posicionava a linha vermelha sobre uma pista vazia, adivinhando por onde o cavalo passaria — foi
- * exatamente o que aconteceu no primeiro vídeo real ("analisou mas não vi cavalo passando").
- * Mantendo o elemento, dá para percorrer o clipe e, depois da análise, pular para o quadro exato
- * de cada disparo.
+ * Ele é o que permite percorrer o clipe e conferir o quadro de cada disparo — sem isso a linha é
+ * posicionada sobre uma pista vazia, adivinhando por onde o cavalo passou, que foi o que aconteceu
+ * no primeiro vídeo real. Mas mantê-lo vivo custa caro: medido aqui, um clipe de 225 MB deixa
+ * **258 MB residentes** só de o arquivo estar aberto num `<video>`, antes de qualquer análise. Somado
+ * ao que a análise gasta, é memória demais para uma aba de celular — e "carrega e para" é
+ * exatamente o defeito que este projeto já pagou uma vez.
+ *
+ * Então: desenha o primeiro quadro, solta; e recria sob demanda quando o usuário arrasta o controle
+ * ou pede para ver a largada. A primeira busca custa um instante a mais, e a análise roda com a
+ * memória livre.
  */
 let videoEditor: HTMLVideoElement | null = null;
 let urlEditor: string | null = null;
 let buscando = false;
+/** Duração do clipe, guardada para o controle deslizante funcionar sem o `<video>` na memória. */
+let duracaoEditor = 0;
 
 function soltarVideoEditor(): void {
   if (videoEditor !== null) {
@@ -131,13 +138,41 @@ function soltarVideoEditor(): void {
   }
 }
 
+/** Cria o `<video>` do editor se ele não estiver na memória. Devolve `null` se não der. */
+async function garantirVideoEditor(): Promise<HTMLVideoElement | null> {
+  if (videoEditor !== null) return videoEditor;
+  if (arquivo === null) return null;
+  const url = URL.createObjectURL(arquivo);
+  const v = document.createElement("video");
+  v.src = url;
+  v.muted = true;
+  v.playsInline = true;
+  v.setAttribute("playsinline", "");
+  try {
+    await new Promise<void>((res, rej) => {
+      v.addEventListener("loadeddata", () => res(), { once: true });
+      v.addEventListener("error", () => rej(new Error("não consegui reabrir o vídeo")), { once: true });
+    });
+  } catch {
+    URL.revokeObjectURL(url);
+    return null;
+  }
+  videoEditor = v;
+  urlEditor = url;
+  return v;
+}
+
 /** Leva o quadro do editor a um instante do clipe e o desenha. Uma busca por vez. */
 async function irParaInstante(segundos: number): Promise<void> {
-  const v = videoEditor;
-  if (v === null || buscando) return;
+  if (buscando) return;
   buscando = true;
+  const v = await garantirVideoEditor();
+  if (v === null) {
+    buscando = false;
+    return;
+  }
   try {
-    const alvo = Math.max(0, Math.min(v.duration || 0, segundos));
+    const alvo = Math.max(0, Math.min(v.duration || duracaoEditor || 0, segundos));
     if (Math.abs(v.currentTime - alvo) > 0.001) {
       v.currentTime = alvo;
       await new Promise<void>((res) => {
@@ -183,6 +218,7 @@ async function mostrarPrimeiroQuadro(f: File): Promise<void> {
     o.height = videoH;
     $("editor").hidden = false;
     desenharOverlay();
+    duracaoEditor = v.duration || 0;
     const faixa = $<HTMLInputElement>("instante");
     faixa.max = String(v.duration || 1);
     faixa.step = String(Math.max(0.01, (v.duration || 1) / 600));
@@ -223,11 +259,12 @@ async function mostrarPrimeiroQuadro(f: File): Promise<void> {
     $("aviso-taxa").hidden = true;
     aviso(`${(e as Error).message} — escolha o vídeo de novo, ou converta o arquivo antes.`);
   } finally {
-    // O elemento e o endereço ficam vivos de propósito (ver `videoEditor`): é o que permite
-    // percorrer o clipe e conferir o quadro de cada disparo. São soltos quando outro arquivo é
-    // escolhido, em `soltarVideoEditor()`.
+    // Solto assim que o primeiro quadro está desenhado: manter o arquivo aberto num `<video>` custa
+    // o tamanho do arquivo em memória residente (ver `videoEditor`). `garantirVideoEditor()` o
+    // recria na primeira vez que alguém percorrer o clipe.
     videoEditor = v;
     urlEditor = url;
+    soltarVideoEditor();
   }
 }
 
@@ -370,6 +407,9 @@ $("analisar").addEventListener("click", async () => {
     aviso("Este navegador não entrega os quadros do vídeo. No iPhone, use o Safari.");
     return;
   }
+  // A análise é o momento de pico de memória: o leitor, o decodificador e as faixas ao mesmo tempo.
+  // Um `<video>` com o arquivo aberto ao lado disso é o que mata a aba num clipe grande.
+  soltarVideoEditor();
   const ctrl = new AbortController();
   analisando = ctrl;
   $("analisar").hidden = true;
