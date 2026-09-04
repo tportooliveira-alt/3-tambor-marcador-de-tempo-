@@ -58,9 +58,19 @@ node Tools/analisar_video.mjs /tmp/passada.MOV --oficial 14,325 --varrer-linha
 ```
 
 Testes do app web, todos em navegador de verdade: `e2e.mjs` (análise), `e2e-validacao.mjs`
-(conferência com a fotocélula), `e2e-botoes.mjs` (**todos** os controles), `e2e-visor.mjs` (câmera
-ao vivo, com dispositivo falso), `e2e-memoria.mjs` (vídeo grande), `e2e-empacotado.mjs` (as duas
+(conferência com a fotocélula), `e2e-botoes.mjs` (**todos** os controles), `e2e-visor.mjs`
+(cronômetro ao vivo de ponta a ponta, com câmera falsa alimentada por um `.y4m` que tem uma prova
+dentro), `e2e-sessao.mjs` (**várias passadas seguidas**: prova do dia, ROI que sobrevive ao
+recarregamento, arquivo recusado), `e2e-memoria.mjs` (vídeo grande), `e2e-empacotado.mjs` (as duas
 páginas empacotadas, byte a byte).
+
+```bash
+# a câmera falsa do teste do visor (uma prova de verdade dentro do .y4m)
+python3 Tools/gen_test_video.py --out /tmp/visor-fake.mp4 --width 640 --height 360 --fps 30 \
+  --duration-s 8 --start-s 2.5 --finish-s 5.5 --speed 600 --object-px 60 --exposure-frac 1.0 --noise 2
+ffmpeg -y -i /tmp/visor-fake.mp4 -pix_fmt yuv420p /tmp/visor-fake.y4m
+cd web && node test/e2e-visor.mjs && node test/e2e-sessao.mjs /tmp/prova-sintetica.mp4
+```
 
 ## Armadilhas já pagas — não repetir
 
@@ -98,7 +108,15 @@ Branch de trabalho: `claude/ios-sports-timing-system-65t7ng`. Página publicada 
    Actions. Aí a página instala na tela de início e **abre sem sinal**.
 3. **Nunca foi medida uma passada real.** O passo que vale mais que qualquer refatoração: um vídeo
    de verdade com o tempo da fotocélula oficial ao lado. A tela de conferência já está pronta para
-   receber e acumular (viés, erro médio, quantos couberam na incerteza, quebra por qualidade).
+   receber e acumular (viés, erro médio, quantos couberam na incerteza, quebra por qualidade **e por
+   caminho** — vídeo contra ao vivo).
+   **O experimento de campo**: o cronômetro ao vivo (aba Mirar) agora salva a passada como qualquer
+   outra, com `origem: "ao-vivo"`. Um celular não faz as duas coisas na mesma passada, então o
+   protocolo é alternar — uma ao vivo, a seguinte gravada — e comparar as duas colunas depois de 8 a
+   10 de cada. No teste sintético a 30 fps o refinamento sub-quadro **cai para qualidade 0**: a
+   30 quadros por segundo o bordo anda mais que a largura da faixa entre um quadro e outro, então
+   não sobra pixel interior para o ajuste. O app declara isso (±51 ms no cenário do teste, contra
+   ±0,84 ms do arquivo) em vez de fingir precisão.
 4. **Metal no iOS** foi pedido e recusado com números: a ROI tem 1.400 a 10.000 pixels, custa
    dezenas de µs na CPU contra 50-200 µs só de despacho na GPU, num orçamento de 4.166 µs por
    quadro. O app já mostra `custo/quadro µs` no painel — é esse número que decide, no aparelho.

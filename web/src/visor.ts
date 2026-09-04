@@ -1,14 +1,22 @@
 /**
- * Visor ao vivo: mirar o tripé, achar a altura da banda e conferir a luz — ANTES de gravar.
+ * Visor ao vivo: mirar o tripé, achar a altura da banda, conferir a luz — e cronometrar na hora.
  *
- * Por que não cronometra: pelo navegador a câmera entrega 30 ou 60 quadros por segundo, então cada
- * gatilho valeria ±8 a ±17 ms. O tempo de prova continua saindo do arquivo em câmera lenta, onde há
- * 240 quadros por segundo e o refinamento sub-quadro funciona. Aqui 30 quadros bastam: ninguém
- * precisa de milésimo para apontar um tripé.
+ * Duas coisas moram aqui, e é bom não confundi-las:
  *
- * O que ele resolve de verdade: hoje a linha é posicionada DEPOIS, num quadro congelado, com a
- * gravação já feita. O visor usa o MESMO objeto `roi` da análise, então mirar ao vivo já deixa a
- * faixa no lugar certo para o vídeo que vem a seguir.
+ * 1. **Mirar.** O visor usa o MESMO objeto `roi` da análise, então apontar ao vivo já deixa a faixa
+ *    no lugar certo para o vídeo que vem a seguir — em vez de posicionar a linha depois, num quadro
+ *    congelado, adivinhando por onde o cavalo passou.
+ * 2. **Cronometrar ao vivo.** A máquina de estados é a mesma do arquivo; o que muda é a física da
+ *    captura: pelo navegador a câmera entrega 30 ou 60 quadros por segundo, contra 240 do arquivo em
+ *    câmera lenta. Quanto isso custa em milésimos NÃO se supõe aqui — cada passada sai com a
+ *    incerteza que o próprio estimador calculou, e a conferência contra a fotocélula oficial é que
+ *    diz se o caminho ao vivo serve.
+ *
+ * O relógio dos quadros é o do quadro, não o do monitor: `requestVideoFrameCallback` dispara uma vez
+ * por quadro da câmera e traz o carimbo daquele quadro. Com `requestAnimationFrame` (o laço antigo)
+ * uma câmera de 30 quadros num monitor de 60 Hz era processada DUAS vezes por quadro — a repetição
+ * entrava na calibragem de ruído como se a cena estivesse parada, e a "taxa medida" era a do monitor,
+ * que ia direto para o período do estimador.
  */
 import { NoiseCalibrator } from "./core/noiseCalibrator.ts";
 import { PhotocellEngine, PhotocellState, type RunResult } from "./core/photocellEngine.ts";
@@ -31,16 +39,40 @@ export interface VisorCallbacks {
   onErro: (mensagem: string) => void;
 }
 
+/** O que o `requestVideoFrameCallback` entrega — só os campos que interessam aqui. */
+interface QuadroMeta {
+  mediaTime: number;
+  presentationTime: number;
+  presentedFrames: number;
+}
+
+type VideoComCallback = HTMLVideoElement & {
+  requestVideoFrameCallback?: (cb: (agora: number, meta: QuadroMeta) => void) => number;
+  cancelVideoFrameCallback?: (handle: number) => void;
+};
+
+/**
+ * Calibragem mais curta que a do arquivo (240 amostras), de propósito: a 30 quadros por segundo,
+ * 240 amostras são 8 segundos de tela dizendo "medindo a cena parada…", o que parece travamento.
+ * 60 amostras são 2 s a 30 quadros e 1 s a 60 — o bastante para média e desvio-padrão do ruído.
+ */
+const AMOSTRAS_CALIBRACAO = 60;
+
+/** Intervalo plausível entre dois quadros de câmera, em ms. Fora disso houve buraco. */
+const DT_MIN_MS = 0.5;
+const DT_MAX_MS = 500;
+
 /** Estado de uma sessão do visor. Só existe uma por vez. */
 export class Visor {
   private stream: MediaStream | null = null;
-  private readonly video: HTMLVideoElement;
+  private readonly video: VideoComCallback;
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly roi: VisorRoi;
   private readonly cb: VisorCallbacks;
   private rodando = false;
   private timer = 0;
+  private handleQuadro = 0;
   private differencer: StripDifferencer | null = null;
   private calibrador: NoiseCalibrator | null = null;
   private limiar: number | null = null;
@@ -52,9 +84,24 @@ export class Visor {
   private altura = 0;
   private ultimoTs = 0;
   private fps = 0;
+  /** Verdadeiro quando os quadros chegam por `requestVideoFrameCallback` (um por quadro da câmera). */
+  private porQuadro = false;
+  /** Carimbo do quadro anterior, em ms, na base de tempo escolhida. */
+  private ultimoQuadroMs = -1;
+  /** `mediaTime` é o carimbo do próprio quadro; só se ele se mostrar inútil é que se usa o da tela. */
+  private usarMediaTime = true;
+  private quadrosVistos = 0;
+  private ultimoPresented = -1;
+  private perdidos = 0;
+  /**
+   * Ensaio: aceita a chegada poucos segundos depois da largada, para testar com a mão. Numa prova de
+   * verdade as janelas longas é que protegem — o rabo do cavalo e a poeira passam na linha logo
+   * depois da largada, e com janela curta parariam o cronômetro.
+   */
+  ensaio = false;
 
   constructor(video: HTMLVideoElement, canvas: HTMLCanvasElement, roi: VisorRoi, cb: VisorCallbacks) {
-    this.video = video;
+    this.video = video as VideoComCallback;
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d", { willReadFrequently: true, alpha: false })!;
     this.roi = roi;
@@ -68,6 +115,20 @@ export class Visor {
   /** A taxa real medida (não a pedida): é ela que diz o que o navegador está realmente entregando. */
   get taxaMedida(): number {
     return this.fps;
+  }
+
+  /** Quadros que a câmera produziu e a página não recebeu. Entra no registro da passada. */
+  get quadrosPerdidos(): number {
+    return this.perdidos;
+  }
+
+  /** Um quadro da câmera por chamada (`true`) ou o laço da tela, que repete quadros (`false`). */
+  get porQuadroDaCamera(): boolean {
+    return this.porQuadro;
+  }
+
+  get armado(): boolean {
+    return this.cronometrando;
   }
 
   async abrir(): Promise<void> {
@@ -107,7 +168,9 @@ export class Visor {
     }
     this.rodando = true;
     this.reiniciarMedicao();
-    this.laco();
+    this.porQuadro = typeof this.video.requestVideoFrameCallback === "function";
+    if (this.porQuadro) this.agendarQuadro();
+    else this.timer = requestAnimationFrame(this.laco);
   }
 
   /**
@@ -117,6 +180,7 @@ export class Visor {
   fechar(): void {
     this.rodando = false;
     cancelAnimationFrame(this.timer);
+    this.video.cancelVideoFrameCallback?.(this.handleQuadro);
     this.video.srcObject = null;
     for (const t of this.stream?.getTracks() ?? []) t.stop();
     this.stream = null;
@@ -129,22 +193,39 @@ export class Visor {
     this.limiar = null;
     this.engine = null;
     this.cronometrando = false;
+    this.ultimoQuadroMs = -1;
+    this.quadrosVistos = 0;
+    this.ultimoPresented = -1;
+    this.perdidos = 0;
+    this.usarMediaTime = true;
   }
 
   /**
    * Arma o cronômetro ao vivo.
    *
-   * A PRECISÃO AQUI É OUTRA, e isso não é detalhe de rodapé: o navegador entrega 30 ou 60 quadros
-   * por segundo, então cada gatilho vale ±8 a ±17 ms, contra ±0,8 ms do arquivo em câmera lenta.
-   * Serve para treino e conferência; para prova valendo, o vídeo continua sendo o caminho.
+   * A precisão aqui é outra, e não se finge o contrário: a taxa é a que o navegador entregar, a
+   * duração de exposição não é informada por API nenhuma (assume-se E = P, a hipótese mais
+   * generosa), e o resultado sai com a incerteza que o estimador conseguir sustentar — quando a
+   * hipótese não se sustenta, ele cai para qualidade 1 ou 0 com intervalo largo, que é o
+   * comportamento honesto.
    */
   armar(): void {
     if (this.differencer === null || this.limiar === null) return;
     const cfg = { ...this.cfg };
     cfg.frameRateHz = Math.max(15, Math.round(this.fps || 30));
     cfg.exposureNs = Math.round(1e9 / cfg.frameRateHz);
+    // vídeo de câmera traz curva de tom, como o arquivo: linearizar antes da fração de exposição
+    cfg.gamma = 2.2;
+    if (this.ensaio) {
+      cfg.startLockoutNs = 500_000_000;
+      cfg.frameResumeNs = 1_500_000_000;
+      cfg.finishArmNs = 2_000_000_000;
+      cfg.finishLockoutNs = 500_000_000;
+    }
     this.engine = new PhotocellEngine(cfg, new RoiRect(0, this.largura, 0, this.altura), this.altura);
     this.engine.seedCalibration(this.limiar, this.calibrador?.stats.sigma ?? 1.0, 1);
+    this.engine.effects.length = 0;
+    this.perdidos = 0;
     this.cronometrando = true;
   }
 
@@ -153,19 +234,68 @@ export class Visor {
     this.cronometrando = false;
   }
 
+  /** Um quadro da câmera. `agendarQuadro` se re-agenda antes de processar, para não perder o próximo. */
+  private agendarQuadro(): void {
+    this.handleQuadro = this.video.requestVideoFrameCallback!((_agora, meta) => {
+      if (!this.rodando) return;
+      this.agendarQuadro();
+      this.processar(this.carimbo(meta), meta.presentedFrames);
+    });
+  }
+
+  /**
+   * O carimbo do quadro, em ms.
+   *
+   * `mediaTime` é o tempo do PRÓPRIO quadro na linha do tempo da mídia — o análogo do que o caminho
+   * de arquivo usa. `presentationTime` é quando o navegador entregou o quadro para composição, e
+   * carrega o atraso do agendamento. A escolha é feita nos primeiros quadros e depois congela: mudar
+   * de base de tempo no meio de uma passada trocaria o zero do cronômetro.
+   */
+  private carimbo(meta: QuadroMeta): number {
+    const tela = Number.isFinite(meta.presentationTime) ? meta.presentationTime : performance.now();
+    if (!this.usarMediaTime) return tela;
+    const t = meta.mediaTime * 1000;
+    if (!Number.isFinite(t)) {
+      this.usarMediaTime = false;
+      return tela;
+    }
+    if (this.quadrosVistos < 8 && this.ultimoQuadroMs >= 0) {
+      const dt = t - this.ultimoQuadroMs;
+      if (!(dt > DT_MIN_MS && dt < DT_MAX_MS)) {
+        this.usarMediaTime = false;
+        return tela;
+      }
+    }
+    return t;
+  }
+
+  /** O laço da tela: só quando o navegador não tem `requestVideoFrameCallback`. */
   private laco = (): void => {
     if (!this.rodando) return;
     this.timer = requestAnimationFrame(this.laco);
+    this.processar(performance.now(), -1);
+  };
+
+  private processar(quadroMs: number, presented: number): void {
     const v = this.video;
     if (v.readyState < 2 || v.videoWidth === 0) return;
 
-    // taxa real medida entre quadros apresentados
-    const agora = performance.now();
-    if (this.ultimoTs > 0) {
-      const dt = agora - this.ultimoTs;
-      if (dt > 0) this.fps = this.fps === 0 ? 1000 / dt : this.fps * 0.9 + (1000 / dt) * 0.1;
+    // Taxa real medida entre quadros DA CÂMERA (ou da tela, no caminho de reserva).
+    const dt = this.ultimoQuadroMs >= 0 ? quadroMs - this.ultimoQuadroMs : 0;
+    if (dt > DT_MIN_MS && dt < DT_MAX_MS) {
+      this.fps = this.fps === 0 ? 1000 / dt : this.fps * 0.9 + (1000 / dt) * 0.1;
     }
-    this.ultimoTs = agora;
+    this.ultimoQuadroMs = quadroMs;
+    this.quadrosVistos++;
+
+    // Quadro que a câmera produziu e a página não recebeu: o candidato em andamento não vale mais.
+    if (presented >= 0) {
+      if (this.ultimoPresented >= 0 && presented > this.ultimoPresented + 1) {
+        this.perdidos += presented - this.ultimoPresented - 1;
+        this.engine?.framesDropped();
+      }
+      this.ultimoPresented = presented;
+    }
 
     const vw = v.videoWidth;
     const vh = v.videoHeight;
@@ -185,6 +315,7 @@ export class Visor {
       this.largura = w;
       this.altura = h;
       const cfg = defaultConfig();
+      cfg.calibrationSamples = AMOSTRAS_CALIBRACAO;
       this.differencer = new StripDifferencer(new RoiRect(0, w, 0, h), w, h, cfg.coreWidth);
       this.calibrador = new NoiseCalibrator(cfg);
       this.limiar = null;
@@ -201,7 +332,7 @@ export class Visor {
       luma[i] = (0.2126 * img[p] + 0.7152 * img[p + 1] + 0.0722 * img[p + 2] + 0.5) | 0;
     }
 
-    const m = this.differencer.process(luma, w, Math.round(agora * 1e6));
+    const m = this.differencer.process(luma, w, Math.round(quadroMs * 1e6));
     if (m === null) {
       this.cb.onQuadro(this.fps, 0, this.limiar, false);
       return;
@@ -219,6 +350,10 @@ export class Visor {
       eng.frame(m);
       // A engine pede tempos futuros (fim do bloqueio, rearme); aqui o relógio é o do quadro.
       eng.wakeup(m.tsNs);
+      // Os efeitos NÃO são decoração: ao (re)armar a chegada a engine manda zerar o differencer, e
+      // sem isso a primeira diferença depois do bloqueio compara quadros distantes e dispara sozinha.
+      for (const e of eng.effects) if (e.kind === "resetDifferencer") this.differencer.reset();
+      eng.effects.length = 0;
       const r = eng.result;
       const decorrido =
         eng.state === PhotocellState.RUNNING || eng.state === PhotocellState.AWAITING_FINISH
@@ -226,5 +361,5 @@ export class Visor {
           : null;
       this.cb.onCronometro(eng.state, decorrido, r);
     }
-  };
+  }
 }

@@ -143,6 +143,16 @@
        com tempo oficial digitado. -->
   <div class="cartao" id="cartaoConferencia" hidden>
     <h2>Conferência com a cronometragem oficial</h2>
+    <!-- O padrão é a prova aberta: o viés de HOJE é o que interessa num dia de calibração, e somar
+         as passadas de teste de ontem contaminaria o número. -->
+    <div class="linha" id="escopoLinha" hidden>
+      <label for="escopoConferencia">Somar</label>
+      <select id="escopoConferencia">
+        <option value="prova">só esta prova</option>
+        <option value="tudo">todo o histórico</option>
+      </select>
+      <span class="detalhe" id="escopoNome"></span>
+    </div>
     <div id="resumoConferencia"></div>
     <div class="linha">
       <button id="copiarConferencia" class="botao">Ver / copiar a tabela</button>
@@ -162,9 +172,10 @@
 <!-- ------------------------------------------------------------------ visor ao vivo -->
 <section id="aba-visor" class="aba">
   <div class="cartao">
-    <h2>Mirar a câmera</h2>
-    <p class="dica">Aponte o celular e ajuste a linha <b>antes</b> de gravar. A faixa que você
-       posicionar aqui é a mesma que a análise vai usar no vídeo.</p>
+    <h2>Mirar e cronometrar ao vivo</h2>
+    <p class="dica">Aponte o celular e ajuste a linha <b>antes</b> de gravar: a faixa que você
+       posicionar aqui é a mesma que a análise vai usar no vídeo. Com a linha no lugar, dá para
+       <b>armar e cronometrar na hora</b>, sem gravar nada.</p>
     <div class="linha">
       <button id="abrirVisor" class="botao grande primario">Abrir a câmera</button>
       <button id="fecharVisor" class="botao" hidden>Desligar</button>
@@ -181,15 +192,23 @@
         <button id="armarVisor" class="botao grande">Armar o cronômetro</button>
         <button id="desarmarVisor" class="botao" hidden>Parar</button>
       </div>
+      <label class="linha" for="visorEnsaio">
+        <input type="checkbox" id="visorEnsaio">
+        <span class="detalhe">Ensaio: aceita a chegada 2 s depois da largada (para testar com a
+              mão). Numa prova de verdade deixe desligado — o rabo do cavalo e a poeira passam na
+              linha logo depois da largada e parariam o cronômetro cedo.</span>
+      </label>
       <div id="visorTempo" hidden>
         <div class="tempo" id="visorRelogio">0.000</div>
         <p class="detalhe" id="visorFase"></p>
       </div>
+      <div id="resultadoVisor" hidden></div>
     </div>
-    <p class="dica"><b>O cronômetro ao vivo mede em ±17 ms, não no milésimo.</b> Pelo navegador a
-       câmera entrega 30 ou 60 quadros por segundo, contra 240 do vídeo em câmera lenta. Serve para
-       treino e conferência; para prova valendo, grave e use a aba <b>Passada</b>, que chega a
-       ±0,8 ms.</p>
+    <p class="dica"><b>Aqui a câmera é a do navegador: 30 ou 60 quadros por segundo, contra 240 do
+       vídeo em câmera lenta.</b> Cada passada sai com a incerteza que o próprio app calculou —
+       nenhum número é prometido de antemão. Para saber se este caminho serve, digite o tempo da
+       fotocélula em algumas passadas de cada tipo (ao vivo e gravadas) e olhe a linha
+       <b>“por caminho”</b> na aba Histórico: é ela que compara os dois.</p>
   </div>
 </section>
 
@@ -229,11 +248,40 @@
           bem mais que os ±2 ms da quantização, porque quando o refinamento falha a janela honesta é
           maior. Causa mais comum: <b>pelagem malhada ou arreios</b> na faixa, e baixo contraste.</li>
     </ul>
+    <h2>Roteiro do dia de calibração</h2>
+    <ol>
+      <li><b>Antes de tudo</b>: aba <b>Prova</b> → criar uma prova com o nome do dia (ex.:
+          <i>Calibração 04/09</i>). Tudo que for salvo fica agrupado nela, e é isso que faz a
+          conferência somar só o dia de hoje.</li>
+      <li><b>Monte o tripé e não mexa mais.</b> Aba <b>Mirar</b> → apontar → arrastar a linha
+          vermelha até onde o cavalo cruza → conferir que a barra acende quando algo passa. A linha
+          fica guardada, inclusive se a página recarregar.</li>
+      <li><b>Passada gravada</b>: gravar em câmera lenta → aba Passada → escolher o vídeo → conferir
+          que diz <b>240 quadros por segundo</b> → arrastar “procurar o cavalo” para ver se a linha
+          está no caminho dele → <b>Analisar</b> → <b>ver a largada</b> para confirmar que disparou
+          no cavalo → digitar o tempo do painel → <b>Salvar</b>.</li>
+      <li><b>Passada ao vivo</b>: aba Mirar → <b>Abrir a câmera</b> → esperar sair “medindo a cena
+          parada…” → <b>Armar o cronômetro</b> → o tempo fecha sozinho → digitar o tempo do painel →
+          <b>Salvar</b>.</li>
+      <li><b>De vez em quando</b>: aba <b>Histórico</b> → olhar o viés, o erro médio e “quantos
+          couberam na incerteza”, nas linhas <b>por caminho</b>. Viés constante é erro sistemático
+          (dá para corrigir); espalhado é ruído.</li>
+      <li><b>No fim</b>: <b>Ver / copiar a tabela</b> e me mandar o texto.</li>
+    </ol>
+    <p class="dica"><b>Antes de sair de casa:</b> 240 quadros por segundo a 1080p gastam cerca de
+       <b>400 MB por minuto</b> de gravação — confira espaço e bateria. Grave clipes de
+       <b>20 a 25 s</b> por passada; clipe longo trava na hora de o iPhone exportar. O modo ao vivo
+       mantém a tela ligada e a câmera aberta: entre passadas, desligue.</p>
+
     <h2>Limites, ditos na cara</h2>
     <ul>
-      <li>A aba <b>Mirar</b> tem câmera ao vivo, mas ela mede em <b>±8 a ±17 ms</b> — o navegador
-          entrega 30 ou 60 quadros por segundo, não 240. Serve para apontar o tripé e para treino.
-          <b>O milésimo só sai do vídeo gravado em câmera lenta</b>, na aba Passada.</li>
+      <li>A aba <b>Mirar</b> cronometra ao vivo, mas com a câmera do navegador: 30 ou 60 quadros
+          por segundo, não 240. Cada passada sai com a incerteza que o app calculou; quanto isso
+          custa de verdade é o que a conferência com a fotocélula vai dizer. <b>O milésimo provado
+          até aqui é o do vídeo em câmera lenta</b>, na aba Passada.</li>
+      <li>Um celular não faz as duas coisas na mesma passada: enquanto o navegador está com a câmera
+          aberta, o app Câmera não está gravando. Para comparar, <b>alterne</b> — uma ao vivo, a
+          seguinte gravada.</li>
       <li>A calibragem é refeita a cada vídeo, de propósito: ela mede <b>aquela</b> cena, naquela luz.
           Não é uma configuração que fique salva.</li>
       <li>A exposição do quadro não vem no arquivo: o app assume o pior caso e <b>aumenta a

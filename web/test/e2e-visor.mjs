@@ -6,6 +6,19 @@
  * O Chromium aceita `--use-file-for-fake-video-capture` com um arquivo .y4m e o entrega como se
  * fosse a câmera. É o único jeito de exercitar `getUserMedia` sem hardware — e sem isso o visor
  * seria a única tela do app que ninguém nunca executou.
+ *
+ * O arquivo tem uma PROVA de verdade dentro (dois cruzamentos), então o cronômetro ao vivo é
+ * exercitado de ponta a ponta — armar, disparar, fechar o tempo, digitar o oficial e salvar:
+ *
+ *   python3 Tools/gen_test_video.py --out /tmp/visor-fake.mp4 --width 640 --height 360 --fps 30 \
+ *     --duration-s 8 --start-s 2.5 --finish-s 5.5 --speed 600 --object-px 60 \
+ *     --exposure-frac 1.0 --noise 2 > /tmp/visor-fake.json
+ *   ffmpeg -y -i /tmp/visor-fake.mp4 -pix_fmt yuv420p /tmp/visor-fake.y4m
+ *
+ * O Chromium repete o arquivo em laço, e ele começa e termina com a pista vazia — a emenda não
+ * produz diferença nenhuma, então não dispara nada. Os cruzamentos ficam a 2,5 s e 5,5 s, de modo
+ * que dois disparos consecutivos distam 3,0 s (largada→chegada) ou 5,0 s (chegada→largada seguinte);
+ * qual dos dois sai depende de onde o laço estava quando o cronômetro foi armado.
  */
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
@@ -95,8 +108,61 @@ try {
   );
   const fase = await pagina.textContent("#visorFase");
   console.log(`    fase: ${fase}`);
-  checar(/precisão ao vivo ±\d+ ms/.test(fase), "o cronômetro declara a precisão ao vivo, sem esconder");
+  checar(/\d+ quadros por segundo/.test(fase), "o cronômetro mostra a taxa medida, sem cravar precisão");
   checar(await pagina.isVisible("#desarmarVisor"), "o botão de parar apareceu");
+
+  // --- a passada ao vivo, de ponta a ponta ---------------------------------------------------
+  // Rearmar com o "ensaio" ligado: sem ele a chegada só arma 10 s depois da largada (que é o certo
+  // numa prova de verdade, onde poeira e rabo de cavalo passam na linha logo depois).
+  await pagina.click("#desarmarVisor");
+  await pagina.check("#visorEnsaio");
+  await pagina.click("#armarVisor");
+  checar(!(await pagina.isVisible("#resultadoVisor")), "armar limpou o cartão anterior");
+
+  await pagina.waitForSelector("#resultadoVisor:not([hidden])", { timeout: 60_000 });
+  const medido = await pagina.evaluate(() => {
+    const el = document.getElementById("resultadoVisor");
+    return {
+      tempo: el.querySelector(".tempo")?.textContent?.trim(),
+      selo: el.querySelector(".selo")?.textContent?.trim(),
+      detalhe: el.querySelector(".detalhe")?.textContent?.replace(/\s+/g, " ").trim(),
+    };
+  });
+  console.log(`    ao vivo: ${medido.tempo} · ${medido.selo}`);
+  console.log(`    ${medido.detalhe}`);
+  checar(/^\d+\.\d{3}$/.test(medido.tempo ?? ""), `o tempo ao vivo fechou (${medido.tempo})`);
+  checar(/qualidade \d · ±\d+[.,]\d+ ms/.test(medido.selo ?? ""), `o cartão declara qualidade e incerteza (${medido.selo})`);
+
+  // Os dois intervalos fisicamente possíveis no clipe em laço. Não é frouxidão: qualquer outro
+  // valor significaria disparo em coisa que não é o objeto.
+  const segundos = Number(medido.tempo);
+  const alvo = [3.0, 5.0].reduce((a, b) => (Math.abs(b - segundos) < Math.abs(a - segundos) ? b : a));
+  const erroMs = (segundos - alvo) * 1000;
+  console.log(`    verdade mais próxima ${alvo.toFixed(3)} s · erro ${erroMs.toFixed(1)} ms`);
+  checar(Math.abs(erroMs) < 60, `o tempo ao vivo bate com a verdade (erro ${erroMs.toFixed(1)} ms)`);
+
+  // digitar o oficial e salvar: é isso que faz a passada ao vivo entrar na conferência
+  await pagina.fill("#visorOficial", alvo.toFixed(3).replace(".", ","));
+  const veredicto = await pagina.textContent("#visorErroOficial");
+  console.log(`    conferência: ${veredicto}`);
+  // Exigir "dentro", não só que a conta apareça: o intervalo declarado TEM de conter o erro real —
+  // é a mesma regra que o teste do caminho de arquivo cobra, e é o princípio do projeto.
+  checar(/dentro do ±/.test(veredicto ?? ""), `a incerteza declarada cobre o erro real (${veredicto})`);
+
+  await pagina.click("#visorSalvar");
+  await pagina.click('#abas button[data-aba="historico"]');
+  const item = await pagina.textContent("#listaHistorico");
+  checar(/ao vivo/.test(item ?? ""), "a passada aparece no histórico marcada como ao vivo");
+  const guardada = await pagina.evaluate(() => {
+    const d = JSON.parse(localStorage.getItem("fotocelula.dados.v1") ?? "{}");
+    return (d.passadas ?? []).map((p) => p.origem);
+  });
+  checar(guardada.length === 1 && guardada[0] === "ao-vivo", `gravada com origem "ao-vivo" (${guardada.join(",")})`);
+  // Voltar para a aba fecha o ciclo: a câmera foi desligada ao sair, então tem de reabrir aqui
+  // para que a verificação seguinte (sair desliga) signifique alguma coisa.
+  await pagina.click('#abas button[data-aba="visor"]');
+  await pagina.click("#abrirVisor");
+  await pagina.waitForFunction(() => document.getElementById("visorVideo")?.srcObject !== null, null, { timeout: 15_000 });
 
   // sair da aba TEM de desligar a câmera (aparelho quente estraga a medição depois)
   await pagina.click('#abas button[data-aba="passada"]');

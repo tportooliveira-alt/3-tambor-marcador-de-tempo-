@@ -9,7 +9,7 @@
  *
  * Tudo aqui é função pura, sem DOM, para poder rodar em `node --test`.
  */
-import type { Passada } from "./store.ts";
+import type { Origem, Passada } from "./store.ts";
 
 const NS_POR_S = 1_000_000_000;
 
@@ -40,6 +40,31 @@ export function parseTempo(texto: string): number | null {
   }
   if (!Number.isFinite(segundos) || segundos <= 0) return null;
   return Math.round(segundos * NS_POR_S);
+}
+
+/**
+ * De onde veio o tempo. Passada antiga não tem o campo e é, por definição, análise de arquivo — era
+ * o único caminho que existia quando ela foi salva.
+ */
+export const origemDe = (p: Passada): Origem => (p.origem === "ao-vivo" ? "ao-vivo" : "video");
+
+/** Nome do caminho para a tela e para o texto colável. */
+export const nomeOrigem = (o: Origem): string => (o === "ao-vivo" ? "ao vivo" : "vídeo");
+
+/**
+ * Separa as passadas pelos dois caminhos, na ordem em que interessa ler.
+ *
+ * É esta divisão que responde a pergunta prática: o cronômetro ao vivo (30 ou 60 quadros por
+ * segundo) erra o suficiente para não servir? Só a comparação de viés e erro médio contra a MESMA
+ * fotocélula responde — e ela precisa de vários casos de cada lado, não de um.
+ */
+export function porOrigem(passadas: Passada[]): { origem: Origem; passadas: Passada[] }[] {
+  const saida: { origem: Origem; passadas: Passada[] }[] = [];
+  for (const o of ["video", "ao-vivo"] as Origem[]) {
+    const fatia = passadas.filter((p) => origemDe(p) === o);
+    if (fatia.length > 0) saida.push({ origem: o, passadas: fatia });
+  }
+  return saida;
 }
 
 /** Quantas casas decimais o oficial trouxe — 2 casas significam ±5 ms de arredondamento NA REFERÊNCIA. */
@@ -156,8 +181,21 @@ export function textoConferencia(passadas: Passada[]): string {
   for (const f of r.porQualidade) {
     l.push(`  qualidade ${f.qualidade}: ${f.n} caso(s) · viés ${erroEmMs(f.viesMs * 1e6)} · |erro| médio ${f.erroAbsMedioMs.toFixed(1).replace(".", ",")} ms`);
   }
+  // A quebra por caminho é o que decide se o cronômetro ao vivo serve para treino. Só aparece
+  // quando há os dois — com um só, a comparação não existe e a linha seria ruído.
+  const fatias = porOrigem(passadas).filter((f) => resumoValidacao(f.passadas) !== null);
+  if (fatias.length > 1) {
+    l.push("");
+    l.push("POR CAMINHO:");
+    for (const f of fatias) {
+      const rf = resumoValidacao(f.passadas)!;
+      l.push(
+        `  ${nomeOrigem(f.origem)}: ${rf.n} caso(s) · viés ${erroEmMs(rf.viesMs * 1e6)} · |erro| médio ${rf.erroAbsMedioMs.toFixed(1).replace(".", ",")} ms · ${rf.dentroDaIncerteza} de ${rf.n} dentro da incerteza`,
+      );
+    }
+  }
   l.push("");
-  l.push("oficial;refinado;bruto;erro_ms;incerteza_ms;qualidade;fps;arquivo");
+  l.push("oficial;refinado;bruto;erro_ms;incerteza_ms;qualidade;fps;origem;arquivo");
   for (const c of comparacoes(passadas)) {
     const p = c.passada;
     l.push(
@@ -169,6 +207,7 @@ export function textoConferencia(passadas: Passada[]): string {
         (c.incertezaNs / 1e6).toFixed(2),
         `q${p.qualidadeLargada}/${p.qualidadeChegada}${p.degradada ? " degradada" : ""}`,
         p.fps.toFixed(0),
+        origemDe(p),
         p.arquivo,
       ].join(";"),
     );

@@ -56,6 +56,26 @@ export interface Passada {
    * com 2 casas muda a leitura de um erro de 5 ms — pode ser arredondamento da própria referência.
    */
   oficialTexto?: string;
+  /**
+   * De onde saiu o tempo: análise de arquivo em câmera lenta ou cronômetro ao vivo pela câmera do
+   * navegador. São dois caminhos com físicas diferentes (240 quadros por segundo contra 30 ou 60),
+   * e é a comparação entre eles, contra a mesma fotocélula, que diz se o ao vivo serve para treino.
+   *
+   * Opcional pela mesma disciplina dos campos acima: passada antiga chega sem ele, e todo leitor
+   * usa `p.origem ?? "video"`.
+   */
+  origem?: Origem;
+}
+
+/** Caminho que produziu o tempo. */
+export type Origem = "video" | "ao-vivo";
+
+/** A linha e a banda, em fração da imagem — a mesma convenção do app nativo. */
+export interface RoiSalva {
+  lineXFraction: number;
+  bandTopFraction: number;
+  bandBottomFraction: number;
+  stripWidthPx: number;
 }
 
 interface Dados {
@@ -63,11 +83,33 @@ interface Dados {
   inscricoes: Inscricao[];
   passadas: Passada[];
   eventoAtual: string | null;
+  /**
+   * A última linha mirada. Com o tripé fixo, a linha é a mesma o dia inteiro — perdê-la a cada
+   * recarga da página é retrabalho garantido no meio da prova.
+   */
+  roi: RoiSalva | null;
 }
 
 const CHAVE = "fotocelula.dados.v1";
 
-const vazio = (): Dados => ({ eventos: [], inscricoes: [], passadas: [], eventoAtual: null });
+const vazio = (): Dados => ({ eventos: [], inscricoes: [], passadas: [], eventoAtual: null, roi: null });
+
+/** Só aceita uma ROI inteira e dentro dos limites: meia ROI posiciona a linha no lugar errado. */
+function roiValida(r: unknown): r is RoiSalva {
+  const o = r as RoiSalva | null;
+  const frac = (v: unknown): boolean => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
+  return (
+    o !== null &&
+    typeof o === "object" &&
+    frac(o.lineXFraction) &&
+    frac(o.bandTopFraction) &&
+    frac(o.bandBottomFraction) &&
+    o.bandTopFraction < o.bandBottomFraction &&
+    typeof o.stripWidthPx === "number" &&
+    o.stripWidthPx >= 3 &&
+    o.stripWidthPx <= 80
+  );
+}
 
 export const novoId = (): string =>
   globalThis.crypto?.randomUUID?.() ?? `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -90,6 +132,7 @@ export class Store {
         inscricoes: Array.isArray(d.inscricoes) ? d.inscricoes : [],
         passadas: Array.isArray(d.passadas) ? d.passadas : [],
         eventoAtual: typeof d.eventoAtual === "string" ? d.eventoAtual : null,
+        roi: roiValida(d.roi) ? d.roi : null,
       };
       if (!this.eventos.some((e) => e.id === this.dados.eventoAtual)) this.dados.eventoAtual = null;
     } catch {
@@ -134,6 +177,16 @@ export class Store {
 
   get eventoAtualId(): string | null {
     return this.dados.eventoAtual;
+  }
+
+  /** A linha guardada, ou `null` se nunca foi mirada neste navegador. */
+  get roi(): RoiSalva | null {
+    return this.dados.roi;
+  }
+
+  salvarRoi(r: RoiSalva): void {
+    this.dados.roi = { ...r };
+    this.salvar();
   }
 
   get eventoAtual(): Evento | null {
@@ -254,7 +307,7 @@ export function csvHistorico(passadas: Passada[]): string {
     "tempo_refinado_s", "tambores_derrubados", "penalidade_s", "sem_tempo", "degradada",
     "qualidade_largada", "qualidade_chegada", "incerteza_largada_ms", "incerteza_chegada_ms",
     "fps", "quadros_perdidos", "arquivo",
-    "tempo_oficial_s", "erro_refinado_ms", "erro_bruto_ms",
+    "tempo_oficial_s", "erro_refinado_ms", "erro_bruto_ms", "origem",
   ];
   const linhas = [cab.join(";")];
   for (const p of passadas) {
@@ -272,6 +325,7 @@ export function csvHistorico(passadas: Passada[]): string {
         oficial === null ? "" : dec(oficial / 1e9, 3),
         oficial === null ? "" : dec((p.elapsedRefinedNs - oficial) / 1e6, 2),
         oficial === null ? "" : dec((p.elapsedRawNs - oficial) / 1e6, 2),
+        p.origem ?? "video",
       ].join(";"),
     );
   }

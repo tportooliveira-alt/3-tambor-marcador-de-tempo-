@@ -4,6 +4,7 @@
  */
 import { analyzeVideo, configForFile, probeFramePeriod, roiPixels, type AnalysisResult } from "./analyze.ts";
 import { defaultConfig } from "./core/photocellConfig.ts";
+import type { RunResult } from "./core/photocellEngine.ts";
 import { formatElapsed } from "./core/timeFormatter.ts";
 import {
   csvClassificacao,
@@ -14,7 +15,7 @@ import {
   type Inscricao,
   type Passada,
 } from "./store.ts";
-import { comparacoes, erroEmMs, parseTempo, resumoValidacao, textoConferencia } from "./validacao.ts";
+import { comparacoes, erroEmMs, nomeOrigem, parseTempo, porOrigem, resumoValidacao, textoConferencia } from "./validacao.ts";
 import { Visor } from "./visor.ts";
 import { probeFileInfo } from "./videoDecoderReader.ts";
 import { supportsFrameCallback } from "./videoStripReader.ts";
@@ -34,6 +35,22 @@ store.aoFalharGravacao = (m) => aviso(m);
 
 // ROI em fração (a mesma convenção do app nativo)
 const roi = { lineXFraction: 0.5, bandTopFraction: 0.3, bandBottomFraction: 0.7, stripWidthPx: 15 };
+// Com o tripé fixo, a linha é a mesma o dia inteiro. Perdê-la a cada recarga da página seria
+// retrabalho garantido no meio da prova — e recarregar acontece (bateria, aba fechada, atualização).
+Object.assign(roi, store.roi ?? {});
+
+/** Guarda a linha mirada. Chamada ao soltar o arrasto e ao mexer na largura, não a cada pixel. */
+function guardarRoi(): void {
+  store.salvarRoi({ ...roi });
+}
+
+/** Põe o slider de largura de acordo com a ROI em vigor (na abertura e quando ela muda de fora). */
+function sincronizarLargura(): void {
+  const campo = $<HTMLInputElement>("largura");
+  campo.value = String(roi.stripWidthPx);
+  $("larguraOut").textContent = String(roi.stripWidthPx);
+}
+sincronizarLargura();
 
 let arquivo: File | null = null;
 let videoW = 0;
@@ -78,7 +95,12 @@ for (const id of ["arquivo", "arquivoDoc"]) {
     const f = (ev.target as HTMLInputElement).files?.[0];
     if (!f) return;
     arquivo = f;
+    // Limpar o cartão, e não só escondê-lo: `store.salvarPassada` guarda a REFERÊNCIA do objeto, de
+    // modo que `passadaAberta` continua apontando para a passada já salva. Um toque em "+ tambor"
+    // depois de trocar de vídeo alteraria uma passada do histórico sem ninguém pedir.
     $("resultado").hidden = true;
+    $("resultado").innerHTML = "";
+    passadaAberta = null;
     await mostrarPrimeiroQuadro(f);
   });
 }
@@ -189,7 +211,17 @@ async function mostrarPrimeiroQuadro(f: File): Promise<void> {
       ` — arraste a linha vermelha até onde o cavalo cruza; as alças ajustam a altura da banda.`;
     mostrarAvisoTaxa();
   } catch (e) {
-    aviso((e as Error).message);
+    // Recusar a análise é melhor que produzir um número errado em silêncio: `arquivo` já foi trocado
+    // lá em cima, mas `videoW`/`videoH`/`fpsArquivo` ainda seriam os do vídeo ANTERIOR — analisar
+    // assim daria um tempo com a geometria errada, sem nenhum aviso.
+    arquivo = null;
+    videoW = 0;
+    videoH = 0;
+    fpsArquivo = 0;
+    $("editor").hidden = true;
+    $("linhaInstante").hidden = true;
+    $("aviso-taxa").hidden = true;
+    aviso(`${(e as Error).message} — escolha o vídeo de novo, ou converta o arquivo antes.`);
   } finally {
     // O elemento e o endereço ficam vivos de propósito (ver `videoEditor`): é o que permite
     // percorrer o clipe e conferir o quadro de cada disparo. São soltos quando outro arquivo é
@@ -284,7 +316,12 @@ palco.addEventListener("pointermove", (ev) => {
   ev.preventDefault();
   moverROI(posicao(ev));
 });
-for (const e of ["pointerup", "pointercancel"]) palco.addEventListener(e, () => (arrastando = null));
+for (const e of ["pointerup", "pointercancel"]) {
+  palco.addEventListener(e, () => {
+    if (arrastando !== null) guardarRoi();
+    arrastando = null;
+  });
+}
 
 function moverROI(p: { x: number; y: number }): void {
   const lim = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
@@ -310,10 +347,9 @@ function moverROI(p: { x: number; y: number }): void {
   roi.bandTopFraction = Math.min(0.98, Math.max(0, Math.min(t, b)));
   roi.bandBottomFraction = Math.max(0.02, Math.min(1, Math.max(t, b)));
   roi.stripWidthPx = Math.round(Math.min(40, Math.max(5, w)));
-  const campo = $<HTMLInputElement>("largura");
-  campo.value = String(roi.stripWidthPx);
-  $("larguraOut").textContent = String(roi.stripWidthPx);
+  sincronizarLargura();
   desenharOverlay();
+  guardarRoi();
 };
 
 $<HTMLInputElement>("instante").addEventListener("input", (ev) => {
@@ -324,6 +360,7 @@ $<HTMLInputElement>("largura").addEventListener("input", (ev) => {
   roi.stripWidthPx = Number((ev.target as HTMLInputElement).value);
   $("larguraOut").textContent = String(roi.stripWidthPx);
   desenharOverlay();
+  guardarRoi();
 });
 
 // ------------------------------------------------------------------ analisar
@@ -425,7 +462,9 @@ function mostrarResultado(res: AnalysisResult, segundos: number): void {
     cavalo: prox?.cavalo ?? "",
     categoria: prox?.categoria ?? "",
     ordem: prox?.ordem ?? 0,
-    eventoId: prox ? store.eventoAtualId : null,
+    // A prova aberta é do DIA, não do competidor: para calibrar ninguém digita nome, e sem isto
+    // toda passada nasceria órfã — e a conferência não teria como somar só a sessão de hoje.
+    eventoId: store.eventoAtualId,
     inscricaoId: prox?.id ?? null,
     elapsedRawNs: r.elapsedRawNs,
     elapsedRefinedNs: r.elapsedRefinedNs,
@@ -439,6 +478,7 @@ function mostrarResultado(res: AnalysisResult, segundos: number): void {
     fps: res.measuredFps,
     quadrosPerdidos: res.missedFrames,
     arquivo: arquivo?.name ?? "",
+    origem: "video",
   };
   passadaAberta = p;
   desenharCartao(segundos, res);
@@ -725,7 +765,9 @@ function desenharHistorico(): void {
       )}</div>
       <div class="sub">${new Date(p.dataMs).toLocaleString("pt-BR")} · bruto ${formatElapsed(
         p.elapsedRawNs,
-      )} · q${p.qualidadeLargada}/${p.qualidadeChegada}${p.degradada ? " · degradada" : ""}${conferencia}</div></div>`;
+      )} · q${p.qualidadeLargada}/${p.qualidadeChegada}${p.degradada ? " · degradada" : ""} · ${
+      p.origem === "ao-vivo" ? "ao vivo" : "vídeo"
+    }${conferencia}</div></div>`;
 
     // Campo embutido em vez de `prompt()`: a página roda dentro de um visualizador com restrições,
     // onde `prompt()` pode simplesmente não abrir — e um botão que não faz nada é pior que nenhum.
@@ -763,14 +805,39 @@ function desenharHistorico(): void {
  * O número que mais importa é o "dentro da incerteza": um app que erra 3 ms avisando "±4 ms" está
  * certo; um que erra 3 ms declarando "±0,8 ms" está mentindo, e é isso que precisa aparecer.
  */
+/**
+ * Escopo do painel: só a prova aberta (padrão) ou o histórico inteiro.
+ *
+ * O padrão é a prova porque um dia de calibração precisa do viés DAQUELE dia: somar as passadas de
+ * teste de ontem faria o número que ele vai usar para julgar o app sair contaminado.
+ */
+let escopoConferencia: "prova" | "tudo" = "prova";
+
+function passadasDaConferencia(): Passada[] {
+  const ev = store.eventoAtualId;
+  if (escopoConferencia === "tudo" || ev === null) return store.passadas;
+  return store.passadas.filter((p) => p.eventoId === ev);
+}
+
 function desenharConferencia(): void {
   const cartao = $("cartaoConferencia");
-  const r = resumoValidacao(store.passadas);
+  // Sem nenhuma passada conferida em lugar nenhum não há painel; havendo, ele fica visível mesmo
+  // que o recorte atual esteja vazio — senão o seletor sumiria junto e não haveria como voltar.
+  cartao.hidden = comparacoes(store.passadas).length === 0;
+  if (cartao.hidden) return;
+
+  const lista = passadasDaConferencia();
+  $<HTMLSelectElement>("escopoConferencia").value = escopoConferencia;
+  const prova = store.eventoAtual;
+  $("escopoLinha").hidden = prova === null;
+  $("escopoNome").textContent = prova === null ? "" : prova.nome;
+
+  const r = resumoValidacao(lista);
   if (!r) {
-    cartao.hidden = true;
+    $("resumoConferencia").innerHTML =
+      '<p class="dica">Nenhuma passada com tempo oficial nesta prova. Escolha "todo o histórico" para ver as anteriores.</p>';
     return;
   }
-  cartao.hidden = false;
   const ms = (v: number): string => v.toFixed(1).replace(".", ",");
   const fatias = r.porQualidade
     .map(
@@ -778,6 +845,25 @@ function desenharConferencia(): void {
         `<div class="sub">qualidade ${f.qualidade}: ${f.n} caso(s) · viés ${erroEmMs(f.viesMs * 1e6)} · |erro| médio ${ms(f.erroAbsMedioMs)} ms</div>`,
     )
     .join("");
+  // A quebra por caminho é a resposta à pergunta prática: o cronômetro ao vivo erra o suficiente
+  // para não servir? Só aparece quando existem os dois — com um só, a comparação não existe.
+  const caminhos = porOrigem(lista)
+    .map((f) => ({ origem: f.origem, resumo: resumoValidacao(f.passadas) }))
+    .filter((x) => x.resumo !== null);
+  const porCaminho =
+    caminhos.length > 1
+      ? '<div class="sub"><b>Por caminho:</b></div>' +
+        caminhos
+          .map(
+            (x) =>
+              `<div class="sub">${nomeOrigem(x.origem)}: ${x.resumo!.n} caso(s) · viés ${erroEmMs(
+                x.resumo!.viesMs * 1e6,
+              )} · |erro| médio ${ms(x.resumo!.erroAbsMedioMs)} ms · ${x.resumo!.dentroDaIncerteza} de ${
+                x.resumo!.n
+              } dentro da incerteza</div>`,
+          )
+          .join("")
+      : "";
   const honesto = r.dentroDaIncerteza === r.n;
   $("resumoConferencia").innerHTML = `
     <div class="detalhe">${r.n} passada(s) com tempo oficial</div>
@@ -787,8 +873,13 @@ function desenharConferencia(): void {
       <div><b>${erroEmMs(r.maiorErroMs * 1e6)}</b><span>maior erro</span></div>
     </div>
     <div class="selo ${honesto ? "q2" : "q0"}">${r.dentroDaIncerteza} de ${r.n} dentro da incerteza declarada</div>
-    ${fatias}`;
+    ${fatias}${porCaminho}`;
 }
+
+$<HTMLSelectElement>("escopoConferencia").addEventListener("change", (ev) => {
+  escopoConferencia = (ev.target as HTMLSelectElement).value === "tudo" ? "tudo" : "prova";
+  desenharConferencia();
+});
 
 $("exportarHistorico").addEventListener("click", () => {
   if (store.passadas.length === 0) return aviso("Histórico vazio.");
@@ -796,8 +887,9 @@ $("exportarHistorico").addEventListener("click", () => {
 });
 
 $("copiarConferencia").addEventListener("click", () => {
-  if (comparacoes(store.passadas).length === 0) return aviso("Nenhuma passada com tempo oficial ainda.");
-  mostrarTexto("conferencia.txt", textoConferencia(store.passadas));
+  const lista = passadasDaConferencia();
+  if (comparacoes(lista).length === 0) return aviso("Nenhuma passada com tempo oficial neste recorte.");
+  mostrarTexto("conferencia.txt", textoConferencia(lista));
 });
 
 // Dois toques em vez de `confirm()`: dentro do visualizador o `confirm` pode não abrir, e aí o
@@ -891,6 +983,10 @@ if (!supportsFrameCallback()) {
  * O visor compartilha o MESMO objeto `roi` da análise. Mirar ao vivo já deixa a faixa no lugar
  * certo para o vídeo que vem a seguir — em vez de posicionar a linha depois, num quadro congelado.
  */
+/** O último resultado já transformado em passada — para não abrir a mesma duas vezes. */
+let resultadoVisor: RunResult | null = null;
+let passadaVisor: Passada | null = null;
+
 const visor = new Visor(
   $<HTMLVideoElement>("visorVideo"),
   $<HTMLCanvasElement>("visorFaixa"),
@@ -921,11 +1017,19 @@ const visor = new Visor(
         DEBOUNCE_FINISH: "chegou!",
         FINISHED: "tempo fechado",
       };
-      $("visorFase").textContent = `${fase[estado] ?? estado} · precisão ao vivo ±${(500 / Math.max(15, visor.taxaMedida)).toFixed(0)} ms`;
+      // Nada de número de precisão cravado aqui: o que vale é o que o estimador declarar em cada
+      // gatilho, e isso aparece no cartão quando o tempo fecha.
+      $("visorFase").textContent =
+        `${fase[estado] ?? estado} · ${visor.taxaMedida.toFixed(0)} quadros por segundo` +
+        (visor.porQuadroDaCamera ? "" : " · laço da tela (o navegador não entrega quadro a quadro)");
       if (resultado) {
-        $("visorRelogio").textContent = formatElapsed(resultado.elapsedRawNs);
+        $("visorRelogio").textContent = formatElapsed(resultado.elapsedRefinedNs);
       } else if (decorridoNs !== null) {
         $("visorRelogio").textContent = formatElapsed(decorridoNs);
+      }
+      if (resultado !== null && resultado !== resultadoVisor) {
+        resultadoVisor = resultado;
+        abrirPassadaAoVivo(resultado);
       }
     },
     onErro: (m) => {
@@ -962,12 +1066,146 @@ $("abrirVisor").addEventListener("click", async () => {
 $("fecharVisor").addEventListener("click", fecharVisor);
 
 $("armarVisor").addEventListener("click", () => {
+  // Armar recomeça a passada: o cartão anterior sai da tela para não haver dúvida de qual tempo é
+  // qual — e para que "Salvar" nunca grave o tempo da passada passada.
+  resultadoVisor = null;
+  passadaVisor = null;
+  $("resultadoVisor").hidden = true;
+  $("resultadoVisor").innerHTML = "";
   visor.armar();
   $("armarVisor").hidden = true;
   $("desarmarVisor").hidden = false;
   $("visorTempo").hidden = false;
   $("visorRelogio").textContent = "0.000";
 });
+
+$<HTMLInputElement>("visorEnsaio").addEventListener("change", (ev) => {
+  visor.ensaio = (ev.target as HTMLInputElement).checked;
+  if (visor.armado) aviso("O ensaio vale a partir do próximo Armar.");
+});
+
+/**
+ * O tempo ao vivo vira uma passada de verdade.
+ *
+ * Sem isto o número aparecia na tela e morria ali — e a comparação entre o caminho ao vivo e o do
+ * arquivo, que é a razão de existir do modo, seria impossível de fazer.
+ */
+function abrirPassadaAoVivo(r: RunResult): void {
+  const prox = store.proximaInscricao();
+  passadaVisor = {
+    id: novoId(),
+    dataMs: Date.now(),
+    competidor: prox?.competidor ?? "",
+    cavalo: prox?.cavalo ?? "",
+    categoria: prox?.categoria ?? "",
+    ordem: prox?.ordem ?? 0,
+    eventoId: store.eventoAtualId,
+    inscricaoId: prox?.id ?? null,
+    elapsedRawNs: r.elapsedRawNs,
+    elapsedRefinedNs: r.elapsedRefinedNs,
+    tamboresDerrubados: 0,
+    semTempo: false,
+    qualidadeLargada: r.start.quality,
+    qualidadeChegada: r.finish.quality,
+    incertezaLargadaNs: r.start.uncertaintyNs,
+    incertezaChegadaNs: r.finish.uncertaintyNs,
+    degradada: r.degraded || visor.quadrosPerdidos > 0,
+    fps: visor.taxaMedida,
+    quadrosPerdidos: visor.quadrosPerdidos,
+    arquivo: "",
+    origem: "ao-vivo",
+  };
+  desenharCartaoVisor();
+}
+
+function desenharCartaoVisor(): void {
+  const p = passadaVisor;
+  if (p === null) return;
+  const el = $("resultadoVisor");
+  el.hidden = false;
+  const qualidade = Math.min(p.qualidadeLargada, p.qualidadeChegada);
+  const incerteza = (p.incertezaLargadaNs + p.incertezaChegadaNs) / 1e6;
+  const finalNs = p.elapsedRefinedNs + p.tamboresDerrubados * 5_000_000_000;
+  const quem = p.inscricaoId
+    ? `#${p.ordem} ${p.competidor}${p.cavalo ? ` / ${p.cavalo}` : ""}${p.categoria ? ` — ${p.categoria}` : ""}`
+    : "Sem competidor";
+  el.innerHTML = `<div class="resultado">
+    <div class="quem">${escapar(quem)} · ao vivo</div>
+    <div class="tempo ${p.semTempo ? "sat" : ""}">${p.semTempo ? "SAT" : formatElapsed(finalNs)}</div>
+    <div>
+      <span class="selo q${qualidade}">qualidade ${qualidade} · ±${incerteza.toFixed(2)} ms</span>
+      ${p.degradada ? '<span class="selo aviso">degradada</span>' : ""}
+    </div>
+    <p class="detalhe">
+      refinado ${formatElapsed(p.elapsedRefinedNs)} · bruto ${formatElapsed(p.elapsedRawNs)}<br>
+      ${p.fps.toFixed(0)} quadros por segundo${p.quadrosPerdidos > 0 ? ` · <b>${p.quadrosPerdidos} quadro(s) perdido(s)</b>` : ""}
+    </p>
+    <div class="linha">
+      <button class="botao" id="visorMenosTambor">− tambor</button>
+      <span class="detalhe">${p.tamboresDerrubados} tambor(es) · +${p.tamboresDerrubados * 5} s</span>
+      <button class="botao" id="visorMaisTambor">+ tambor</button>
+      <button class="botao" id="visorSat">${p.semTempo ? "SAT ✓" : "SAT"}</button>
+    </div>
+    <div class="linha conferencia">
+      <label for="visorOficial">Tempo da cronometragem oficial</label>
+      <input type="text" id="visorOficial" inputmode="decimal" placeholder="14,325"
+             value="${escapar(p.oficialTexto ?? "")}">
+      <span class="detalhe" id="visorErroOficial"></span>
+    </div>
+    <div class="linha">
+      <button class="botao grande primario" id="visorSalvar">
+        ${p.inscricaoId ? `Salvar para #${p.ordem}` : "Salvar no histórico"}
+      </button>
+    </div>
+  </div>`;
+
+  $("visorMenosTambor").addEventListener("click", () => {
+    p.tamboresDerrubados = Math.max(0, p.tamboresDerrubados - 1);
+    desenharCartaoVisor();
+  });
+  $("visorMaisTambor").addEventListener("click", () => {
+    p.tamboresDerrubados = Math.min(3, p.tamboresDerrubados + 1);
+    desenharCartaoVisor();
+  });
+  $("visorSat").addEventListener("click", () => {
+    p.semTempo = !p.semTempo;
+    desenharCartaoVisor();
+  });
+
+  // Mesma regra do cartão do vídeo: o campo do oficial NUNCA repinta o cartão, senão o foco e o que
+  // está sendo digitado se perdem a cada tecla.
+  const campo = $<HTMLInputElement>("visorOficial");
+  const pintarErro = (): void => {
+    const oficial = parseTempo(campo.value);
+    const alvo = $("visorErroOficial");
+    if (oficial === null) {
+      alvo.textContent = campo.value.trim() === "" ? "" : "não entendi esse tempo";
+      alvo.className = "detalhe";
+      return;
+    }
+    const erroNs = p.elapsedRefinedNs - oficial;
+    const incertezaNs = p.incertezaLargadaNs + p.incertezaChegadaNs;
+    const dentro = Math.abs(erroNs) <= incertezaNs;
+    const lado = erroNs >= 0 ? "o app mediu mais" : "o app mediu menos";
+    alvo.textContent = `${erroEmMs(erroNs)} — ${lado} · ${dentro ? "dentro" : "FORA"} do ±${(incertezaNs / 1e6).toFixed(2)} ms declarado`;
+    alvo.className = `detalhe ${dentro ? "conf-ok" : "conf-fora"}`;
+  };
+  campo.addEventListener("input", () => {
+    p.oficialTexto = campo.value;
+    p.oficialNs = parseTempo(campo.value);
+    pintarErro();
+  });
+  pintarErro();
+
+  $("visorSalvar").addEventListener("click", () => {
+    p.oficialTexto = campo.value;
+    p.oficialNs = parseTempo(campo.value);
+    store.salvarPassada(p);
+    aviso("Passada ao vivo salva no histórico.", true);
+    atualizarProximo();
+    desenharHistorico();
+  });
+}
 $("desarmarVisor").addEventListener("click", () => {
   visor.desarmar();
   $("armarVisor").hidden = false;
