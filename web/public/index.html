@@ -75,6 +75,14 @@
       <canvas id="overlay"></canvas>
     </div>
     <p class="dica" id="info-video"></p>
+
+  <!-- Percorrer o clipe: sem isto o usuário posiciona a linha sobre uma pista vazia, adivinhando
+       por onde o cavalo vai passar. Foi o que aconteceu no primeiro vídeo real. -->
+  <div class="linha" id="linhaInstante" hidden>
+    <label for="instante">Procurar o cavalo no vídeo — <output id="instanteOut">0,00 s</output>
+      <input type="range" id="instante" min="0" max="1" step="0.01" value="0">
+    </label>
+  </div>
     <div class="linha">
       <label>Largura da faixa <output id="larguraOut">15</output> px
         <input type="range" id="largura" min="5" max="40" value="15">

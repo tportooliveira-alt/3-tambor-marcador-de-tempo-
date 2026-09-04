@@ -94,6 +94,25 @@ try {
   await pagina.waitForSelector("#editor:not([hidden])", { timeout: 60_000 });
   await pagina.waitForFunction(() => (document.getElementById("info-video")?.textContent ?? "").includes("·"), null, { timeout: 60_000 });
 
+  // percorrer o vídeo: o quadro tem de MUDAR de verdade (comparar pixels, não o texto)
+  const amostra = () => pagina.evaluate(() => {
+    const c = document.getElementById("quadro");
+    const d = c.getContext("2d").getImageData(0, 0, Math.min(64, c.width), Math.min(64, c.height)).data;
+    let h = 0;
+    for (let i = 0; i < d.length; i += 97) h = (h * 31 + d[i]) | 0;
+    return h;
+  });
+  const quadroAntes = await amostra();
+  await pagina.evaluate(() => {
+    const f = document.getElementById("instante");
+    f.value = String(Number(f.max) * 0.6);
+    f.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await pagina.waitForTimeout(1500);
+  const quadroDepois = await amostra();
+  checar(quadroAntes !== quadroDepois, `percorrer o vídeo troca o quadro na tela (${quadroAntes} -> ${quadroDepois})`);
+  checar(/\d+,\d\d s|\d+\.\d\d s/.test(await pagina.textContent("#instanteOut")), "o instante procurado aparece em segundos");
+
   const antes = await pagina.evaluate(() => document.getElementById("larguraOut").textContent);
   await pagina.evaluate(() => {
     const c = document.getElementById("largura");
@@ -130,6 +149,22 @@ try {
   await pagina.click("#botaoSat");
   checar((await pagina.textContent("#resultado")).includes("SAT ✓"), "SAT marca sem tempo");
   await pagina.click("#botaoSat");
+  // ver o quadro do disparo — é o que transforma o número em medição auditável
+  checar(await pagina.isVisible("#verLargada"), 'o cartão oferece "ver a largada"');
+  const antesDoPulo = await amostra();
+  await pagina.click("#verLargada");
+  await pagina.waitForTimeout(1500);
+  const instanteLargada = Number(await pagina.inputValue("#instante"));
+  const verdadeLargada = await pagina.evaluate(() => window.ultimaAnalise?.largadaS ?? null);
+  console.log(`    largada do gatilho: ${verdadeLargada?.toFixed(3)} s · vídeo foi para ${instanteLargada.toFixed(3)} s`);
+  checar(verdadeLargada !== null && Math.abs(instanteLargada - verdadeLargada) < 0.05,
+    "\"ver a largada\" leva o vídeo ao instante do disparo");
+  checar(antesDoPulo !== (await amostra()), "e o quadro na tela realmente mudou");
+  await pagina.click("#verChegada");
+  await pagina.waitForTimeout(1200);
+  checar(Math.abs(Number(await pagina.inputValue("#instante")) - (await pagina.evaluate(() => window.ultimaAnalise?.chegadaS ?? -1))) < 0.05,
+    "\"ver a chegada\" leva ao instante da chegada");
+
   await pagina.fill("#tempoOficial", "2,500");
   await pagina.click("#salvarPassada");
   await pagina.waitForTimeout(300);

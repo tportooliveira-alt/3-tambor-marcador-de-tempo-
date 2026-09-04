@@ -58,6 +58,13 @@ export interface AnalysisResult {
   missedFrames: number;
   /** Trecho do vídeo usado para calibrar (segundos), para o cartão explicar de onde veio o limiar. */
   calibracao: { inicioS: number; fimS: number } | null;
+  /**
+   * Instante de cada disparo em segundos desde o primeiro quadro — é o que permite ao usuário
+   * VER o quadro do gatilho e conferir se ele foi no cavalo ou em poeira. Sem isso o app afirma um
+   * número sem mostrar a evidência que o produziu.
+   */
+  largadaS: number | null;
+  chegadaS: number | null;
   /** Mensagem em pt-BR quando não deu para medir. */
   problem: string | null;
 }
@@ -124,7 +131,7 @@ export async function analyzeVideo(file: Blob, opts: AnalysisOptions): Promise<A
   const missedFrames = Math.max(0, stats.expected - stats.received);
   const vazio: AnalysisResult = {
     run: null, leitura, codec, finalState: PhotocellState.IDLE, threshold: null, lag: 1,
-    reader: stats, measuredFps, missedFrames, calibracao: null,
+    reader: stats, measuredFps, missedFrames, calibracao: null, largadaS: null, chegadaS: null,
     problem: "O navegador entregou pouquíssimos quadros deste vídeo.",
   };
   if (quadros.length < 30) return vazio;
@@ -189,6 +196,9 @@ export async function analyzeVideo(file: Blob, opts: AnalysisOptions): Promise<A
     measuredFps,
     missedFrames,
     calibracao: { inicioS: (cal.inicioNs - t0) / 1e9, fimS: (cal.fimNs - t0) / 1e9 },
+    // O timestamp BRUTO (o do quadro), não o refinado: é o quadro que o usuário vai ver na tela.
+    largadaS: eng.result ? (eng.result.start.rawTsNs - t0) / 1e9 : null,
+    chegadaS: eng.result ? (eng.result.finish.rawTsNs - t0) / 1e9 : null,
     problem,
   };
 }

@@ -84,7 +84,59 @@ for (const id of ["arquivo", "arquivoDoc"]) {
 }
 
 /** Mostra o primeiro quadro do vídeo para o usuário posicionar a linha e a banda. */
+/**
+ * O `<video>` do editor fica VIVO enquanto o arquivo estiver aberto.
+ *
+ * Antes ele era descartado logo depois de desenhar o primeiro quadro, e com isso o usuário
+ * posicionava a linha vermelha sobre uma pista vazia, adivinhando por onde o cavalo passaria — foi
+ * exatamente o que aconteceu no primeiro vídeo real ("analisou mas não vi cavalo passando").
+ * Mantendo o elemento, dá para percorrer o clipe e, depois da análise, pular para o quadro exato
+ * de cada disparo.
+ */
+let videoEditor: HTMLVideoElement | null = null;
+let urlEditor: string | null = null;
+let buscando = false;
+
+function soltarVideoEditor(): void {
+  if (videoEditor !== null) {
+    videoEditor.removeAttribute("src");
+    videoEditor.load();
+    videoEditor = null;
+  }
+  if (urlEditor !== null) {
+    URL.revokeObjectURL(urlEditor);
+    urlEditor = null;
+  }
+}
+
+/** Leva o quadro do editor a um instante do clipe e o desenha. Uma busca por vez. */
+async function irParaInstante(segundos: number): Promise<void> {
+  const v = videoEditor;
+  if (v === null || buscando) return;
+  buscando = true;
+  try {
+    const alvo = Math.max(0, Math.min(v.duration || 0, segundos));
+    if (Math.abs(v.currentTime - alvo) > 0.001) {
+      v.currentTime = alvo;
+      await new Promise<void>((res) => {
+        const pronto = (): void => res();
+        v.addEventListener("seeked", pronto, { once: true });
+        setTimeout(pronto, 3000);
+      });
+    }
+    const c = $<HTMLCanvasElement>("quadro");
+    c.getContext("2d")!.drawImage(v, 0, 0, c.width, c.height);
+    $<HTMLInputElement>("instante").value = String(alvo);
+    $("instanteOut").textContent = `${alvo.toFixed(2)} s`;
+  } catch {
+    /* buscar num vídeo que o navegador não decodifica: a tela continua no quadro anterior */
+  } finally {
+    buscando = false;
+  }
+}
+
 async function mostrarPrimeiroQuadro(f: File): Promise<void> {
+  soltarVideoEditor();
   const url = URL.createObjectURL(f);
   const v = document.createElement("video");
   v.src = url;
@@ -109,6 +161,12 @@ async function mostrarPrimeiroQuadro(f: File): Promise<void> {
     o.height = videoH;
     $("editor").hidden = false;
     desenharOverlay();
+    const faixa = $<HTMLInputElement>("instante");
+    faixa.max = String(v.duration || 1);
+    faixa.step = String(Math.max(0.01, (v.duration || 1) / 600));
+    faixa.value = String(v.currentTime);
+    $("instanteOut").textContent = `${v.currentTime.toFixed(2)} s`;
+    $("linhaInstante").hidden = false;
     // ler o cabeçalho leva um instante em arquivo grande; linha em branco parece travamento
     $("info-video").textContent = "Lendo as informações do vídeo…";
     const dur = v.duration || 0;
@@ -133,11 +191,11 @@ async function mostrarPrimeiroQuadro(f: File): Promise<void> {
   } catch (e) {
     aviso((e as Error).message);
   } finally {
-    // soltar o vídeo ANTES de liberar o endereço: revogar com o elemento ainda carregando faz o
-    // navegador registrar uma falha de carregamento (e, no iPhone, pode abortar o primeiro quadro)
-    v.removeAttribute("src");
-    v.load();
-    URL.revokeObjectURL(url);
+    // O elemento e o endereço ficam vivos de propósito (ver `videoEditor`): é o que permite
+    // percorrer o clipe e conferir o quadro de cada disparo. São soltos quando outro arquivo é
+    // escolhido, em `soltarVideoEditor()`.
+    videoEditor = v;
+    urlEditor = url;
   }
 }
 
@@ -257,6 +315,10 @@ function moverROI(p: { x: number; y: number }): void {
   $("larguraOut").textContent = String(roi.stripWidthPx);
   desenharOverlay();
 };
+
+$<HTMLInputElement>("instante").addEventListener("input", (ev) => {
+  void irParaInstante(Number((ev.target as HTMLInputElement).value));
+});
 
 $<HTMLInputElement>("largura").addEventListener("input", (ev) => {
   roi.stripWidthPx = Number((ev.target as HTMLInputElement).value);
@@ -413,6 +475,15 @@ function desenharCartao(segundos: number, res: AnalysisResult): void {
       <button class="botao" id="maisTambor">+ tambor</button>
       <button class="botao" id="botaoSat">${p.semTempo ? "SAT ✓" : "SAT"}</button>
     </div>
+    ${
+      res.largadaS !== null && res.chegadaS !== null
+        ? `<div class="linha">
+             <span class="detalhe">Conferir no vídeo:</span>
+             <button class="botao" id="verLargada">ver a largada</button>
+             <button class="botao" id="verChegada">ver a chegada</button>
+           </div>`
+        : ""
+    }
     <div class="linha conferencia">
       <label for="tempoOficial">Tempo da cronometragem oficial</label>
       <input type="text" id="tempoOficial" inputmode="decimal" placeholder="14,325"
@@ -441,6 +512,14 @@ function desenharCartao(segundos: number, res: AnalysisResult): void {
   // e repintar a cada tecla mataria o foco e o que está sendo digitado. Aqui só o `<span>` do erro
   // muda; o valor é espelhado na passada a cada tecla para sobreviver a uma repintura disparada
   // por outro botão (tambor/SAT).
+  // Ver o quadro do disparo é o que transforma o número em medição auditável: se o cavalo está
+  // cruzando ali, o tempo é dele; se aparece poeira ou sombra, o tempo é lixo — e dá para saber em
+  // dois segundos, em vez de discutir.
+  if (res.largadaS !== null && res.chegadaS !== null) {
+    $("verLargada").addEventListener("click", () => void irParaInstante(res.largadaS!));
+    $("verChegada").addEventListener("click", () => void irParaInstante(res.chegadaS!));
+  }
+
   const campoOficial = $<HTMLInputElement>("tempoOficial");
   const pintarErro = (): void => {
     const oficial = parseTempo(campoOficial.value);
