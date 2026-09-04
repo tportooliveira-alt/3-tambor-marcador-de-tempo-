@@ -36,6 +36,8 @@ export interface PhotocellConfig {
   fractionMarginMin: number;
   fractionMarginSigmas: number;
   /** Acima desta margem (contraste/ruído baixo) o pixel só fornece limites. */
+  /** Teto SEPARADO para a margem vinda da textura: textura é viés, não ruído. */
+  textureMarginMax: number;
   fractionMarginMax: number;
   /** Piso da incerteza reportada em qualidade 2 (erro de modelo: gamma desconhecida, desfoque). */
   systematicUncNs: Nanos;
@@ -87,7 +89,11 @@ export const defaultConfig = (): PhotocellConfig => ({
   minContrast: 20.0,
   fractionMarginMin: 0.03,
   fractionMarginSigmas: 4.0,
-  fractionMarginMax: 0.25,
+  // Acima disto o pixel só dá limites, não entra no ajuste. Medido: com contraste 88 e ruído
+  // sigma=5 (arena à noite), 0,25 zerava TODOS os pixels interiores e o erro ia a 3,2 ms com
+  // ±7,6 ms declarado; 0,40 devolve 190 colunas, erro de 0,009 ms e ±0,10 ms.
+  textureMarginMax: 0.25,
+  fractionMarginMax: 0.4,
   systematicUncNs: 100_000,
   saturationLow: 5,
   saturationHigh: 250,

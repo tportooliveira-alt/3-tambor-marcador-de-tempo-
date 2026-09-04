@@ -59,6 +59,7 @@ final class SharedVectorTests: XCTestCase {
         c.minContrast = dbl(j["min_contrast"])
         c.fractionMarginMin = dbl(j["fraction_margin_min"])
         c.fractionMarginSigmas = dbl(j["fraction_margin_sigmas"])
+        c.textureMarginMax = dbl(j["texture_margin_max"])
         c.fractionMarginMax = dbl(j["fraction_margin_max"])
         c.speedPxPerSMin = dbl(j["speed_px_per_s_min"])
         c.speedPxPerSMax = dbl(j["speed_px_per_s_max"])

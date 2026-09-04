@@ -25,7 +25,7 @@ deve cair para intervalo ou tempo do quadro, nunca para um número falso.
 | 8 m/s | 1/240 s | 1.5 | 120 Hz | ±30 | 3.47 ms | 0 | 0 | 6 |
 | 8 m/s | 1/240 s | 3.0 | — | — | 3.47 ms | 6 / 0.006 ms / 0.012 ms | 0 | 0 |
 | 8 m/s | 1/240 s | 3.0 | — | ±30 | 3.47 ms | 0 | 0 | 6 |
-| 8 m/s | 1/240 s | 3.0 | 120 Hz | — | 3.47 ms | 0 | 1 / 1 (±1.53 ms) | 5 |
+| 8 m/s | 1/240 s | 3.0 | 120 Hz | — | 3.47 ms | 3 / 0.116 ms / 0.240 ms | 1 / 1 (±0.53 ms) | 2 |
 | 8 m/s | 1/240 s | 3.0 | 120 Hz | ±30 | 3.47 ms | 0 | 0 | 6 |
 | 8 m/s | 1/480 s | 0.5 | — | — | 2.08 ms | 6 / 0.001 ms / 0.003 ms | 0 | 0 |
 | 8 m/s | 1/480 s | 0.5 | — | ±30 | 2.08 ms | 0 | 0 | 6 |
@@ -61,7 +61,7 @@ deve cair para intervalo ou tempo do quadro, nunca para um número falso.
 | 14 m/s | 1/240 s | 1.5 | 120 Hz | ±30 | 3.47 ms | 0 | 0 | 6 |
 | 14 m/s | 1/240 s | 3.0 | — | — | 3.47 ms | 6 / 0.006 ms / 0.011 ms | 0 | 0 |
 | 14 m/s | 1/240 s | 3.0 | — | ±30 | 3.47 ms | 0 | 0 | 6 |
-| 14 m/s | 1/240 s | 3.0 | 120 Hz | — | 3.47 ms | 0 | 0 | 6 |
+| 14 m/s | 1/240 s | 3.0 | 120 Hz | — | 3.47 ms | 5 / 0.076 ms / 0.147 ms | 0 | 1 |
 | 14 m/s | 1/240 s | 3.0 | 120 Hz | ±30 | 3.47 ms | 0 | 0 | 6 |
 | 14 m/s | 1/480 s | 0.5 | — | — | 0.97 ms | 6 / 0.001 ms / 0.001 ms | 0 | 0 |
 | 14 m/s | 1/480 s | 0.5 | — | ±30 | 0.97 ms | 0 | 0 | 6 |
@@ -97,7 +97,7 @@ deve cair para intervalo ou tempo do quadro, nunca para um número falso.
 | 18 m/s | 1/240 s | 1.5 | 120 Hz | ±30 | 3.47 ms | 0 | 0 | 6 |
 | 18 m/s | 1/240 s | 3.0 | — | — | 3.47 ms | 6 / 0.011 ms / 0.022 ms | 0 | 0 |
 | 18 m/s | 1/240 s | 3.0 | — | ±30 | 3.47 ms | 0 | 0 | 6 |
-| 18 m/s | 1/240 s | 3.0 | 120 Hz | — | 3.47 ms | 0 | 1 / 1 (±1.51 ms) | 5 |
+| 18 m/s | 1/240 s | 3.0 | 120 Hz | — | 3.47 ms | 4 / 0.042 ms / 0.114 ms | 0 | 2 |
 | 18 m/s | 1/240 s | 3.0 | 120 Hz | ±30 | 3.47 ms | 0 | 0 | 6 |
 | 18 m/s | 1/480 s | 0.5 | — | — | 0.97 ms | 6 / 0.002 ms / 0.003 ms | 0 | 0 |
 | 18 m/s | 1/480 s | 0.5 | — | ±30 | 0.97 ms | 0 | 0 | 6 |
@@ -124,7 +124,7 @@ deve cair para intervalo ou tempo do quadro, nunca para um número falso.
 | 18 m/s | 1/2000 s | 3.0 | 120 Hz | — | 0.97 ms | 0 | 2 / 2 (±1.14 ms) | 4 |
 | 18 m/s | 1/2000 s | 3.0 | 120 Hz | ±30 | 0.97 ms | 0 | 0 | 6 |
 
-Erro médio (qualidade 2) sobre todas as condições: **0.016 ms** (sem textura: **0.016 ms**); intervalos de qualidade 1 que contêm a verdade: **31/31**; tempo por quadro: **1.98 ms**. Tempo de geração: 433 s.
+Erro médio (qualidade 2) sobre todas as condições: **0.020 ms** (sem textura: **0.020 ms**); intervalos de qualidade 1 que contêm a verdade: **30/30**; tempo por quadro: **1.98 ms**. Tempo de geração: 529 s.
 
 Leitura: exposições mais longas dão mais pixels "interiores" (mais qualidade 2); com exposição curta e cavalo
 lento só uma coluna vê o bordo e o resultado cai para um intervalo (qualidade 1) que usa a faixa de velocidades

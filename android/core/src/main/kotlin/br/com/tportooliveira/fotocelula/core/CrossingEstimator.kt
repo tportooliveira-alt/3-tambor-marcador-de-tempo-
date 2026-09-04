@@ -124,6 +124,15 @@ object CrossingEstimator {
         // A textura também limita a classificação coberto/interior: margem = maior entre ruído e ~1,5·aTex
         val texTerm = 1.5 * aTex
         val marginTerm = if (noiseTerm >= texTerm) noiseTerm else texTerm
+        // Os dois termos NÃO podem dividir o mesmo teto. O ruído é aleatório: espalha os pontos, a
+        // média sobre muitas colunas converge e a incerteza propagada continua valendo — dá para ser
+        // generoso. A textura é VIÉS: desloca todas as colunas para o mesmo lado, não some na média e
+        // não aparece na incerteza. Medido na varredura física: com um teto só, afrouxar para 0,40
+        // recuperava a arena escura (erro 3,2 ms -> 0,009 ms) e ao mesmo tempo quebrava 54 cenários de
+        // pelagem, com a verdade fora do intervalo declarado.
+        fun dentroDosTetos(escala: Double, contraste: Double): Boolean =
+            noiseTerm * escala / contraste <= cfg.fractionMarginMax &&
+                texTerm * escala / contraste <= cfg.textureMarginMax
 
         // Erro de MODELO: se a resposta do pixel não é linear em f (curva de tom desconhecida,
         // desfoque, resposta do sensor), o resíduo t_obs − t_previsto depende sistematicamente de f.
@@ -162,7 +171,7 @@ object CrossingEstimator {
                 var m = marginTerm * linearScale(inp.stripBg[idx]) / c
                 if (m < cfg.fractionMarginMin) m = cfg.fractionMarginMin
                 if (m >= 0.5) continue
-                val usableInterior = m <= cfg.fractionMarginMax
+                val usableInterior = dentroDosTetos(linearScale(inp.stripBg[idx]), c)
                 val lo = m
                 val hi = 1.0 - m
                 val upOff = e * 2.0 * m
@@ -408,7 +417,7 @@ object CrossingEstimator {
                             if (c < cfg.minContrast) continue
                             var m = marginTerm * linearScale(inp.stripBg[idx]) / c
                             if (m < cfg.fractionMarginMin) m = cfg.fractionMarginMin
-                            if (m > cfg.fractionMarginMax) continue
+                            if (!dentroDosTetos(linearScale(inp.stripBg[idx]), c)) continue
                             if (!(fPred > m && fPred < 1.0 - m)) continue
                             val f = (linearize(strip[idx].toDouble(), gamma) - b) / contrast
                             val t = tIni + e * (1.0 - f)

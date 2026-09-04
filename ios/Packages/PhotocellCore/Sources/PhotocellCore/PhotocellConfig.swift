@@ -35,7 +35,15 @@ public struct PhotocellConfig: Equatable, Sendable {
     public var fractionMarginMin: Double = 0.03
     public var fractionMarginSigmas: Double = 4.0
     /// Acima desta margem (contraste/ruído baixo) o pixel só fornece limites.
-    public var fractionMarginMax: Double = 0.25
+    /// Acima disto o pixel só dá limites, não entra no ajuste.
+    ///
+    /// Medido: com contraste 88 e ruído sigma=5 (arena à noite), 0,25 zerava TODOS os pixels
+    /// interiores e o erro ia a 3,2 ms com ±7,6 ms declarado; 0,40 devolve 190 colunas, erro de
+    /// 0,009 ms e ±0,10 ms. A margem já é o quanto da rampa se descarta em cada ponta, então 0,40
+    /// ainda deixa 20% dela.
+    /// Teto SEPARADO para a margem vinda da textura: textura é viés, não ruído.
+    public var textureMarginMax: Double = 0.25
+    public var fractionMarginMax: Double = 0.40
     /// Piso da incerteza reportada em qualidade 2 (erro de modelo: gamma desconhecida, desfoque).
     public var systematicUncNs: Nanos = 100_000
     /// Pixels saturados (ou pretos) não seguem V = B + (O−B)f: ficam fora do ajuste e dos limites.

@@ -163,6 +163,15 @@ export function estimateCrossing(
   // A textura também limita a classificação coberto/interior: margem = maior entre ruído e ~1,5·aTex
   const texTerm = 1.5 * aTex;
   const marginTerm = noiseTerm >= texTerm ? noiseTerm : texTerm;
+  // Os dois termos NÃO podem dividir o mesmo teto. O ruído é aleatório: espalha os pontos, a
+  // média sobre muitas colunas converge e a incerteza propagada continua valendo — dá para ser
+  // generoso. A textura é VIÉS: desloca todas as colunas para o mesmo lado, não some na média e
+  // não aparece na incerteza. Medido na varredura física: com um teto só, afrouxar para 0,40
+  // recuperava a arena escura (erro 3,2 ms -> 0,009 ms) e ao mesmo tempo quebrava 54 cenários de
+  // pelagem, com a verdade fora do intervalo declarado.
+  const dentroDosTetos = (escala: number, contraste: number): boolean =>
+    (noiseTerm * escala) / contraste <= cfg.fractionMarginMax &&
+    (texTerm * escala) / contraste <= cfg.textureMarginMax;
 
   // Erro de MODELO: se a resposta do pixel não é linear em f (curva de tom desconhecida, desfoque),
   // o resíduo t_obs − t_previsto depende sistematicamente de f. A média ponderada do resíduo em três
@@ -201,7 +210,7 @@ export function estimateCrossing(
       let m = (marginTerm * linearScale(inp.stripBg[idx])) / c;
       if (m < cfg.fractionMarginMin) m = cfg.fractionMarginMin;
       if (m >= 0.5) continue;
-      const usableInterior = m <= cfg.fractionMarginMax;
+      const usableInterior = dentroDosTetos(linearScale(inp.stripBg[idx]), c);
       const lo = m;
       const hi = 1.0 - m;
       const upOff = e * 2.0 * m;
@@ -497,7 +506,7 @@ export function estimateCrossing(
             if (c < cfg.minContrast) continue;
             let m = (marginTerm * linearScale(inp.stripBg[idx])) / c;
             if (m < cfg.fractionMarginMin) m = cfg.fractionMarginMin;
-            if (m > cfg.fractionMarginMax) continue;
+            if (!dentroDosTetos(linearScale(inp.stripBg[idx]), c)) continue;
             if (!(fPred > m && fPred < 1.0 - m)) continue;
             const f = (linearize(strip[idx], gamma) - b) / contrast;
             const t = tIni + e * (1.0 - f);

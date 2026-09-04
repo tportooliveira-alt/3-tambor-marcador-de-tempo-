@@ -51,7 +51,12 @@ class PhotocellConfig:
     min_contrast: float = 20.0                   # |O - B| mínimo (níveis de luma) para um pixel ser usado
     fraction_margin_min: float = 0.03            # margem mínima de classificação da fração f
     fraction_margin_sigmas: float = 4.0          # margem = max(min, k * sqrt(2) * sigma_px / |O-B|)
-    fraction_margin_max: float = 0.25            # acima disso (contraste/ruído baixo) o pixel só dá limites
+    texture_margin_max: float = 0.25             # teto SEPARADO para a margem vinda da textura (viés, não ruído)
+    fraction_margin_max: float = 0.40            # acima disso o pixel só dá limites. Medido: com contraste 88 e ruído sigma=5 (arena à
+    # noite), 0,25 zerava TODOS os pixels interiores e o erro ia a 3,2 ms com ±7,6 ms declarado;
+    # 0,40 devolve 190 colunas, erro de 0,009 ms e ±0,10 ms. A margem m já é o quanto da rampa se
+    # descarta em cada ponta, então 0,40 ainda deixa 20% dela — e a incerteza propagada continua
+    # dizendo a verdade quando sobram poucos pontos.
     # Piso da incerteza reportada em qualidade 2: erro de modelo (gamma desconhecida, desfoque, curva de
     # tom) que a propagação do ruído não vê. 0,1 ms.
     systematic_unc_ns: int = 100_000
@@ -509,6 +514,15 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
     # so da limites, e >= 0,5 nao serve nem para isso (resultado honesto: tempo do quadro).
     tex_term = 1.5 * a_tex
     margin_term = noise_term if noise_term >= tex_term else tex_term
+    # Os dois termos NÃO podem dividir o mesmo teto. O ruído é aleatório: espalha os pontos, a média
+    # sobre muitas colunas converge e a incerteza propagada continua valendo — dá para ser generoso.
+    # A textura é VIÉS: desloca todas as colunas para o mesmo lado, não some na média e não aparece
+    # na incerteza. Medido na varredura física: com um teto só, afrouxar para 0,40 recuperava a
+    # arena escura (erro 3,2 ms -> 0,009 ms) e ao mesmo tempo quebrava 54 cenários de pelagem, com a
+    # verdade caindo fora do intervalo declarado. Com tetos separados, os dois casos ficam certos.
+    def dentro_dos_tetos(escala: float, contraste: float) -> bool:
+        return (noise_term * escala / contraste <= cfg.fraction_margin_max
+                and tex_term * escala / contraste <= cfg.texture_margin_max)
 
     interior = 0
     bounds = 0
@@ -554,7 +568,7 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
                 m = cfg.fraction_margin_min
             if m >= 0.5:
                 continue
-            usable_interior = m <= cfg.fraction_margin_max
+            usable_interior = dentro_dos_tetos(linear_scale(inp.strip_bg[idx]), C)
             lo, hi = m, 1.0 - m
             # Limites: f_obs >= 1-m com ruido ate m implica f >= 1-2m, logo t_x <= t_ini + 2mE
             # (e simetricamente t_x >= t_ini + E(1-2m) para f_obs <= m).
@@ -818,7 +832,7 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
                         m = margin_term * linear_scale(inp.strip_bg[idx]) / C
                         if m < cfg.fraction_margin_min:
                             m = cfg.fraction_margin_min
-                        if m > cfg.fraction_margin_max:
+                        if not dentro_dos_tetos(linear_scale(inp.strip_bg[idx]), C):
                             continue
                         if not (m < f_pred < 1.0 - m):
                             continue

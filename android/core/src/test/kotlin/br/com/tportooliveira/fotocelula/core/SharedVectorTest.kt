@@ -73,6 +73,7 @@ class SharedVectorTest {
         minContrast = j.getDouble("min_contrast"),
         fractionMarginMin = j.getDouble("fraction_margin_min"),
         fractionMarginSigmas = j.getDouble("fraction_margin_sigmas"),
+        textureMarginMax = j.getDouble("texture_margin_max"),
         fractionMarginMax = j.getDouble("fraction_margin_max"),
         speedPxPerSMin = j.getDouble("speed_px_per_s_min"),
         speedPxPerSMax = j.getDouble("speed_px_per_s_max"),

@@ -49,6 +49,7 @@ function config(j: any): PhotocellConfig {
   c.minContrast = j.min_contrast;
   c.fractionMarginMin = j.fraction_margin_min;
   c.fractionMarginSigmas = j.fraction_margin_sigmas;
+  c.textureMarginMax = j.texture_margin_max;
   c.fractionMarginMax = j.fraction_margin_max;
   c.speedPxPerSMin = j.speed_px_per_s_min;
   c.speedPxPerSMax = j.speed_px_per_s_max;
