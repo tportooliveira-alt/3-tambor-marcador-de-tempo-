@@ -100,8 +100,16 @@ async function mostrarPrimeiroQuadro(f: File): Promise<void> {
     // usuário precisa saber ANTES de esperar a análise inteira.
     const info = await probeFileInfo(f);
     fpsArquivo = info?.fps ?? 0;
+    // Duas durações, de propósito: a do CABEÇALHO (quanto de prova o arquivo guarda) e a da
+    // REPRODUÇÃO (quanto tempo o vídeo leva para tocar). Num clipe de câmera lenta preservado elas
+    // são diferentes — 20 s de prova que tocam por 2 min 40 s —, e é justamente essa diferença que
+    // distingue o arquivo original do arquivo já "assado" pelo iPhone a 30 quadros por segundo.
+    const cabecalho = info
+      ? `${info.frames} quadros em ${info.durationS.toFixed(1)} s` +
+        (dur > 0 && Math.abs(dur - info.durationS) > 0.5 ? ` (toca em ${dur.toFixed(0)} s)` : "")
+      : `${dur.toFixed(1)} s`;
     $("info-video").innerHTML =
-      `${videoW}×${videoH} · ${dur.toFixed(1)} s · ${tamanho}` +
+      `${videoW}×${videoH} · ${cabecalho} · ${tamanho}` +
       (fpsArquivo > 0 ? ` · <b>${Math.round(fpsArquivo)} quadros por segundo</b>` : "") +
       ` — arraste a linha vermelha até onde o cavalo cruza; as alças ajustam a altura da banda.`;
     mostrarAvisoTaxa();
