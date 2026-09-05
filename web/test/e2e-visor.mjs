@@ -221,6 +221,24 @@ try {
     `tripé e na mão ficam em caminhos separados (${origens.join(", ")})`,
   );
 
+  // --- gravar o vídeo da passada ---------------------------------------------------------------
+  await pagina.click("#gravarVisor");
+  checar(
+    /gravando/.test(await pagina.textContent("#gravarEstado")),
+    "o botão de gravar entra em gravação e mostra o tempo",
+  );
+  await pagina.waitForTimeout(2500);
+  await pagina.click("#gravarVisor");
+  await pagina.waitForSelector("#videoSalvo:not([hidden])", { timeout: 15_000 });
+  const video = await pagina.evaluate(() => {
+    const a = document.getElementById("baixarVideo");
+    return { href: (a?.getAttribute("href") ?? "").slice(0, 5), nome: a?.getAttribute("download") ?? "" };
+  });
+  checar(video.href === "blob:", "o vídeo gravado vira um arquivo para baixar");
+  checar(/^passada-.*\.(webm|mp4)$/.test(video.nome), `com nome de arquivo (${video.nome})`);
+  await pagina.click("#descartarVideo");
+  checar(!(await pagina.isVisible("#videoSalvo")), "e dá para descartar");
+
   // --- disparar sozinho: sem tocar em nada, ele tem de armar quando a cena for medida ----------
   await pagina.uncheck("#visorMao");
   await pagina.check("#visorAuto");

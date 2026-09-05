@@ -105,6 +105,9 @@ export class Visor {
   private recomecos = 0;
   private picoValor = 0;
   private picoTsMs = 0;
+  private gravador: MediaRecorder | null = null;
+  private pedacos: Blob[] = [];
+  private gravouEm = 0;
   private ultimoPresented = -1;
   private perdidos = 0;
   /**
@@ -221,12 +224,81 @@ export class Visor {
    * que faz o iPhone baixar a taxa de captura na hora de gravar a passada.
    */
   fechar(): void {
+    // A gravação vive do stream: parar a câmera sem parar o gravador deixa um objeto pendurado.
+    try {
+      this.gravador?.stop();
+    } catch {
+      /* já estava parado */
+    }
+    this.gravador = null;
+    this.pedacos = [];
     this.rodando = false;
     cancelAnimationFrame(this.timer);
     this.video.cancelVideoFrameCallback?.(this.handleQuadro);
     this.video.srcObject = null;
     for (const t of this.stream?.getTracks() ?? []) t.stop();
     this.stream = null;
+  }
+
+  /** Este navegador sabe gravar o que a câmera está entregando? */
+  static get podeGravar(): boolean {
+    return typeof MediaRecorder !== "undefined";
+  }
+
+  get gravando(): boolean {
+    return this.gravador !== null && this.gravador.state === "recording";
+  }
+
+  /** Há quantos segundos está gravando. */
+  get segundosGravados(): number {
+    return this.gravando ? (performance.now() - this.gravouEm) / 1000 : 0;
+  }
+
+  /**
+   * Começa a gravar o que a câmera está entregando.
+   *
+   * É a MESMA imagem que o cronômetro está lendo — serve de prova do que disparou. Custa
+   * processamento: gravar e medir ao mesmo tempo pode fazer perder quadro, e nesse caso a passada
+   * sai marcada como degradada, como qualquer outra que perca quadro.
+   */
+  iniciarGravacao(): boolean {
+    if (this.stream === null || typeof MediaRecorder === "undefined") return false;
+    const tipos = ["video/mp4", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+    const tipo = tipos.find((t) => MediaRecorder.isTypeSupported?.(t) === true);
+    try {
+      this.gravador = new MediaRecorder(this.stream, tipo ? { mimeType: tipo } : undefined);
+    } catch {
+      this.gravador = null;
+      return false;
+    }
+    this.pedacos = [];
+    this.gravador.ondataavailable = (e): void => {
+      if (e.data.size > 0) this.pedacos.push(e.data);
+    };
+    this.gravador.start(1000);
+    this.gravouEm = performance.now();
+    return true;
+  }
+
+  /** Fecha a gravação e devolve o arquivo. `null` se não havia nada gravado. */
+  pararGravacao(): Promise<Blob | null> {
+    const g = this.gravador;
+    if (g === null) return Promise.resolve(null);
+    return new Promise((res) => {
+      g.onstop = (): void => {
+        const blob = this.pedacos.length > 0 ? new Blob(this.pedacos, { type: g.mimeType || "video/webm" }) : null;
+        this.pedacos = [];
+        this.gravador = null;
+        res(blob);
+      };
+      try {
+        g.stop();
+      } catch {
+        this.pedacos = [];
+        this.gravador = null;
+        res(null);
+      }
+    });
   }
 
   /** Recomeça a calibragem: usar quando a ROI muda ou a cena muda de lugar. */

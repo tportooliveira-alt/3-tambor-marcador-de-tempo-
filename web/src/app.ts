@@ -1035,18 +1035,8 @@ $("versao").textContent =
 if (!supportsFrameCallback()) {
   aviso("Este navegador não consegue ler os quadros do vídeo. No iPhone, abra pelo Safari.");
 }
-/**
- * Celular em pé: a linha da fotocélula é vertical e a banda precisa da altura do peito do cavalo.
- * Em retrato sobra pouca imagem para a banda, e menos linhas é menos pixel para o refinamento.
- * Não dá para forçar a orientação pelo navegador no iPhone — o que dá é dizer.
- */
-function conferirPaisagem(): void {
-  const emPe = window.innerHeight > window.innerWidth;
-  $("aviso-paisagem").hidden = !emPe;
-}
-window.addEventListener("resize", conferirPaisagem);
-window.addEventListener("orientationchange", () => setTimeout(conferirPaisagem, 300));
-conferirPaisagem();
+// Sem aviso de orientação: em pé funciona, e quem escolhe a altura da banda é quem está olhando a
+// pista. O que a medição pede é que a banda pegue a altura do peito do cavalo — não uma orientação.
 
 // ------------------------------------------------------------------ visor ao vivo
 /**
@@ -1167,6 +1157,8 @@ const visor = new Visor(
 
 function fecharVisor(): void {
   if (!visor.ativo) return;
+  clearInterval(timerGravacao);
+  timerGravacao = 0;
   clearTimeout(timerRearmar);
   timerRearmar = 0;
   armarPendente = false;
@@ -1266,6 +1258,74 @@ function agendarRearme(): void {
     armarAgora();
   }, 6000);
 }
+
+// ---------------------------------------------------------------- gravar a passada
+/** Endereço do último vídeo gravado. Revogado ao descartar ou ao gravar outro. */
+let urlVideoSalvo: string | null = null;
+let timerGravacao = 0;
+/** Teto da gravação, em segundos: memória de uma aba de celular não é infinita. */
+const MAX_GRAVACAO_S = 120;
+
+function pintarBotaoGravar(): void {
+  const b = $("gravarVisor");
+  if (visor.gravando) {
+    b.textContent = "Parar e salvar";
+    b.classList.add("perigo");
+    $("gravarEstado").textContent = `gravando… ${visor.segundosGravados.toFixed(0)} s`;
+  } else {
+    b.textContent = "Gravar vídeo";
+    b.classList.remove("perigo");
+    $("gravarEstado").textContent = "";
+  }
+}
+
+async function pararEGuardarVideo(): Promise<void> {
+  clearInterval(timerGravacao);
+  timerGravacao = 0;
+  const blob = await visor.pararGravacao();
+  pintarBotaoGravar();
+  if (blob === null || blob.size === 0) return aviso("Não veio nada na gravação.");
+  if (urlVideoSalvo !== null) URL.revokeObjectURL(urlVideoSalvo);
+  urlVideoSalvo = URL.createObjectURL(blob);
+  const ext = blob.type.includes("mp4") ? "mp4" : "webm";
+  const nome = `passada-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.${ext}`;
+  const el = $("videoSalvo");
+  el.hidden = false;
+  el.innerHTML = `<div class="resultado">
+    <div class="quem">Vídeo desta passada</div>
+    <p class="detalhe">${(blob.size / 1048576).toFixed(1)} MB · ${escapar(blob.type || "vídeo")}</p>
+    <div class="linha">
+      <a class="botao grande primario" id="baixarVideo" download="${nome}" href="${urlVideoSalvo}">Baixar o vídeo</a>
+      <button class="botao" id="descartarVideo">Descartar</button>
+    </div>
+    <p class="dica">No iPhone, o botão abre o vídeo — use <b>Compartilhar → Salvar em Vídeos</b>.
+       Esta gravação é da câmera do navegador (30 ou 60 quadros por segundo), então serve de prova
+       do que disparou, <b>não</b> para remedir no milésimo.</p>
+  </div>`;
+  $("descartarVideo").addEventListener("click", () => {
+    if (urlVideoSalvo !== null) URL.revokeObjectURL(urlVideoSalvo);
+    urlVideoSalvo = null;
+    el.hidden = true;
+    el.innerHTML = "";
+  });
+}
+
+$("gravarVisor").addEventListener("click", () => {
+  if (visor.gravando) return void pararEGuardarVideo();
+  if (!visor.ativo) return aviso("Abra a câmera primeiro.");
+  if (!Visor.podeGravar || !visor.iniciarGravacao()) {
+    return aviso("Este navegador não grava vídeo. No iPhone, use o Safari atualizado.");
+  }
+  pintarBotaoGravar();
+  timerGravacao = window.setInterval(() => {
+    pintarBotaoGravar();
+    // Teto de tempo: uma gravação esquecida ligada encheria a memória da aba no meio da prova.
+    if (visor.segundosGravados >= MAX_GRAVACAO_S) {
+      aviso(`Gravação fechada em ${MAX_GRAVACAO_S} s para não encher a memória.`);
+      void pararEGuardarVideo();
+    }
+  }, 500);
+});
 
 $<HTMLInputElement>("visorAuto").addEventListener("change", (ev) => {
   autoVisor = (ev.target as HTMLInputElement).checked;

@@ -179,9 +179,6 @@
       <button id="abrirVisor" class="botao grande primario">Abrir a câmera</button>
       <button id="fecharVisor" class="botao" hidden>Desligar</button>
     </div>
-    <div id="aviso-paisagem" class="faixa-aviso" hidden><b>Vire o celular na horizontal.</b>
-       A linha da fotocélula é vertical e a banda tem de pegar a altura do peito do cavalo — em pé,
-       sobra pouca imagem para a banda e a medição piora.</div>
 
     <!-- O painel fica ACIMA da imagem de propósito: com o celular deitado no tripé, o vídeo ocupa a
          tela inteira e tudo que estivesse embaixo exigiria rolar a página justamente na hora da
@@ -199,6 +196,11 @@
         <button id="desarmarVisor" class="botao" hidden>Parar</button>
         <button id="recalibrarVisor" class="botao">Medir a cena de novo</button>
       </div>
+      <div class="linha">
+        <button id="gravarVisor" class="botao">Gravar vídeo</button>
+        <span class="detalhe" id="gravarEstado"></span>
+      </div>
+      <div id="videoSalvo" hidden></div>
       <label class="linha" for="visorAuto">
         <input type="checkbox" id="visorAuto" checked>
         <span class="detalhe"><b>Disparar sozinho.</b> Assim que a cena for medida ele arma, e depois
