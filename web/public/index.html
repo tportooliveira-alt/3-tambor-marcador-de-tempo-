@@ -26,6 +26,13 @@
 </header>
 
 <main>
+<!-- Fica FIXA enquanto a gravação estiver falhando (aba privada, armazenamento bloqueado, memória
+     cheia). O aviso passageiro sumia em 6 s: ele via um retângulo vermelho no sol, entre um cavalo
+     e outro, e seguia — doze passadas depois o dia inteiro era memória volátil. -->
+<div id="faixa-falha" class="faixa-aviso ruim" hidden>
+  <b>NÃO ESTOU CONSEGUINDO SALVAR neste navegador.</b> Os tempos existem só até você fechar a página.
+  <button id="salvarFalha" class="botao">Copiar tudo agora</button>
+</div>
 <!-- ------------------------------------------------------------------ passada -->
 <section id="aba-passada" class="aba ativa">
   <div id="faixa-proximo" hidden></div>

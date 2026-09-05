@@ -39,7 +39,20 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getEl
 const store = new Store();
 // Gravação que falha em silêncio é o pior defeito possível numa prova: o operador acha que salvou,
 // fecha o app, e o tempo não existe mais. Aqui a falha vira aviso na cara, e insistente.
-store.aoFalharGravacao = (m) => aviso(m);
+store.aoFalharGravacao = (m) => {
+  aviso(m);
+  conferirGravacao();
+};
+
+/**
+ * Enquanto a gravação estiver falhando, a faixa fica na tela — não some sozinha.
+ *
+ * `store.gravacaoFalhou` existia com o comentário "a tela usa isto para insistir no aviso" e não
+ * era lido por ninguém: o único aviso era um toast de 6 segundos.
+ */
+function conferirGravacao(): void {
+  $("faixa-falha").hidden = !store.gravacaoFalhou;
+}
 
 // ROI em fração (a mesma convenção do app nativo)
 const roi = { lineXFraction: 0.5, bandTopFraction: 0.3, bandBottomFraction: 0.7, stripWidthPx: 15 };
@@ -856,6 +869,7 @@ $("exportarProva").addEventListener("click", () => {
 
 // ------------------------------------------------------------------ histórico
 function desenharHistorico(): void {
+  conferirGravacao();
   desenharConferencia();
   const el = $("listaHistorico");
   el.innerHTML = "";
@@ -992,6 +1006,10 @@ function desenharConferencia(): void {
 $<HTMLSelectElement>("escopoConferencia").addEventListener("change", (ev) => {
   escopoConferencia = (ev.target as HTMLSelectElement).value === "tudo" ? "tudo" : "prova";
   desenharConferencia();
+});
+
+$("salvarFalha").addEventListener("click", () => {
+  mostrarTexto("fotocelula-historico.csv", csvHistorico(store.passadas));
 });
 
 $("exportarHistorico").addEventListener("click", () => {
