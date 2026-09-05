@@ -1,0 +1,291 @@
+/* Identidade da arena: verde escuro, vermelho do feixe, areia dos tambores — as cores do ícone. */
+:root {
+  --fundo: #0e1411;
+  --fundo2: #141b17;
+  --cartao: #1b241e;
+  --borda: #2b3a31;
+  --texto: #f0e9d8;
+  --suave: #9fb0a4;
+  --feixe: #d7263d;
+  --verde: #39d353;
+  --areia: #c4850a;
+  --azul: #1e5aa8;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: linear-gradient(180deg, var(--fundo) 0%, var(--fundo2) 100%);
+  background-attachment: fixed;
+  color: var(--texto);
+  font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(14, 20, 17, 0.92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--borda);
+  padding: max(8px, env(safe-area-inset-top)) 12px 0;
+}
+
+h1 {
+  margin: 4px 0 8px;
+  font-size: 19px;
+  letter-spacing: 0.02em;
+}
+h1::before {
+  content: "";
+  display: inline-block;
+  width: 4px;
+  height: 18px;
+  background: var(--feixe);
+  border-radius: 2px;
+  margin-right: 8px;
+  vertical-align: -3px;
+  box-shadow: 0 0 10px rgba(215, 38, 61, 0.7);
+}
+
+h2 { font-size: 15px; margin: 0 0 10px; color: var(--suave); text-transform: uppercase; letter-spacing: 0.06em; }
+
+nav {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+}
+nav button {
+  flex: 1 0 auto;
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: var(--suave);
+  font: inherit;
+  font-size: 15px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+nav button.ativa { color: var(--texto); border-bottom-color: var(--feixe); }
+
+main { padding: 12px; max-width: 900px; margin: 0 auto; }
+.aba { display: none; }
+.aba.ativa { display: block; }
+
+.cartao {
+  background: var(--cartao);
+  border: 1px solid var(--borda);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+
+.linha { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.linha label { flex: 1 1 240px; font-size: 14px; color: var(--suave); }
+.linha input[type="range"] { width: 100%; accent-color: var(--feixe); }
+
+input[type="text"], input[type="number"] {
+  flex: 1 1 120px;
+  min-width: 0;
+  background: #0d120f;
+  border: 1px solid var(--borda);
+  border-radius: 10px;
+  color: var(--texto);
+  font: inherit;
+  padding: 11px 12px;
+}
+
+.botao {
+  display: inline-block;
+  background: #24312a;
+  border: 1px solid var(--borda);
+  border-radius: 12px;
+  color: var(--texto);
+  font: inherit;
+  font-weight: 600;
+  padding: 12px 16px;
+  cursor: pointer;
+  text-align: center;
+  min-height: 46px;   /* alvo grande: uso com luva, no sol */
+}
+.botao.grande { width: 100%; font-size: 17px; padding: 16px; }
+.botao.primario { background: var(--feixe); border-color: var(--feixe); color: #fff; }
+.botao.perigo { border-color: #6b2230; color: #ff9aa7; }
+.botao:disabled { opacity: 0.45; }
+
+.escolher input[type="file"] { position: absolute; opacity: 0; width: 0; height: 0; }
+.escolher { display: block; }
+.escolher.pequeno .botao { width: auto; }
+
+.dica { color: var(--suave); font-size: 13px; margin: 8px 0; }
+
+/* Caixa recolhida: o aviso sobre o tamanho do vídeo precisa estar à mão sem empurrar o botão
+   para fora da primeira tela. */
+.caixa-dica { background: #0d120f; border: 1px solid #1e2a22; border-radius: 10px; padding: 10px 12px; }
+.caixa-dica > summary { cursor: pointer; color: var(--texto); font-size: 14px; }
+.caixa-dica[open] > summary { margin-bottom: 6px; }
+.caixa-dica ol { margin: 6px 0 0; padding-left: 20px; }
+.caixa-dica li { margin: 6px 0; }
+code { background: #0d120f; padding: 1px 5px; border-radius: 5px; font-size: 12px; }
+
+#palco { position: relative; width: 100%; margin: 10px 0; touch-action: none; }
+#palco canvas { width: 100%; display: block; border-radius: 10px; }
+#overlay { position: absolute; inset: 0; }
+
+.barra { background: #0d120f; border-radius: 6px; height: 8px; overflow: hidden; }
+.barra > div { height: 100%; width: 0; background: var(--feixe); transition: width 0.15s linear; }
+
+/* cartão de resultado: competidor e tempo em primeiro plano, legíveis a alguns metros */
+.resultado { background: var(--cartao); border: 1px solid var(--borda); border-radius: 14px; padding: 16px; }
+.resultado .quem { color: var(--verde); font-weight: 700; font-size: 17px; }
+.resultado .tempo {
+  font: 800 clamp(44px, 16vw, 76px)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  margin: 6px 0;
+}
+.resultado .tempo.sat { color: var(--feixe); }
+.resultado .detalhe { color: var(--suave); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+.selo {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  margin-right: 6px;
+}
+.selo.q2 { background: #14361f; color: var(--verde); }
+.selo.q1 { background: #3a3210; color: #f5c451; }
+.selo.q0 { background: #3a1b1b; color: #ff9aa7; }
+.selo.aviso { background: #3a2a10; color: #f5c451; }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--borda); }
+th { color: var(--suave); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+tr.sat td { color: var(--suave); }
+
+#faixa-proximo {
+  background: #143024;
+  border: 1px solid #2f5e45;
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+#faixa-proximo .rotulo { color: #9fd3b0; font-size: 11px; font-weight: 700; letter-spacing: 0.1em; }
+#faixa-proximo .nome { font-size: 22px; font-weight: 800; }
+
+#aviso {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  background: #3a1b1b;
+  border: 1px solid #6b2230;
+  color: #ffd7dc;
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 14px;
+  z-index: 20;
+}
+#aviso.ok { background: #14361f; border-color: #2f5e45; color: #d7f5df; }
+
+.item { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--borda); }
+.item .cresce { flex: 1; min-width: 0; }
+.item .sub { color: var(--suave); font-size: 12px; }
+.item button { background: none; border: none; color: var(--suave); font: inherit; cursor: pointer; padding: 6px; }
+.item.feito .cresce { color: var(--suave); }
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 10, 8, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 30;
+}
+.modal-conteudo { max-width: 560px; width: 100%; }
+.modal textarea {
+  width: 100%;
+  background: #0d120f;
+  color: var(--texto);
+  border: 1px solid var(--borda);
+  border-radius: 10px;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 10px;
+}
+
+/* Aviso da taxa de quadros: é a diferença entre o milésimo e ±17 ms — precisa aparecer antes de o
+   usuário gastar a análise inteira, não depois. */
+.faixa-aviso {
+  border-left: 3px solid var(--areia);
+  background: #241d0f;
+  color: #f3e2b8;
+  border-radius: 0 12px 12px 0;
+  padding: 11px 13px;
+  margin: 10px 0;
+  font-size: 14px;
+}
+.faixa-aviso.bom { border-left-color: var(--verde); background: #14261b; color: #d7f5df; }
+.faixa-aviso.ruim { border-left-color: var(--feixe); background: #2b1216; color: #ffd7dc; }
+
+/* ---------------------------------------------------------------- conferência com o oficial */
+.linha.conferencia { border-top: 1px solid var(--borda); padding-top: 10px; margin-top: 12px; }
+.linha.conferencia label { flex: 0 0 100%; }
+.linha.conferencia input { flex: 0 0 130px; font-variant-numeric: tabular-nums; }
+.detalhe.conf-ok { color: var(--verde); }
+.detalhe.conf-fora { color: #f5c451; }
+
+/* campo pequeno para corrigir o tempo oficial direto no histórico */
+.oficial-mini {
+  flex: 0 0 86px;
+  width: 86px;
+  padding: 7px 8px !important;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* os três números do resumo, lado a lado e legíveis de longe */
+.linha-numeros { display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0; }
+.linha-numeros > div { display: flex; flex-direction: column; }
+.linha-numeros b { font-size: 22px; font-variant-numeric: tabular-nums; }
+.linha-numeros span { color: var(--suave); font-size: 12px; }
+
+/* ---------------------------------------------------------------- visor ao vivo */
+/* O vídeo não pode ocupar a tela toda: com o celular deitado, 16:9 em largura cheia empurra o
+   cronômetro e os botões para fora da tela. Limitado pela ALTURA, ele encolhe mantendo a proporção,
+   e o overlay é posicionado por JS sobre o retângulo real do vídeo — nunca sobre o container, senão
+   a linha vermelha desenhada deixaria de corresponder à faixa medida. */
+#palcoVisor { position: relative; width: 100%; margin: 10px 0; touch-action: none; text-align: center; }
+#palcoVisor video { max-width: 100%; max-height: 40vh; max-height: 40dvh; display: block;
+  margin: 0 auto; border-radius: 10px; background: #000; }
+/* Deitado, a altura visível é pouca e é ela que manda: a imagem só precisa ser grande o bastante
+   para posicionar a linha, enquanto o cronômetro tem de ser lido a metros de distância. */
+@media (orientation: landscape) { #palcoVisor video { max-height: 46dvh; } }
+
+/* O cronômetro do visor. Sem isto ele herdava o texto comum da página — o relógio existia e ninguém
+   via, porque a fonte grande só estava definida para o cartão de resultado. */
+/* Nada de `position: sticky` aqui: o painel flutuando cobre os controles de baixo (as caixinhas de
+   ajuste, o campo do tempo oficial) e o toque não chega neles — o teste pegou isso. Ele já está
+   acima da imagem, que é o que se queria; e com o vídeo limitado pela altura, tudo cabe sem rolar. */
+#visorTempo { text-align: center; margin: 2px 0 8px; }
+#visorRelogio {
+  font: 800 clamp(40px, 13vw, 72px)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+@media (orientation: landscape) { #visorRelogio { font-size: clamp(30px, 11dvh, 56px); } }
+#visorTempo .detalhe { color: var(--suave); font-size: 13px; }
+#visorOverlay { position: absolute; left: 0; top: 0; }
+#visorFaixa { position: absolute; left: 0; top: 0; visibility: hidden; }
+
+#visorBarra { background: #0d120f; border: 1px solid var(--borda); border-radius: 8px; height: 26px; overflow: hidden; }
+#visorBarra > div {
+  height: 100%; width: 0; border-radius: 7px;
+  background: var(--verde); transition: width 0.08s linear, background 0.08s linear;
+}
+#visorBarra.cruzando > div { background: var(--feixe); box-shadow: 0 0 16px rgba(215, 38, 61, 0.9); }
