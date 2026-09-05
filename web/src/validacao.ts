@@ -75,6 +75,28 @@ export function casasDecimais(texto: string): number {
   return m ? m[1].length : 0;
 }
 
+/**
+ * A incerteza com que se julga uma comparação — a do app MAIS o arredondamento da referência.
+ *
+ * Um oficial com 2 casas ("14,32") carrega ±5 ms de arredondamento DA PRÓPRIA FOTOCÉLULA. Ignorar
+ * isso marcava como "fora" passadas em que o app estava certo, e o painel do dia diria "3 de 10
+ * dentro" — levando à conclusão errada de que o app mente.
+ *
+ * Só vale quando o texto digitado é conhecido: sem ele não dá para supor casa nenhuma, e supor zero
+ * daria meio segundo de folga a toda passada — o teste de honestidade viraria enfeite.
+ *
+ * Está aqui, e não em dois lugares, porque estava em dois: o cartão julgava só pela incerteza do
+ * app e o painel já somava o arredondamento, então a MESMA passada aparecia "FORA" no cartão e
+ * "dentro" no Histórico.
+ */
+export function incertezaComparacaoNs(p: Passada): number {
+  const texto = p.oficialTexto ?? "";
+  const casas = casasDecimais(texto);
+  const arredondamentoNs =
+    texto.trim() === "" || casas >= 3 ? 0 : Math.round(0.5 * Math.pow(10, -casas) * NS_POR_S);
+  return (p.incertezaLargadaNs ?? 0) + (p.incertezaChegadaNs ?? 0) + arredondamentoNs;
+}
+
 export interface Comparacao {
   passada: Passada;
   /** medido − oficial. Positivo = o app mediu MAIS tempo que a fotocélula. */
@@ -98,17 +120,7 @@ export function comparacoes(passadas: Passada[]): Comparacao[] {
   for (const p of passadas) {
     const oficial = p.oficialNs ?? null;
     if (oficial === null || oficial <= 0 || p.semTempo) continue;
-    // A incerteza da comparação não é só a do app: um oficial com 2 casas ("14,32") carrega
-    // ±5 ms de arredondamento DA PRÓPRIA REFERÊNCIA. Ignorar isso marcava como "fora" passadas em
-    // que o app estava certo — e o painel do dia diria "3 de 10 dentro", levando à conclusão
-    // errada de que o app mente.
-    // Só quando o texto digitado é conhecido: sem ele não dá para supor casa nenhuma, e supor zero
-    // daria meio segundo de folga a toda passada — o teste de honestidade viraria enfeite.
-    const texto = p.oficialTexto ?? "";
-    const casas = casasDecimais(texto);
-    const arredondamentoNs =
-      texto.trim() === "" || casas >= 3 ? 0 : Math.round(0.5 * Math.pow(10, -casas) * NS_POR_S);
-    const incertezaNs = (p.incertezaLargadaNs ?? 0) + (p.incertezaChegadaNs ?? 0) + arredondamentoNs;
+    const incertezaNs = incertezaComparacaoNs(p);
     const erroRefinadoNs = p.elapsedRefinedNs - oficial;
     out.push({
       passada: p,

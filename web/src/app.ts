@@ -17,6 +17,7 @@ import {
 import {
   comparacoes,
   erroEmMs,
+  incertezaComparacaoNs,
   nomeOrigem,
   origemDe,
   parseTempo,
@@ -68,6 +69,19 @@ Object.assign(roi, store.roi ?? {});
  * arrasto justamente quando ele precisa ser preciso.
  */
 let timerRoi = 0;
+/**
+ * O tempo oficial digitado grava sozinho, com espera.
+ *
+ * Ele já estava sendo escrito no objeto que está DENTRO do store — mas sem chamar `salvar()`.
+ * Recarregar apagava o número em silêncio, e pior: uma ação sem relação nenhuma (um toque em
+ * "+ tambor" depois) gravava junto o oficial que estava pendurado. Como é dele que a conferência
+ * inteira depende, é o resto mais caro do defeito de "só grava no toque em Salvar".
+ */
+let timerOficial = 0;
+function guardarOficial(p: Passada): void {
+  clearTimeout(timerOficial);
+  timerOficial = window.setTimeout(() => store.salvarPassada(p), 400);
+}
 function guardarRoi(agora = false): void {
   clearTimeout(timerRoi);
   if (agora) return store.salvarRoi({ ...roi });
@@ -89,6 +103,8 @@ let analisando: AbortController | null = null;
 /** Taxa de quadros lida do cabeçalho do arquivo (0 = ainda não sei). */
 let fpsArquivo = 0;
 let passadaAberta: Passada | null = null;
+/** O arquivo que a última análise realmente leu — pode não ser o que está escolhido agora. */
+let arquivoDaAnalise: File | null = null;
 
 // ------------------------------------------------------------------ avisos
 let avisoTimer = 0;
@@ -112,7 +128,7 @@ for (const b of document.querySelectorAll<HTMLButtonElement>("#abas button")) {
     if (b.dataset.aba === "historico") desenharHistorico();
     // Sair da aba desliga a câmera: câmera ligada aquece o aparelho, e aparelho quente é o que faz
     // o iPhone baixar a taxa na hora de gravar a passada.
-    if (b.dataset.aba !== "visor") fecharVisor();
+    if (b.dataset.aba !== "visor") void fecharVisor();
   });
 }
 
@@ -287,7 +303,10 @@ async function mostrarPrimeiroQuadro(f: File): Promise<void> {
     videoW = 0;
     videoH = 0;
     fpsArquivo = 0;
-    $("editor").hidden = true;
+    // `#editor` CONTÉM o Cancelar, a barra de progresso e o botão Analisar. Escondê-lo com uma
+    // análise em curso deixava o usuário sem como cancelar, com o progresso invisível e sem
+    // caminho de volta ao editor quando ela terminasse.
+    if (analisando === null) $("editor").hidden = true;
     $("linhaInstante").hidden = true;
     $("aviso-taxa").hidden = true;
     aviso(`${(e as Error).message} — escolha o vídeo de novo, ou converta o arquivo antes.`);
@@ -450,6 +469,10 @@ $("analisar").addEventListener("click", async () => {
   $("cancelar").hidden = false;
   $("progresso").hidden = false;
   $("resultado").hidden = true;
+  // Congela o arquivo analisado: trocar de vídeo durante a análise carimbava a passada com o nome
+  // do arquivo NOVO, e o botão "ver a largada" buscava no clipe novo — a evidência que o app
+  // oferece para auditar o tempo era de outro vídeo.
+  const arquivoAnalisado = arquivo;
   const t0 = performance.now();
   let bytesLidos = 0;
   let bytesTotal = 0;
@@ -501,7 +524,7 @@ $("analisar").addEventListener("click", async () => {
     });
     // gancho de teste: o teste ponta a ponta lê daqui os números crus da análise
     (window as unknown as { ultimaAnalise?: unknown }).ultimaAnalise = res;
-    mostrarResultado(res, (performance.now() - t0) / 1000);
+    mostrarResultado(res, (performance.now() - t0) / 1000, arquivoAnalisado);
   } catch (e) {
     if ((e as Error).name !== "AbortError") aviso((e as Error).message);
   } finally {
@@ -516,7 +539,10 @@ $("analisar").addEventListener("click", async () => {
 $("cancelar").addEventListener("click", () => analisando?.abort());
 
 // ------------------------------------------------------------------ resultado
-function mostrarResultado(res: AnalysisResult, segundos: number): void {
+function mostrarResultado(res: AnalysisResult, segundos: number, analisado: File | null): void {
+  // Se o arquivo mudou durante a análise, o editor mostra outro clipe: não oferecer "ver a
+  // largada", que levaria ao quadro errado e faria passar por auditoria o que não é.
+  arquivoDaAnalise = analisado;
   const el = $("resultado");
   el.hidden = false;
   if (res.run === null) {
@@ -554,7 +580,7 @@ function mostrarResultado(res: AnalysisResult, segundos: number): void {
     degradada: r.degraded || res.missedFrames > 0,
     fps: res.measuredFps,
     quadrosPerdidos: res.missedFrames,
-    arquivo: arquivo?.name ?? "",
+    arquivo: analisado?.name ?? "",
     origem: "video",
   };
   passadaAberta = p;
@@ -598,7 +624,7 @@ function desenharCartao(segundos: number, res: AnalysisResult): void {
       <button class="botao" id="botaoSat">${p.semTempo ? "SAT ✓" : "SAT"}</button>
     </div>
     ${
-      res.largadaS !== null && res.chegadaS !== null
+      res.largadaS !== null && res.chegadaS !== null && arquivoDaAnalise === arquivo
         ? `<div class="linha">
              <span class="detalhe">Conferir no vídeo:</span>
              <button class="botao" id="verLargada">ver a largada</button>
@@ -642,7 +668,7 @@ function desenharCartao(segundos: number, res: AnalysisResult): void {
   // Ver o quadro do disparo é o que transforma o número em medição auditável: se o cavalo está
   // cruzando ali, o tempo é dele; se aparece poeira ou sombra, o tempo é lixo — e dá para saber em
   // dois segundos, em vez de discutir.
-  if (res.largadaS !== null && res.chegadaS !== null) {
+  if (res.largadaS !== null && res.chegadaS !== null && arquivoDaAnalise === arquivo) {
     $("verLargada").addEventListener("click", () => void irParaInstante(res.largadaS!));
     $("verChegada").addEventListener("click", () => void irParaInstante(res.chegadaS!));
   }
@@ -662,7 +688,9 @@ function desenharCartao(segundos: number, res: AnalysisResult): void {
       return;
     }
     const erroNs = p.elapsedRefinedNs - oficial;
-    const incertezaNs = p.incertezaLargadaNs + p.incertezaChegadaNs;
+    // MESMA regra do painel do Histórico: a incerteza inclui o arredondamento do oficial digitado.
+    // Sem isto a mesma passada aparecia "FORA" no cartão e "dentro" no painel.
+    const incertezaNs = incertezaComparacaoNs({ ...p, oficialTexto: campoOficial.value });
     const dentro = Math.abs(erroNs) <= incertezaNs;
     const lado = erroNs >= 0 ? "o app mediu mais" : "o app mediu menos";
     alvo.textContent = `${erroEmMs(erroNs)} — ${lado} · ${dentro ? "dentro" : "FORA"} do ±${(incertezaNs / 1e6).toFixed(2)} ms declarado`;
@@ -673,6 +701,7 @@ function desenharCartao(segundos: number, res: AnalysisResult): void {
     const lido = parseTempo(campoOficial.value);
     // Absurdo não entra: fica na tela para ele corrigir, mas não contamina a conferência.
     p.oficialNs = oficialPlausivel(p, lido) ? lido : null;
+    guardarOficial(p);
     pintarErro();
   });
   pintarErro();
@@ -910,7 +939,10 @@ function desenharHistorico(): void {
       p.oficialTexto = oficialInput.value;
       p.oficialNs = novoNs;
       store.salvarPassada(p);
-      desenharHistorico();
+      // A repintura refaz a lista inteira e o botão em que o dedo está DESAPARECE antes do clique:
+      // tocar em "Excluir" com o campo em foco não apagava nada, e o botão parecia morto. Gravar é
+      // imediato; redesenhar pode esperar o clique acontecer.
+      setTimeout(desenharHistorico, 250);
     });
     div.append(oficialInput);
 
@@ -1268,8 +1300,12 @@ const visor = new Visor(
   },
 );
 
-function fecharVisor(): void {
+async function fecharVisor(): Promise<void> {
   if (!visor.ativo) return;
+  // Fechar a câmera mata o gravador e descarta os pedaços. Se estava gravando, fecha e GUARDA o
+  // vídeo antes — sair da aba não pode jogar fora a prova da passada, e o botão não pode ficar
+  // dizendo "Parar e salvar" para sempre.
+  if (visor.gravando) await pararEGuardarVideo();
   soltarTela();
   clearInterval(timerGravacao);
   timerGravacao = 0;
@@ -1298,13 +1334,20 @@ $("abrirVisor").addEventListener("click", async () => {
   relogioParado("não armado — toque em Armar quando a linha estiver no lugar");
   $("visorEstado").textContent = "abrindo a câmera…";
   await visor.abrir();
+  // Ele pode ter trocado de aba enquanto a câmera abria: `fecharVisor` saiu cedo em `!visor.ativo`
+  // e a câmera terminava de abrir FORA da aba, capturando e esquentando o aparelho — que é o que
+  // faz o iPhone baixar a taxa na hora de gravar a passada.
+  if (visor.ativo && !$("aba-visor").classList.contains("ativa")) {
+    void fecharVisor();
+    return;
+  }
   if (visor.ativo) {
     $("fecharVisor").hidden = false;
     iniciarPinturaVisor();
     void manterTelaAcesa();
   }
 });
-$("fecharVisor").addEventListener("click", fecharVisor);
+$("fecharVisor").addEventListener("click", () => void fecharVisor());
 
 /** Arma de verdade, e só então a tela diz que está armado. Devolve se conseguiu. */
 /**
@@ -1604,7 +1647,7 @@ function desenharCartaoVisor(): void {
       return;
     }
     const erroNs = p.elapsedRefinedNs - oficial;
-    const incertezaNs = p.incertezaLargadaNs + p.incertezaChegadaNs;
+    const incertezaNs = incertezaComparacaoNs({ ...p, oficialTexto: campo.value });
     const dentro = Math.abs(erroNs) <= incertezaNs;
     const lado = erroNs >= 0 ? "o app mediu mais" : "o app mediu menos";
     alvo.textContent = `${erroEmMs(erroNs)} — ${lado} · ${dentro ? "dentro" : "FORA"} do ±${(incertezaNs / 1e6).toFixed(2)} ms declarado`;
@@ -1615,6 +1658,7 @@ function desenharCartaoVisor(): void {
     const lido = parseTempo(campo.value);
     // Absurdo não entra: fica na tela para ele corrigir, mas não contamina a conferência.
     p.oficialNs = oficialPlausivel(p, lido) ? lido : null;
+    guardarOficial(p);
     pintarErro();
   });
   pintarErro();
@@ -1742,8 +1786,17 @@ let iniciarPinturaVisor: () => void = () => {};
     else if (arr === "base") roi.bandBottomFraction = lim(p.y, roi.bandTopFraction + 0.05, 1);
     else roi.lineXFraction = lim(p.x, 0.03, 0.97);
     // mexer na faixa invalida a calibragem: a cena medida passou a ser outra
+    // `reiniciarMedicao` zera a engine e desarma. Sem repor os botões, o Armar ficava escondido
+    // para sempre e a tela dizia "Parar" com o cronômetro morto — o cavalo seguinte passava sem
+    // ser medido.
     visor.reiniciarMedicao();
     guardarRoi(true);
+    armarPendente = false;
+    $("armarVisor").hidden = false;
+    $("desarmarVisor").hidden = true;
+    $("desarmarVisor").textContent = "Parar";
+    $("visorPendente").hidden = true;
+    relogioParado("não armado — a linha mudou, medindo a cena de novo");
     desenharOverlay();
   }
   iniciarPinturaVisor = (): void => {
