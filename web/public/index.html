@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#141b17">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Fotocélula">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icone-180.png">
+<link rel="icon" href="icone-180.png">
+<title>Fotocélula Tambor</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<header>
+  <h1>Fotocélula&nbsp;Tambor</h1>
+  <nav id="abas">
+    <button data-aba="passada" class="ativa">Passada</button>
+    <button data-aba="visor">Mirar</button>
+    <button data-aba="prova">Prova</button>
+    <button data-aba="historico">Histórico</button>
+    <button data-aba="ajuda">Ajuda</button>
+  </nav>
+</header>
+
+<main>
+<!-- Fica FIXA enquanto a gravação estiver falhando (aba privada, armazenamento bloqueado, memória
+     cheia). O aviso passageiro sumia em 6 s: ele via um retângulo vermelho no sol, entre um cavalo
+     e outro, e seguia — doze passadas depois o dia inteiro era memória volátil. -->
+<div id="faixa-falha" class="faixa-aviso ruim" hidden>
+  <b>NÃO ESTOU CONSEGUINDO SALVAR neste navegador.</b> Os tempos existem só até você fechar a página.
+  <button id="salvarFalha" class="botao">Copiar tudo agora</button>
+</div>
+<!-- ------------------------------------------------------------------ passada -->
+<section id="aba-passada" class="aba ativa">
+  <div id="faixa-proximo" hidden></div>
+
+  <label class="escolher">
+    <input type="file" id="arquivo" accept="video/*">
+    <span class="botao grande">Escolher vídeo da passada</span>
+  </label>
+
+  <!-- Segundo caminho, de propósito. Ao escolher da FOTOTECA o iOS EXPORTA o item antes de
+       entregá-lo, e num clipe longo de câmera lenta essa exportação demora ou não termina — é o
+       "Preparando…" que trava. Pedindo tipos de ARQUIVO (e não "video/*"), o iPhone abre o app
+       Arquivos, que entrega o arquivo como ele está, sem exportar nada. -->
+  <label class="escolher pequeno" id="escolher-arquivos">
+    <input type="file" id="arquivoDoc" accept=".mov,.mp4,.m4v,video/quicktime,video/mp4">
+    <span class="botao">Travou nas Fotos? Escolher pelo app Arquivos</span>
+  </label>
+  <p class="dica">Grave a passada no app <b>Câmera</b> do iPhone, aba <b>CÂM. LENTA</b>. Uma vez só,
+     nos Ajustes do iPhone: <b>Câmera → Gravar Câm. Lenta → 1080p a 240 fps</b>.
+     O vídeo é analisado aqui dentro, no seu aparelho — <b>nada é enviado para lugar nenhum</b>.</p>
+
+  <details class="dica caixa-dica" open>
+    <summary><b>Travou em “Preparando…” e não abre? Leia isto</b></summary>
+    <p>Quando você escolhe pela <b>Fototeca</b>, o iPhone <b>exporta</b> o vídeo antes de entregar.
+       Num clipe longo de câmera lenta essa exportação demora — e às vezes desiste. Isso acontece
+       fora desta página; não adianta esperar. Dois jeitos de contornar, do mais rápido para o mais
+       certo:</p>
+    <ol>
+      <li><b>Encurte o clipe.</b> No app <b>Fotos</b>, abra o vídeo → <b>Editar</b> → arraste as duas
+          pontas até sobrar só a passada (<b>5 a 10 segundos bastam</b>) → <b>Concluído</b> →
+          <b>Salvar como Novo Clipe</b>. Escolha esse clipe novo. Clipe curto exporta rápido.</li>
+      <li><b>Fuja da exportação.</b> No app <b>Fotos</b>, com o vídeo aberto:
+          <b>Compartilhar → Salvar em Arquivos</b>. Depois volte aqui e use o botão
+          <b>“Escolher pelo app Arquivos”</b>. Esse caminho pega o arquivo como ele está.</li>
+    </ol>
+    <p><b>Se o vídeo parece ter 3 ou 4 minutos, está certo:</b> em câmera lenta, 20 segundos gravados
+       <i>tocam</i> por quase 3 minutos. O que vale para o tempo da prova são os quadros do arquivo,
+       não a duração da reprodução — e a linha embaixo da imagem mostra os dois números.</p>
+    <p>Depois de escolher, a tela mostra <b>quantos MB já foram lidos</b>. Enquanto esse número sobe,
+       está funcionando.</p>
+  </details>
+  <div id="aviso-taxa" class="faixa-aviso" hidden></div>
+
+  <div id="editor" hidden>
+    <div id="palco">
+      <canvas id="quadro"></canvas>
+      <canvas id="overlay"></canvas>
+    </div>
+    <p class="dica" id="info-video"></p>
+
+  <!-- Percorrer o clipe: sem isto o usuário posiciona a linha sobre uma pista vazia, adivinhando
+       por onde o cavalo vai passar. Foi o que aconteceu no primeiro vídeo real. -->
+  <div class="linha" id="linhaInstante" hidden>
+    <label for="instante">Procurar o cavalo no vídeo — <output id="instanteOut">0,00 s</output>
+      <input type="range" id="instante" min="0" max="1" step="0.01" value="0">
+    </label>
+  </div>
+    <div class="linha">
+      <label>Largura da faixa <output id="larguraOut">15</output> px
+        <input type="range" id="largura" min="5" max="40" value="15">
+      </label>
+    </div>
+    <div class="linha">
+      <button id="analisar" class="botao grande primario">Analisar passada</button>
+      <button id="cancelar" class="botao" hidden>Cancelar</button>
+    </div>
+    <div id="progresso" hidden>
+      <div class="barra"><div id="barraFill"></div></div>
+      <p class="dica" id="progressoTexto"></p>
+    </div>
+  </div>
+
+  <div id="resultado" hidden></div>
+</section>
+
+<!-- ------------------------------------------------------------------ prova -->
+<section id="aba-prova" class="aba">
+  <div class="cartao">
+    <h2>Prova</h2>
+    <div class="linha">
+      <input type="text" id="provaNome" placeholder="Nome da prova">
+      <input type="text" id="provaLocal" placeholder="Local">
+      <button id="criarProva" class="botao">Criar</button>
+    </div>
+    <div id="listaProvas"></div>
+  </div>
+
+  <div class="cartao" id="cartaoInscricoes">
+    <h2>Inscrições</h2>
+    <div class="linha">
+      <input type="number" id="insOrdem" placeholder="Nº" min="1" inputmode="numeric">
+      <input type="text" id="insCompetidor" placeholder="Competidor">
+      <input type="text" id="insCavalo" placeholder="Cavalo">
+      <input type="text" id="insCategoria" placeholder="Categoria">
+      <button id="addInscricao" class="botao">+</button>
+    </div>
+    <label class="escolher pequeno">
+      <input type="file" id="csvInscricoes" accept=".csv,text/csv,text/plain">
+      <span class="botao">Importar CSV</span>
+    </label>
+    <p class="dica">formato: <code>ordem;competidor;cavalo;categoria</code> (cabeçalho opcional)</p>
+    <div id="listaInscricoes"></div>
+  </div>
+
+  <div class="cartao">
+    <h2>Classificação</h2>
+    <div id="classificacao"></div>
+    <button id="exportarProva" class="botao">Baixar CSV da prova</button>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------------ histórico -->
+<section id="aba-historico" class="aba">
+  <!-- Conferência contra a cronometragem oficial. Fica escondido até existir a primeira passada
+       com tempo oficial digitado. -->
+  <div class="cartao" id="cartaoConferencia" hidden>
+    <h2>Conferência com a cronometragem oficial</h2>
+    <!-- O padrão é a prova aberta: o viés de HOJE é o que interessa num dia de calibração, e somar
+         as passadas de teste de ontem contaminaria o número. -->
+    <div class="linha" id="escopoLinha" hidden>
+      <label for="escopoConferencia">Somar</label>
+      <select id="escopoConferencia">
+        <option value="prova">só esta prova</option>
+        <option value="tudo">todo o histórico</option>
+      </select>
+      <span class="detalhe" id="escopoNome"></span>
+    </div>
+    <div id="resumoConferencia"></div>
+    <div class="linha">
+      <button id="copiarConferencia" class="botao">Ver / copiar a tabela</button>
+    </div>
+  </div>
+
+  <div class="cartao">
+    <h2>Histórico</h2>
+    <div id="listaHistorico"></div>
+    <div class="linha">
+      <button id="exportarHistorico" class="botao">Baixar CSV</button>
+      <button id="limparHistorico" class="botao perigo">Apagar tudo</button>
+    </div>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------------ visor ao vivo -->
+<section id="aba-visor" class="aba">
+  <div class="cartao">
+    <h2>Mirar e cronometrar ao vivo</h2>
+    <p class="dica">Aponte, ajuste a linha e <b>arme</b>: o tempo sai na hora. A faixa que você
+       posicionar aqui é a mesma que a análise vai usar no vídeo.</p>
+    <div class="linha">
+      <button id="abrirVisor" class="botao grande primario">Abrir a câmera</button>
+      <button id="fecharVisor" class="botao" hidden>Desligar</button>
+    </div>
+
+    <!-- O painel fica ACIMA da imagem de propósito: com o celular deitado no tripé, o vídeo ocupa a
+         tela inteira e tudo que estivesse embaixo exigiria rolar a página justamente na hora da
+         passada. Aqui o cronômetro, o movimento e os botões ficam no campo de visão. -->
+    <div id="visorSinal" hidden>
+      <div id="visorTempo" hidden>
+        <div class="tempo" id="visorRelogio">0.000</div>
+        <p class="detalhe" id="visorFase"></p>
+      </div>
+      <div id="resultadoVisor" hidden></div>
+      <div id="visorBarra"><div></div></div>
+      <p class="detalhe" id="visorEstado"></p>
+      <div class="linha">
+        <button id="armarVisor" class="botao grande">Armar o cronômetro</button>
+        <button id="desarmarVisor" class="botao" hidden>Parar</button>
+        <button id="recalibrarVisor" class="botao">Medir a cena de novo</button>
+      </div>
+      <div class="linha">
+        <button id="gravarVisor" class="botao">Gravar vídeo</button>
+        <span class="detalhe" id="gravarEstado"></span>
+      </div>
+      <div id="videoSalvo" hidden></div>
+      <label class="linha" for="visorAuto">
+        <input type="checkbox" id="visorAuto" checked>
+        <span class="detalhe"><b>Disparar sozinho.</b> Assim que a cena for medida ele arma, e depois
+              de cada passada arma de novo — você não precisa tocar em nada entre um cavalo e outro.</span>
+      </label>
+      <p class="dica" id="visorDica" hidden></p>
+      <p class="dica" id="visorPendente" hidden><b>Ainda medindo a cena parada.</b> Deixe o celular
+         quieto e não passe nada na frente da linha. Assim que terminar, o cronômetro arma sozinho —
+         a linha acima mostra o quanto falta.</p>
+    </div>
+
+    <div id="palcoVisor" hidden>
+      <video id="visorVideo" playsinline muted></video>
+      <canvas id="visorOverlay"></canvas>
+      <canvas id="visorFaixa" hidden></canvas>
+    </div>
+
+    <!-- Ajustes de antes da prova: ficam embaixo para não roubar espaço do que se olha de longe. -->
+    <div id="visorAjustes" hidden>
+      <label class="linha" for="visorMao">
+        <input type="checkbox" id="visorMao">
+        <span class="detalhe"><b>Estou segurando na mão (sem tripé).</b> O limiar sobe para o tremor
+              não disparar sozinho, e a passada é gravada num caminho separado — serve para ver o app
+              funcionando, <b>não</b> para conferir com a fotocélula.</span>
+      </label>
+      <label class="linha" for="visorEnsaio">
+        <input type="checkbox" id="visorEnsaio">
+        <span class="detalhe">Ensaio: aceita a chegada 2 s depois da largada (para testar com a
+              mão). Numa prova de verdade deixe desligado — o rabo do cavalo e a poeira passam na
+              linha logo depois da largada e parariam o cronômetro cedo.</span>
+      </label>
+    </div>
+
+    <p class="dica"><b>Aqui a câmera é a do navegador: 30 ou 60 quadros por segundo, contra 240 do
+       vídeo em câmera lenta.</b> Cada passada sai com a incerteza que o próprio app calculou —
+       nenhum número é prometido de antemão. Para saber se este caminho serve, digite o tempo da
+       fotocélula em algumas passadas de cada tipo (ao vivo e gravadas) e olhe a linha
+       <b>“por caminho”</b> na aba Histórico: é ela que compara os dois.</p>
+
+    <p class="dica"><b>O que já foi medido aqui</b> (cena sintética com cruzamento conhecido, 20 de
+       20 erros dentro do intervalo declarado):</p>
+    <table>
+      <tr><th>situação</th><th>incerteza declarada</th><th>erro medido</th></tr>
+      <tr><td>30 quadros por segundo</td><td>±51 ms (qualidade 0)</td><td>4,0 ms</td></tr>
+      <tr><td><b>60 quadros por segundo</b></td><td><b>±4,9 ms</b></td><td>dentro do declarado</td></tr>
+      <tr><td>pouco contraste, 30 fps</td><td>±78 ms</td><td>0,08 ms</td></tr>
+      <tr><td>cavalo escuro em fundo claro, 30 fps</td><td>±13 ms</td><td>dentro do declarado</td></tr>
+    </table>
+    <p class="dica"><b>60 quadros por segundo é a divisa</b>: dobrar a taxa vale mais que qualquer
+       ajuste de linha — a mesma cena passa de ±51 ms para ±4,9 ms. E repare na terceira linha: com
+       pouco contraste o tempo continua ótimo, o que piora é a <i>confiança</i> que o app consegue
+       declarar. É por isso que o número grande nunca vem sozinho.</p>
+    <p class="dica"><b>Quando algo cruza e o app não consegue confirmar</b> (acontece a 30 quadros
+       por segundo, quando o cavalo cobre a faixa por menos de dois quadros), a passada sai marcada
+       com um aviso e como <b>degradada</b>. Um tempo assim pode ser de outro par de eventos —
+       confira no vídeo antes de usar.</p>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------------ ajuda -->
+<section id="aba-ajuda" class="aba">
+  <div class="cartao">
+    <h2>Como usar</h2>
+    <ol>
+      <li><b>Grave em câmera lenta.</b> App Câmera do iPhone → modo <b>Câm. Lenta</b> → nos Ajustes do
+          iPhone, <i>Câmera → Gravar Câm. Lenta → 1080p a 240 fps</i>.</li>
+      <li><b>Celular parado.</b> Tripé, apoiado ou encostado — se a câmera se mexer, a faixa deixa de
+          ser uma linha fixa e a medição perde o sentido.</li>
+      <li><b>Enquadre a linha de largada/chegada</b> no meio da imagem, com o celular deitado e
+          nivelado.</li>
+      <li><b>Escolha o vídeo</b> aqui e arraste a linha vermelha até onde o cavalo cruza. A banda
+          (as duas alças) deve pegar a altura do peito, numa parte uniforme.</li>
+      <li><b>Analisar.</b> O tempo sai com o milésimo, a qualidade e a incerteza.</li>
+    </ol>
+    <h2>E se eu apertar o gravar tarde?</h2>
+    <p>O app precisa de um trecho com a pista <b>vazia</b> para aprender o "normal" da cena — é a
+       calibragem, e ela é automática. Mas esse trecho <b>não precisa estar no começo</b>: o app
+       procura o pedaço mais parado em qualquer ponto do clipe (antes da largada, entre a ida e a
+       volta, ou depois da chegada) e calibra ali. O cartão de resultado diz qual trecho ele usou.</p>
+    <p class="dica">Só não adianta se a cena nunca ficar parada — celular na mão, tripé esbarrado,
+       gente passando na frente. Aí ele avisa em vez de dar um tempo furado.</p>
+
+    <h2>O que a qualidade quer dizer</h2>
+    <p class="dica">O número que vale é a <b>incerteza que o cartão mostra em cada passada</b> — ela
+       é calculada para aquele vídeo, não é uma promessa fixa. Os valores abaixo são o que foi
+       medido nos testes, para dar ordem de grandeza.</p>
+    <ul>
+      <li><b>Qualidade 2</b> — refinamento completo. Medido: <b>±0,8 ms</b> num clipe de 240 fps
+          (chega a ±0,1 ms em cena limpa).</li>
+      <li><b>Qualidade 1</b> — só um intervalo honesto: o app sabe que não conseguiu fechar, e o
+          intervalo que ele declara contém o tempo certo.</li>
+      <li><b>Qualidade 0</b> — sem refinamento, só a janela do quadro. Medido: <b>±7 a ±14 ms</b> —
+          bem mais que os ±2 ms da quantização, porque quando o refinamento falha a janela honesta é
+          maior. Causa mais comum: <b>pelagem malhada ou arreios</b> na faixa, e baixo contraste.</li>
+    </ul>
+    <h2>Roteiro do dia de calibração</h2>
+    <ol>
+      <li><b>Antes de tudo</b>: aba <b>Prova</b> → criar uma prova com o nome do dia (ex.:
+          <i>Calibração 04/09</i>). Tudo que for salvo fica agrupado nela, e é isso que faz a
+          conferência somar só o dia de hoje.</li>
+      <li><b>Monte o tripé e não mexa mais.</b> Aba <b>Mirar</b> → apontar → arrastar a linha
+          vermelha até onde o cavalo cruza → conferir que a barra acende quando algo passa. A linha
+          fica guardada, inclusive se a página recarregar.</li>
+      <li><b>Passada gravada</b>: gravar em câmera lenta → aba Passada → escolher o vídeo → conferir
+          que diz <b>240 quadros por segundo</b> → arrastar “procurar o cavalo” para ver se a linha
+          está no caminho dele → <b>Analisar</b> → <b>ver a largada</b> para confirmar que disparou
+          no cavalo → digitar o tempo do painel → <b>Salvar</b>.</li>
+      <li><b>Passada ao vivo</b>: aba Mirar → <b>Abrir a câmera</b> → esperar sair “medindo a cena
+          parada…” → <b>Armar o cronômetro</b> → o tempo fecha sozinho → digitar o tempo do painel →
+          <b>Salvar</b>.</li>
+      <li><b>De vez em quando</b>: aba <b>Histórico</b> → olhar o viés, o erro médio e “quantos
+          couberam na incerteza”, nas linhas <b>por caminho</b>. Viés constante é erro sistemático
+          (dá para corrigir); espalhado é ruído.</li>
+      <li><b>No fim</b>: <b>Ver / copiar a tabela</b> e me mandar o texto.</li>
+    </ol>
+    <p class="dica"><b>Antes de sair de casa:</b> 240 quadros por segundo a 1080p gastam cerca de
+       <b>400 MB por minuto</b> de gravação — confira espaço e bateria. Grave clipes de
+       <b>20 a 25 s</b> por passada; clipe longo trava na hora de o iPhone exportar. O modo ao vivo
+       mantém a tela ligada e a câmera aberta: entre passadas, desligue.</p>
+
+    <h2>Limites, ditos na cara</h2>
+    <ul>
+      <li>A aba <b>Mirar</b> cronometra ao vivo, mas com a câmera do navegador: 30 ou 60 quadros
+          por segundo, não 240. Cada passada sai com a incerteza que o app calculou; quanto isso
+          custa de verdade é o que a conferência com a fotocélula vai dizer. <b>O milésimo provado
+          até aqui é o do vídeo em câmera lenta</b>, na aba Passada.</li>
+      <li>Um celular não faz as duas coisas na mesma passada: enquanto o navegador está com a câmera
+          aberta, o app Câmera não está gravando. Para comparar, <b>alterne</b> — uma ao vivo, a
+          seguinte gravada.</li>
+      <li>A calibragem é refeita a cada vídeo, de propósito: ela mede <b>aquela</b> cena, naquela luz.
+          Não é uma configuração que fique salva.</li>
+      <li>A exposição do quadro não vem no arquivo: o app assume o pior caso e <b>aumenta a
+          incerteza</b> em vez de fingir que sabe.</li>
+      <li>Se o navegador não entregar todos os quadros do vídeo, a passada sai marcada como
+          <b>degradada</b> — nunca silenciosamente errada.</li>
+    </ul>
+    <p class="dica" id="versao"></p>
+  </div>
+</section>
+</main>
+
+<div id="aviso" hidden></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,75 @@
+# Constrói a versão web e publica no branch `gh-pages` a cada envio.
+#
+# Por que empurrar um branch em vez de usar `actions/deploy-pages`: o Pages deste repositório está
+# configurado como "Deploy from a branch" -> gh-pages. Com essa origem, a ação de deploy oficial
+# FALHA — daria um X vermelho a cada envio, por um motivo que não é defeito de código. E, sem
+# automação, o site só mudaria se alguém reconstruísse e empurrasse à mão: bastaria um esquecimento
+# para o usuário testar uma versão velha e nós dois tirarmos conclusões erradas dela. Isso já
+# aconteceu neste projeto e custou dias.
+#
+# Os testes rodam ANTES: nada vai ao ar vermelho.
+name: Publicar a versão web
+
+on:
+  push:
+    branches: [main, claude/ios-sports-timing-system-65t7ng]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publicar-web
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Instalar
+        working-directory: web
+        run: npm ci
+
+      - name: Testes do núcleo e da conferência
+        working-directory: web
+        run: npm test
+
+      - name: Construir
+        working-directory: web
+        run: npm run build
+
+      - name: Conferir que o empacotamento não corrompeu o código
+        working-directory: web
+        # Guarda contra a classe de defeito que já deixou o app inteiro morto: o `$&` do
+        # String.replace expandia e cravava HTML no meio do JavaScript.
+        run: |
+          node build.mjs --single
+          node - <<'FIM'
+          import { readFileSync } from "node:fs";
+          const js = readFileSync("dist/app-single.js", "utf8");
+          const html = readFileSync("fotocelula-tambor.html", "utf8");
+          if (!html.includes(js)) {
+            console.error("o JavaScript embutido NÃO é idêntico ao gerado");
+            process.exit(1);
+          }
+          console.log("empacotamento íntegro");
+          FIM
+
+      - name: Publicar em gh-pages
+        run: |
+          cd web/dist
+          rm -f app-single.js
+          touch .nojekyll
+          git init -q -b gh-pages
+          git config user.email "noreply@anthropic.com"
+          git config user.name "Claude"
+          git add -A
+          git commit -q -m "Publicação automática de ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" gh-pages

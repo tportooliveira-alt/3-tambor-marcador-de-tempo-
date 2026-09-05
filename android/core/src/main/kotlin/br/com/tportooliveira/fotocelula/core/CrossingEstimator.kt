@@ -1,0 +1,518 @@
+package br.com.tportooliveira.fotocelula.core
+
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.floor
+import kotlin.math.sqrt
+
+/**
+ * Resultado do refinamento sub-quadro.
+ * quality: 0 = sem refinamento; 1 = só limites/intervalo; 2 = ajuste completo.
+ */
+data class CrossingEstimate(
+    val quality: Int,
+    val refinedTsNs: Nanos,
+    val uncertaintyNs: Nanos,
+    val interiorCount: Int,
+    val boundCount: Int,
+    val lowerNs: Nanos?,
+    val upperNs: Nanos?,
+    /** Colunas cuja dispersão de tempos excede o que o ruído explica (textura/inclinação). */
+    val texturedColumns: Int = 0,
+)
+
+/**
+ * Estimador sub-quadro por fração de exposição (porte fiel de Tools/photocell_reference.py).
+ *
+ * Cada pixel integra a luz durante [t_ini, t_ini + E]; se o bordo (luma O) cobre o pixel (fundo B)
+ * em t_x dentro da janela, V = B + (O − B)·f com f = (t_ini + E − t_x)/E ⇒ t_x = t_ini + E·(1 − f).
+ * O bordo se move a velocidade constante: t_x(coluna) = t_c + s·dx. Um ajuste linear ponderado
+ * sobre as MEDIANAS por coluna dos pixels "interiores" de três quadros (c−lag, c, c+lag; deslocamentos
+ * de tempo MEDIDOS pelos timestamps) devolve t_c (cruzamento do plano central) e a velocidade.
+ *
+ * Passo 1 seleciona os pixels interiores pelo valor OBSERVADO usando o platô (c+2·lag) como O; o
+ * passo 2 reseleciona pelo valor PREVISTO pelo ajuste (sem viés de seleção) e usa um O LOCAL: a
+ * mediana das 3 colunas logo atrás do bordo, na mesma linha e quadro (textura do objeto). A incerteza
+ * (3σ) é propagada do ruído por pixel, usando por coluna o maior entre a variância do modelo e a
+ * amostral, mais um termo de textura (variância espacial do platô) e a dispersão residual entre
+ * colunas quando há colunas "texturizadas". Incerteza ≤ P/8 ⇒ qualidade 2; senão intervalo (1); sem
+ * informação ⇒ tempo do quadro (0).
+ */
+object CrossingEstimator {
+    private class ColumnStats(val good: IntArray, val t: DoubleArray, val variance: DoubleArray, val textured: Int, val crms: DoubleArray)
+    private class LineFit(val tc: Double, val slope: Double, val varT: Double)
+
+    /** Desfaz a curva de tom (gamma) para que V seja linear em f; gamma == 1 desliga. */
+    fun linearize(v: Double, gamma: Double): Double {
+        if (gamma == 1.0) return v
+        if (v <= 0.0) return 0.0
+        return 255.0 * Math.pow(v / 255.0, gamma)
+    }
+
+    fun estimate(cfg: PhotocellConfig, roi: RoiRect, planeHeight: Int, inp: CrossingInput, noiseSigmaPx: Double): CrossingEstimate {
+        val p = cfg.framePeriodNs
+        // Intervalo físico do gatilho, sem hipóteses sobre contraste: do início da exposição do último
+        // quadro VISTO (primeira linha da banda) ao fim da exposição do candidato (última linha), mais o
+        // atraso até o centro ((core−1)/2 px à velocidade mínima plausível).
+        val skewForRows = cfg.skewNs
+        fun rowOffset(row: Int): Long = if (skewForRows != null) Math.floorDiv((roi.y0 + row).toLong() * skewForRows, planeHeight.toLong()) else 0L
+        val coreHalfPx = (cfg.coreWidth - 1) / 2.0 + cfg.q0TiltAllowancePxPerRow * (roi.height / 2.0)
+        val coreLagNs = Math.floor(coreHalfPx * 1e9 / cfg.speedPxPerSMin + 0.5).toLong()
+        val lastSeenQ0 = inp.lastSeenTsNs
+        val lastSeen = if (lastSeenQ0 != null && lastSeenQ0 < inp.tsNs) lastSeenQ0 else inp.tsNs - p
+        val noneLo = lastSeen + rowOffset(0)
+        val noneHi = inp.tsNs + rowOffset(roi.height - 1) + cfg.exposureNs + coreLagNs
+        val none = CrossingEstimate(0, Math.floorDiv(noneLo + noneHi, 2L), Math.floorDiv(noneHi - noneLo, 2L), 0, 0, null, null, 0)
+        val n = inp.stripCur.size
+        val plateauStrip = inp.plateauStrip
+        if (n == 0 || plateauStrip == null || plateauStrip.size != n || inp.stripPrev.size != n || inp.stripBg.size != n) return none
+        val h = roi.height
+        val w = roi.width
+        if (w * h != n) return none
+        val e = cfg.exposureNs.toDouble()
+        val gamma = cfg.gamma
+        val kSig = cfg.fractionMarginSigmas
+        // O ruído foi medido em níveis CODIFICADOS (ΔY cru), mas o contraste C vem depois da
+        // linearização: converte-se sigma pela derivada da curva no nível do fundo (gamma 1 = igual).
+        fun linearScale(vRaw: Double): Double =
+            if (gamma == 1.0 || vRaw <= 0.0) 1.0 else gamma * Math.pow(vRaw / 255.0, gamma - 1.0)
+
+        val noiseTerm = kSig * sqrt(2.0) * noiseSigmaPx
+        val center = (w - 1) / 2.0
+        val frameStrips = ArrayList<IntArray>()
+        val frameOffsets = ArrayList<Double>()
+        frameStrips.add(inp.stripPrev); frameOffsets.add((inp.prevTsNs - inp.tsNs).toDouble())
+        frameStrips.add(inp.stripCur); frameOffsets.add(0.0)
+        val nextStrip = inp.nextStrip
+        val nextTs = inp.nextTsNs
+        if (nextStrip != null && nextStrip.size == n && nextTs != null) {
+            frameStrips.add(nextStrip); frameOffsets.add((nextTs - inp.tsNs).toDouble())
+        }
+        val nFrames = frameStrips.size
+        val sMin = 1e9 / cfg.speedPxPerSMax
+        val sMax = 1e9 / cfg.speedPxPerSMin
+        val minRows = maxOf(1, cfg.minInteriorRowsPerColumn, Math.ceil(cfg.minInteriorRowsFraction * h).toInt())
+        // Piso de erro de MODELO (não de ruído). O maior termo é a curva de tom: o app supõe uma
+        // gamma e a real varia com o aparelho. O viés de um desvio de gamma cresce com a exposição
+        // como ~Δγ·E/8,6 — cinco vezes mais rápido que o antigo piso E/50, que só cobria Δγ ≈ 0,2.
+        // E/25 cobre Δγ ≈ 0,35, a faixa plausível entre aparelhos.
+        val uncFloor = maxOf(1L, cfg.exposureNs / 25, cfg.systematicUncNs)
+        val satLo = cfg.saturationLow.toDouble()
+        val satHi = cfg.saturationHigh.toDouble()
+        fun saturated(raw: Double): Boolean = raw <= satLo || raw >= satHi
+        val uncQ2Max = p / 8                      // acima disso o ajuste vira intervalo (qualidade 1)
+        val skew = cfg.skewNs
+        fun rowTime(row: Int): Long =
+            if (skew != null) inp.tsNs + Math.floorDiv((roi.y0 + row).toLong() * skew, planeHeight.toLong()) else inp.tsNs
+
+        // fundo e platô linearizados uma vez
+        val bgLin = DoubleArray(n) { linearize(inp.stripBg[it], gamma) }
+        val plateauLin = DoubleArray(n) { linearize(plateauStrip[it].toDouble(), gamma) }
+        // Textura do objeto: variância espacial do platô ao longo das colunas (mediana das linhas), além
+        // do ruído. Entra como variância adicional COERENTE por coluna (não cai com sqrt(n)).
+        val rowVars = DoubleArray(h)
+        for (row in 0 until h) {
+            val o = row * w
+            var meanP = 0.0
+            for (i in 0 until w) meanP += plateauLin[o + i]
+            meanP = meanP / w.toDouble()
+            var ssP = 0.0
+            for (i in 0 until w) {
+                val d = plateauLin[o + i] - meanP
+                ssP += d * d
+            }
+            rowVars[row] = ssP / w.toDouble()
+        }
+        val texVarPx = median(rowVars, h) - noiseSigmaPx * noiseSigmaPx
+        val aTex = if (texVarPx > 0.0) sqrt(texVarPx) else 0.0
+        // A textura também limita a classificação coberto/interior: margem = maior entre ruído e ~1,5·aTex
+        val texTerm = 1.5 * aTex
+        val marginTerm = if (noiseTerm >= texTerm) noiseTerm else texTerm
+        // Os dois termos NÃO podem dividir o mesmo teto. O ruído é aleatório: espalha os pontos, a
+        // média sobre muitas colunas converge e a incerteza propagada continua valendo — dá para ser
+        // generoso. A textura é VIÉS: desloca todas as colunas para o mesmo lado, não some na média e
+        // não aparece na incerteza. Medido na varredura física: com um teto só, afrouxar para 0,40
+        // recuperava a arena escura (erro 3,2 ms -> 0,009 ms) e ao mesmo tempo quebrava 54 cenários de
+        // pelagem, com a verdade fora do intervalo declarado.
+        fun dentroDosTetos(escala: Double, contraste: Double): Boolean =
+            noiseTerm * escala / contraste <= cfg.fractionMarginMax &&
+                texTerm * escala / contraste <= cfg.textureMarginMax
+
+        // Erro de MODELO: se a resposta do pixel não é linear em f (curva de tom desconhecida,
+        // desfoque, resposta do sensor), o resíduo t_obs − t_previsto depende sistematicamente de f.
+        // A média ponderada do resíduo em três faixas de f mede isso; o que excede o ruído entra na
+        // incerteza (com o modelo certo as três médias ficam dentro do ruído: custo zero).
+        var modelErr = 0.0
+        var interior = 0
+        var bounds = 0
+        var lower: Double? = null
+        var upper: Double? = null
+        // colunas cobertas / descobertas por quadro (contagem de linhas): sentido do bordo no fallback
+        val covCnt = IntArray(nFrames * w)
+        val uncCnt = IntArray(nFrames * w)
+        val maxPerCol = h * nFrames
+
+        // ---- passo 1: seleção pelo valor observado + limites --------------------------------
+        val colSumW = DoubleArray(w)
+        val colTimes = Array(w) { DoubleArray(maxPerCol) }
+        val devs = DoubleArray(maxPerCol)   // desvios |t − mediana| para a MAD (reutilizado)
+        val colS2 = DoubleArray(w)
+        val colN = IntArray(w)
+        for (row in 0 until h) {
+            val tRow = rowTime(row)
+            for (i in 0 until w) {
+                val idx = row * w + i
+                // fundo ou platô saturados: o modelo linear não vale neste pixel
+                if (saturated(inp.stripBg[idx]) || saturated(plateauStrip[idx].toDouble())) continue
+                val b = bgLin[idx]
+                val o = plateauLin[idx]
+                val contrast = o - b
+                val c = if (contrast >= 0.0) contrast else -contrast
+                if (c < cfg.minContrast) continue
+                val dx = i - center
+                val isCenterCol = abs(dx) <= 0.5
+                val centerSlack = abs(dx) * sMax
+                var m = marginTerm * linearScale(inp.stripBg[idx]) / c
+                if (m < cfg.fractionMarginMin) m = cfg.fractionMarginMin
+                if (m >= 0.5) continue
+                val usableInterior = dentroDosTetos(linearScale(inp.stripBg[idx]), c)
+                val lo = m
+                val hi = 1.0 - m
+                val upOff = e * 2.0 * m
+                val loOff = e * (1.0 - 2.0 * m)
+                val wgt = contrast * contrast
+                val st = e * m / kSig
+                for (k in 0 until nFrames) {
+                    val raw = frameStrips[k][idx].toDouble()
+                    if (saturated(raw)) continue
+                    val f = (linearize(raw, gamma) - b) / contrast
+                    val tIni = tRow.toDouble() + frameOffsets[k]
+                    if (f > lo && f < hi) {
+                        if (usableInterior) {
+                            val t = tIni + e * (1.0 - f)
+                            colSumW[i] += wgt
+                            colTimes[i][colN[i]] = t
+                            colS2[i] += st * st
+                            colN[i] += 1
+                            interior += 1
+                        }
+                    } else if (f >= hi) {
+                        covCnt[k * w + i] += 1
+                        if (isCenterCol) {
+                            bounds += 1
+                            val u = tIni + upOff + centerSlack
+                            if (upper == null || u < upper!!) upper = u
+                        }
+                    } else if (f <= lo) {
+                        uncCnt[k * w + i] += 1
+                        if (isCenterCol) {
+                            bounds += 1
+                            val lw = tIni + loOff - centerSlack
+                            if (lower == null || lw > lower!!) lower = lw
+                        }
+                    }
+                }
+            }
+        }
+        var lowerI: Long? = lower?.let { floor(it + 0.5).toLong() }
+        var upperI: Long? = upper?.let { floor(it + 0.5).toLong() }
+        var texturedCols = 0
+
+        fun intervalResult(loNs: Long?, hiNs: Long?, quality: Int): CrossingEstimate? {
+            if (loNs == null || hiNs == null) return null
+            // limites contraditórios (classificação corrompida, p.ex. textura): sem informação honesta
+            if (loNs > hiNs) return null
+            val a = loNs
+            val bb = hiNs
+            if (Math.floorDiv(bb - a, 2L) > p / 2) return null
+            val mid = Math.floorDiv(a + bb, 2L)
+            // O piso vale para o INTERVALO também. Sem isto, um resultado rebaixado para qualidade 1
+            // saía declarando menos incerteza que o melhor qualidade 2 que o sistema admite emitir —
+            // rebaixar a qualidade apertando a incerteza é o contrário do que rebaixar significa.
+            var half = Math.floorDiv(bb - a, 2L)
+            var lo = a
+            var hi = bb
+            if (half < uncFloor) { half = uncFloor; lo = mid - half; hi = mid + half }
+            return CrossingEstimate(quality, mid, half, interior, bounds, lo, hi, texturedCols)
+        }
+
+        /** Qualidade 2 se a incerteza (3σ) propagada do ajuste é pequena; senão intervalo. */
+        fun fittedResult(tEst: Double, varT: Double): CrossingEstimate? {
+            var unc = floor(3.0 * sqrt(varT) + modelErr + 0.5).toLong()
+            if (unc < uncFloor) unc = uncFloor
+            val refined = floor(tEst + 0.5).toLong()
+            if (unc <= uncQ2Max) return CrossingEstimate(2, refined, unc, interior, bounds, lowerI, upperI, texturedCols)
+            val a0 = refined - unc
+            val b0 = refined + unc
+            var a = a0
+            var bb = b0
+            val li = lowerI
+            val ui = upperI
+            if (li != null && li > a) a = li
+            if (ui != null && ui < bb) bb = ui
+            if (a > bb) { a = a0; bb = b0 }
+            return intervalResult(a, bb, 1)
+        }
+
+        /** Colunas confiáveis, mediana, variância da mediana por coluna e número de colunas texturizadas. */
+        fun columnStats(sumW: DoubleArray, times: Array<DoubleArray>, s2: DoubleArray, cnt: IntArray): ColumnStats {
+            val goodList = ArrayList<Int>()
+            for (c in 0 until w) if (cnt[c] > 0 && cnt[c] >= minRows) goodList.add(c)
+            val t = DoubleArray(w)
+            val variance = DoubleArray(w)
+            val crms = DoubleArray(w)
+            var textured = 0
+            for (c in 0 until w) {
+                val nc = cnt[c]
+                if (nc == 0) continue
+                val fn = nc.toDouble()
+                t[c] = median(times[c], nc)
+                // variância da mediana da coluna ~ (π/2) · variância da média (modelo de ruído)
+                val varModel = (PI / 2.0) * s2[c] / (fn * fn)
+                // variância amostral dos tempos da coluna (dois passos, ordem de inserção)
+                // dispersão amostral ROBUSTA: (1,4826·MAD)² — pixels espúrios isolados não marcam a coluna
+                // como texturizada nem inflam a incerteza; textura de verdade é coerente e aparece na MAD
+                val medC = t[c]
+                for (k in 0 until nc) devs[k] = abs(times[c][k] - medC)
+                val mad = if (nc >= 2) median(devs, nc) else 0.0
+                val sigR = 1.4826 * mad
+                val varS = sigR * sigR
+                val varEmp = (PI / 2.0) * varS / fn
+                variance[c] = if (varModel >= varEmp) varModel else varEmp
+                // contraste RMS da coluna (sumW = soma de contrast²), para o termo coerente de textura
+                crms[c] = sqrt(sumW[c] / fn)
+                if (nc >= minRows) {
+                    val sigmaModelPx = sqrt(s2[c] / fn)
+                    if (sqrt(varS) > 3.0 * sigmaModelPx + e / 10.0) textured += 1
+                }
+            }
+            return ColumnStats(goodList.toIntArray(), t, variance, textured, crms)
+        }
+
+        /** Variância COERENTE (não cai com o número de pixels/colunas) de t causada pela textura do objeto. */
+        fun texVar(crms: Double): Double {
+            val tTex = e * aTex / crms
+            return tTex * tTex
+        }
+
+        /**
+         * Ajuste linear ponderado sobre as medianas por coluna, com rejeição de colunas cujo resíduo é
+         * fisicamente impossível (> E + P/4). Devolve (t_c, inclinação, variância de t_c) ou null.
+         */
+        fun fitLine(good: IntArray, sumW: DoubleArray, colT: DoubleArray, colVar: DoubleArray, textured: Int, colCrms: DoubleArray): LineFit? {
+            // Com 2 colunas o ajuste tem ZERO graus de liberdade: a reta passa exatamente pelos dois
+            // pontos, o chi2 não denuncia nada e um viés de coluna vira erro de inclinação que a
+            // extrapolação até o centro amplifica (medido: 0,85 ms declarando ±0,10 ms).
+            if (good.size < 3) return null
+            val fitCols = ArrayList<Int>()
+            for (c in good) fitCols.add(c)
+            for (iter in 0 until 3) {
+                var gw = 0.0; var gx = 0.0; var gt = 0.0; var gxx = 0.0; var gxt = 0.0
+                for (col in fitCols) {
+                    val wc = sumW[col]
+                    val tc = colT[col]
+                    val dxc = col - center
+                    gw += wc; gx += wc * dxc; gt += wc * tc; gxx += wc * dxc * dxc; gxt += wc * dxc * tc
+                }
+                val spread = fitCols.last() - fitCols.first()
+                val denom = gw * gxx - gx * gx
+                if (!(spread >= 1 && denom > 1e-9 * gw * gxx && denom > 0.0)) return null
+                val slope = (gw * gxt - gx * gt) / denom
+                val tc = (gt - slope * gx) / gw
+                var worst: Int? = null
+                var worstRes = 0.0
+                for (col in fitCols) {
+                    val res = abs(colT[col] - (tc + slope * (col - center)))
+                    if (res > worstRes) { worstRes = res; worst = col }
+                }
+                if (worst != null && worstRes > e + p / 4.0 && fitCols.size > 2) { fitCols.remove(worst); continue }
+                if (worstRes <= e + p / 4.0 && abs(slope) in sMin..sMax) {
+                    // propagação: t_c = Σ a_c·t_col(c), a_c = w_c/gw − gx·w_c·(gw·dx_c − gx)/(denom·gw)
+                    var varT = 0.0
+                    var chi2 = 0.0
+                    var resSs = 0.0
+                    for (col in fitCols) {
+                        val wc = sumW[col]
+                        val dxc = col - center
+                        val ac = wc / gw - gx * wc * (gw * dxc - gx) / (denom * gw)
+                        varT += ac * ac * colVar[col]
+                        val res = colT[col] - (tc + slope * dxc)
+                        chi2 += if (colVar[col] > 0.0) res * res / colVar[col] else 0.0
+                        resSs += res * res
+                    }
+                    // resíduos entre colunas maiores do que as variâncias explicam: escala pelo χ² reduzido
+                    val dof = fitCols.size - 2
+                    if (dof >= 1) {
+                        val chi2r = chi2 / dof.toDouble()
+                        if (chi2r > 1.0) varT = varT * chi2r
+                    }
+                    // com colunas texturizadas os erros são coerentes: incerteza ≥ dispersão residual
+                    if (textured > 0) {
+                        val resMs2 = resSs / fitCols.size.toDouble()
+                        if (resMs2 > varT) varT = resMs2
+                    }
+                    // textura do objeto: erro coerente, somado DEPOIS da propagação (não é reduzido pelo ajuste)
+                    var crms = 0.0
+                    for (col in fitCols) crms += colCrms[col]
+                    crms = crms / fitCols.size.toDouble()
+                    varT += texVar(crms)
+                    return LineFit(tc, slope, varT)
+                }
+                return null
+            }
+            return null
+        }
+
+        val stats1 = columnStats(colSumW, colTimes, colS2, colN)
+        val goodCols = stats1.good
+        val colT = stats1.t
+        val colVar = stats1.variance
+        texturedCols = stats1.textured
+        // Com textura os limites vêm de pixels cujo contraste ela AUMENTOU (os únicos com margem
+        // < 0,5), e o O deles não representa o objeto: a comparação não pode ser no fio da navalha.
+        if (texturedCols > 0 || texTerm > 0.5 * noiseTerm) {
+            // os limites foram classificados com o platô como O: com textura (detectada no platô ou na
+            // dispersão das colunas) não são confiáveis
+            lowerI = null
+            upperI = null
+        }
+        if (goodCols.isNotEmpty()) {
+            var fit = fitLine(goodCols, colSumW, colT, colVar, texturedCols, stats1.crms)
+            // ---- passo 2 (duas iterações): reseleção pelo valor PREVISTO, O local ------------------
+            for (iter in 0 until 2) {
+                val f1 = fit ?: break
+                val behind = if (f1.slope > 0.0) -1 else 1     // bordo vindo da esquerda (s > 0): atrás = colunas menores
+                val sumW2 = DoubleArray(w)
+                val times2 = Array(w) { DoubleArray(maxPerCol) }
+                val s22 = DoubleArray(w)
+                val n2 = IntArray(w)
+                val neigh = DoubleArray(3)
+                val binW = DoubleArray(3)
+                val binWr = DoubleArray(3)
+                val binWv = DoubleArray(3)
+                var sumWf = 0.0   // Σ w·f: a assimetria das amostras na rampa mede o viés não observável
+                for (row in 0 until h) {
+                    val tRow = rowTime(row)
+                    for (i in 0 until w) {
+                        val idx = row * w + i
+                        if (saturated(inp.stripBg[idx]) || saturated(plateauStrip[idx].toDouble())) continue
+                        val b = bgLin[idx]
+                        val tPred = f1.tc + f1.slope * (i - center)
+                        for (k in 0 until nFrames) {
+                            val strip = frameStrips[k]
+                            val tIni = tRow.toDouble() + frameOffsets[k]
+                            val fPred = (tIni + e - tPred) / e
+                            if (!(fPred > 0.0 && fPred < 1.0)) continue
+                            if (saturated(strip[idx].toDouble())) continue
+                            // O local: mediana das até 3 colunas logo atrás do bordo, mesma linha e quadro,
+                            // previstas E observadas totalmente cobertas; senão o platô.
+                            var nNeigh = 0
+                            for (d in 1..3) {
+                                val j = i + behind * d
+                                if (j < 0 || j >= w) break
+                                val tPredJ = f1.tc + f1.slope * (j - center)
+                                if (tPredJ > tIni) continue
+                                if (saturated(strip[row * w + j].toDouble()) || saturated(inp.stripBg[row * w + j]) ||
+                                    saturated(plateauStrip[row * w + j].toDouble())) continue
+                                val vj = linearize(strip[row * w + j].toDouble(), gamma)
+                                val bj = bgLin[row * w + j]
+                                val cj = plateauLin[row * w + j] - bj
+                                if (cj == 0.0) continue
+                                var mj = marginTerm * linearScale(inp.stripBg[row * w + j]) / (if (cj >= 0.0) cj else -cj)
+                                if (mj < cfg.fractionMarginMin) mj = cfg.fractionMarginMin
+                                if ((vj - bj) / cj >= 1.0 - mj) { neigh[nNeigh] = vj; nNeigh += 1 }
+                            }
+                            val o = if (nNeigh > 0) median(neigh, nNeigh) else plateauLin[idx]
+                            val contrast = o - b
+                            val c = if (contrast >= 0.0) contrast else -contrast
+                            if (c < cfg.minContrast) continue
+                            var m = marginTerm * linearScale(inp.stripBg[idx]) / c
+                            if (m < cfg.fractionMarginMin) m = cfg.fractionMarginMin
+                            if (!dentroDosTetos(linearScale(inp.stripBg[idx]), c)) continue
+                            if (!(fPred > m && fPred < 1.0 - m)) continue
+                            val f = (linearize(strip[idx].toDouble(), gamma) - b) / contrast
+                            val t = tIni + e * (1.0 - f)
+                            val wgt = contrast * contrast
+                            val st = e * m / kSig
+                            sumW2[i] += wgt
+                            times2[i][n2[i]] = t
+                            s22[i] += st * st
+                            n2[i] += 1
+                            val bIdx = if (fPred < 1.0 / 3.0) 0 else if (fPred < 2.0 / 3.0) 1 else 2
+                            binW[bIdx] += wgt
+                            binWr[bIdx] += wgt * (t - tPred)
+                            binWv[bIdx] += wgt * wgt * st * st
+                            sumWf += wgt * fPred
+                        }
+                    }
+                }
+                val stats2 = columnStats(sumW2, times2, s22, n2)
+                val fit2 = if (stats2.good.isNotEmpty()) fitLine(stats2.good, sumW2, stats2.t, stats2.variance, stats2.textured, stats2.crms) else null
+                if (fit2 == null) break
+                fit = fit2
+                texturedCols = stats2.textured
+                var excess = 0.0
+                val totW = binW[0] + binW[1] + binW[2]
+                for (bIdx in 0 until 3) {
+                    if (binW[bIdx] <= 0.0) continue
+                    val meanR = binWr[bIdx] / binW[bIdx]
+                    val sdR = sqrt(binWv[bIdx]) / binW[bIdx]
+                    val ex = abs(meanR) - sdR
+                    if (ex > excess) excess = ex
+                }
+                // A abertura do pixel suaviza a rampa de forma SIMÉTRICA: com amostras equilibradas em
+                // torno de f = 0,5 o efeito se cancela; concentradas num extremo, sobra um viés comum.
+                val asym = if (totW > 0.0) abs(sumWf / totW - 0.5) / 0.5 else 0.0
+                val prior = abs(f1.slope) * cfg.aperturePx * asym
+                modelErr = if (excess > prior) excess else prior
+            }
+            if (fit != null) fittedResult(fit.tc, fit.varT)?.let { return it }
+            // uma coluna dominante (ou inclinação implausível): usa a coluna com mais peso
+            var col = goodCols[0]
+            for (c2 in goodCols) if (colSumW[c2] > colSumW[col]) col = c2
+            val dx0 = col - center
+            val tInt = colT[col]
+            if (abs(dx0) < 0.5) fittedResult(tInt, colVar[col] + texVar(stats1.crms[col]))?.let { return it }
+            // sentido do bordo: no primeiro quadro (c-lag, c, c+lag) em que a cobertura é assimétrica em
+            // torno da coluna interior — cobertas atrás, descobertas à frente (só o candidato não basta:
+            // com bordo rápido ou período longo a faixa inteira já está coberta nele)
+            var leftCov = false
+            var rightCov = false
+            for (k in 0 until nFrames) {
+                var lSide = false
+                var rSide = false
+                for (c2 in 0 until w) {
+                    if (covCnt[k * w + c2] >= minRows) { if (c2 < col) lSide = true else if (c2 > col) rSide = true }
+                    if (uncCnt[k * w + c2] >= minRows) { if (c2 > col) lSide = true else if (c2 < col) rSide = true }
+                }
+                if (lSide != rSide) { leftCov = lSide; rightCov = rSide; break }
+            }
+            val cands = ArrayList<Double>()
+            if (leftCov || !rightCov) { cands.add(tInt - dx0 * sMin); cands.add(tInt - dx0 * sMax) }
+            if (rightCov || !leftCov) { cands.add(tInt + dx0 * sMin); cands.add(tInt + dx0 * sMax) }
+            // incerteza da coluna: maior entre ±E·m/sqrt(n) e 3σ da variância da coluna
+            val mCol = noiseTerm / maxOf(cfg.minContrast, 1.0)
+            var colUnc = e * minOf(mCol, 0.5) / sqrt(maxOf(1, colN[col]).toDouble())
+            val colUnc3 = 3.0 * sqrt(colVar[col] + texVar(stats1.crms[col]))
+            if (colUnc3 > colUnc) colUnc = colUnc3
+            val a0 = floor(cands.min() - colUnc + 0.5).toLong()
+            val b0 = floor(cands.max() + colUnc + 0.5).toLong()
+            var a = a0
+            var bb = b0
+            val li = lowerI
+            val ui = upperI
+            if (li != null && li > a) a = li
+            if (ui != null && ui < bb) bb = ui
+            if (a > bb) { a = a0; bb = b0 }   // limites inconsistentes (ruído): só a faixa de velocidades
+            intervalResult(a, bb, 1)?.let { return it }
+        }
+        return intervalResult(lowerI, upperI, 1) ?: none
+    }
+
+    /** Mediana determinística dos primeiros [count] valores (n par: média dos dois centrais). */
+    private fun median(values: DoubleArray, count: Int): Double {
+        val v = values.copyOf(count)
+        v.sort()
+        return if (count % 2 == 1) v[count / 2] else (v[count / 2 - 1] + v[count / 2]) / 2.0
+    }
+}

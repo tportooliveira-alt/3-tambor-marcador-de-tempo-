@@ -1,0 +1,17 @@
+{
+  "name": "fotocelula-tambor-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cronômetro de Três Tambores por análise de vídeo em câmera lenta — roda no navegador, sem instalar nada.",
+  "scripts": {
+    "test": "node --test test/vectors.test.ts test/validacao.test.ts",
+    "build": "node build.mjs",
+    "dev": "node build.mjs --serve"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.2",
+    "mp4box": "^2.4.1",
+    "playwright": "^1.62.1"
+  }
+}

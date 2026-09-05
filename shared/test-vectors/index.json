@@ -1,0 +1,190 @@
+{
+  "vectors": [
+    {
+      "name": "strip_cross_right_skew",
+      "kind": "strip",
+      "file": "strip_cross_right_skew.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.0; drops=[]"
+    },
+    {
+      "name": "strip_cross_left_skew",
+      "kind": "strip",
+      "file": "strip_cross_left_skew.json",
+      "description": "Cruzamento sintético; direção <-; skew=3200000; flicker=0.0; drops=[]"
+    },
+    {
+      "name": "strip_cross_right_noskew",
+      "kind": "strip",
+      "file": "strip_cross_right_noskew.json",
+      "description": "Cruzamento sintético; direção ->; skew=nenhum; flicker=0.0; drops=[]"
+    },
+    {
+      "name": "strip_cross_flicker",
+      "kind": "strip",
+      "file": "strip_cross_flicker.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.12; drops=[]"
+    },
+    {
+      "name": "strip_cross_with_drop",
+      "kind": "strip",
+      "file": "strip_cross_with_drop.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.0; drops=[44, 45]"
+    },
+    {
+      "name": "strip_cross_noisy_night",
+      "kind": "strip",
+      "file": "strip_cross_noisy_night.json",
+      "description": "Cruzamento sintético; direção <-; skew=4000000; flicker=0.1; drops=[]"
+    },
+    {
+      "name": "strip_cross_blind_gap",
+      "kind": "strip",
+      "file": "strip_cross_blind_gap.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.0; drops=[]"
+    },
+    {
+      "name": "strip_cross_full_exposure",
+      "kind": "strip",
+      "file": "strip_cross_full_exposure.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.0; drops=[]"
+    },
+    {
+      "name": "strip_cross_short_exposure_day",
+      "kind": "strip",
+      "file": "strip_cross_short_exposure_day.json",
+      "description": "Cruzamento sintético; direção <-; skew=3200000; flicker=0.0; drops=[]"
+    },
+    {
+      "name": "strip_cross_textured",
+      "kind": "strip",
+      "file": "strip_cross_textured.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.0; drops=[]"
+    },
+    {
+      "name": "strip_cross_gamma",
+      "kind": "strip",
+      "file": "strip_cross_gamma.json",
+      "description": "Cruzamento sintético; direção <-; skew=3200000; flicker=0.0; drops=[]"
+    },
+    {
+      "name": "strip_cross_tilted",
+      "kind": "strip",
+      "file": "strip_cross_tilted.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.0; drops=[]"
+    },
+    {
+      "name": "strip_cross_drop_at_trigger",
+      "kind": "strip",
+      "file": "strip_cross_drop_at_trigger.json",
+      "description": "Cruzamento sintético; direção <-; skew=3200000; flicker=0.0; drops=[47]"
+    },
+    {
+      "name": "strip_cross_saturated",
+      "kind": "strip",
+      "file": "strip_cross_saturated.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.0; drops=[]"
+    },
+    {
+      "name": "strip_cross_flicker_strong",
+      "kind": "strip",
+      "file": "strip_cross_flicker_strong.json",
+      "description": "Cruzamento sintético; direção <-; skew=3200000; flicker=0.3; drops=[]"
+    },
+    {
+      "name": "strip_cross_drop_candidate",
+      "kind": "strip",
+      "file": "strip_cross_drop_candidate.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.0; drops=[48]"
+    },
+    {
+      "name": "strip_cross_drop_before_trigger",
+      "kind": "strip",
+      "file": "strip_cross_drop_before_trigger.json",
+      "description": "Cruzamento sintético; direção ->; skew=3200000; flicker=0.12; drops=[45]"
+    },
+    {
+      "name": "calibration_normal",
+      "kind": "calibration",
+      "file": "calibration_normal.json",
+      "description": "240 amostras estáveis: limiar = max(floor, μ+kσ, 2μ) = floor"
+    },
+    {
+      "name": "calibration_high_noise",
+      "kind": "calibration",
+      "file": "calibration_high_noise.json",
+      "description": "Ruído alto: o ramo 2μ domina"
+    },
+    {
+      "name": "calibration_wide_sigma",
+      "kind": "calibration",
+      "file": "calibration_wide_sigma.json",
+      "description": "σ grande: o ramo μ+kσ domina"
+    },
+    {
+      "name": "calibration_outlier_restart",
+      "kind": "calibration",
+      "file": "calibration_outlier_restart.json",
+      "description": "Outlier após 60 amostras reinicia a coleta uma vez"
+    },
+    {
+      "name": "calibration_fail",
+      "kind": "calibration",
+      "file": "calibration_fail.json",
+      "description": "Outliers repetidos esgotam as tentativas -> failed"
+    },
+    {
+      "name": "fsm_full_run",
+      "kind": "fsm",
+      "file": "fsm_full_run.json",
+      "description": "Percurso completo IDLE→…→FINISHED com refinamento sub-quadro"
+    },
+    {
+      "name": "fsm_full_run_noskew",
+      "kind": "fsm",
+      "file": "fsm_full_run_noskew.json",
+      "description": "Percurso completo sem skew (modo quadro)"
+    },
+    {
+      "name": "fsm_reject_then_run",
+      "kind": "fsm",
+      "file": "fsm_reject_then_run.json",
+      "description": "Pico de um quadro rejeitado, depois prova válida"
+    },
+    {
+      "name": "fsm_swallowed_crossing",
+      "kind": "fsm",
+      "file": "fsm_swallowed_crossing.json",
+      "description": "Cruzamento visto mas não confirmado (30 fps): a prova sai degradada"
+    },
+    {
+      "name": "fsm_drop_degraded",
+      "kind": "fsm",
+      "file": "fsm_drop_degraded.json",
+      "description": "Drops logo antes da chegada marcam a prova como degradada"
+    },
+    {
+      "name": "fsm_interrupted",
+      "kind": "fsm",
+      "file": "fsm_interrupted.json",
+      "description": "Interrupção da captura em RUNNING → ERROR → reset"
+    },
+    {
+      "name": "fsm_short_windows",
+      "kind": "fsm",
+      "file": "fsm_short_windows.json",
+      "description": "Janelas mínimas: lockout 1,5 s, retomada 2,0 s, chegada armada 2,5 s"
+    },
+    {
+      "name": "event_ranking",
+      "kind": "ranking",
+      "file": "event_ranking.json",
+      "description": "tempo final = refinado + 5 s por tambor; SAT por último; empate pelo bruto e pela ordem"
+    },
+    {
+      "name": "format_elapsed",
+      "kind": "format",
+      "file": "format_elapsed.json",
+      "description": "nanos -> 'S.mmm' com arredondamento half-up"
+    }
+  ]
+}
