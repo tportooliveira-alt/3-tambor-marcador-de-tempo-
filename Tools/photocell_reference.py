@@ -479,7 +479,14 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
     s_min = 1e9 / cfg.speed_px_per_s_max     # ns por px (bordo rápido)
     s_max = 1e9 / cfg.speed_px_per_s_min     # ns por px (bordo lento)
     min_rows = max(1, cfg.min_interior_rows_per_column, int(math.ceil(cfg.min_interior_rows_fraction * h)))
-    unc_floor = max(1, int(E) // 50, cfg.systematic_unc_ns)
+    # Piso de erro de MODELO (não de ruído). O maior termo dele é a curva de tom: o app supõe uma
+    # gamma (2,2 para vídeo) e a real varia com o aparelho e o modo. Medido no harness, o viés de um
+    # desvio de gamma cresce com a exposição como ~Δγ·E/8,6 — cinco vezes mais rápido do que o antigo
+    # piso E/50, que por isso só cobria Δγ ≈ 0,2 e ainda consumia todo o orçamento, sem sobrar nada
+    # para desfoque e textura. E/25 cobre Δγ ≈ 0,35, que é a faixa plausível entre aparelhos.
+    # A 240 quadros por segundo com exposição curta isto vale 0,08 ms e quem manda é o piso fixo;
+    # a 30 quadros com E = P (o modo ao vivo, arena coberta) vale 1,3 ms — que é a verdade.
+    unc_floor = max(1, int(E) // 25, cfg.systematic_unc_ns)
     unc_q2_max = P // 8                      # acima disso o ajuste vira intervalo (qualidade 1)
 
     def row_time(row: int) -> int:
@@ -617,7 +624,15 @@ def estimate_crossing(cfg: PhotocellConfig, roi: RoiRect, plane_height: int,
             # intervalo pior que a incerteza do próprio quadro: não ajuda
             return None
         mid = (a + b) // 2
-        return CrossingEstimate(quality, mid, (b - a) // 2, interior, bounds, a, b, textured_cols)
+        # O piso vale para o INTERVALO também. Sem isto, um resultado rebaixado para qualidade 1
+        # saía declarando ±0,05 ms — mais confiante do que o melhor qualidade 2 que o sistema admite
+        # emitir (±0,10 ms). Rebaixar a qualidade apertando a incerteza é o contrário do que
+        # rebaixar significa.
+        half = (b - a) // 2
+        if half < unc_floor:
+            half = unc_floor
+            a, b = mid - half, mid + half
+        return CrossingEstimate(quality, mid, half, interior, bounds, a, b, textured_cols)
 
     def fitted_result(t_est: float, var_t: float) -> Optional[CrossingEstimate]:
         """Qualidade 2 se a incerteza (3 sigma) propagada do ajuste e pequena; senao intervalo."""
