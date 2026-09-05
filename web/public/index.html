@@ -246,6 +246,24 @@
        nenhum número é prometido de antemão. Para saber se este caminho serve, digite o tempo da
        fotocélula em algumas passadas de cada tipo (ao vivo e gravadas) e olhe a linha
        <b>“por caminho”</b> na aba Histórico: é ela que compara os dois.</p>
+
+    <p class="dica"><b>O que já foi medido aqui</b> (cena sintética com cruzamento conhecido, 20 de
+       20 erros dentro do intervalo declarado):</p>
+    <table>
+      <tr><th>situação</th><th>incerteza declarada</th><th>erro medido</th></tr>
+      <tr><td>30 quadros por segundo</td><td>±51 ms (qualidade 0)</td><td>4,0 ms</td></tr>
+      <tr><td><b>60 quadros por segundo</b></td><td><b>±4,9 ms</b></td><td>dentro do declarado</td></tr>
+      <tr><td>pouco contraste, 30 fps</td><td>±78 ms</td><td>0,08 ms</td></tr>
+      <tr><td>cavalo escuro em fundo claro, 30 fps</td><td>±13 ms</td><td>dentro do declarado</td></tr>
+    </table>
+    <p class="dica"><b>60 quadros por segundo é a divisa</b>: dobrar a taxa vale mais que qualquer
+       ajuste de linha — a mesma cena passa de ±51 ms para ±4,9 ms. E repare na terceira linha: com
+       pouco contraste o tempo continua ótimo, o que piora é a <i>confiança</i> que o app consegue
+       declarar. É por isso que o número grande nunca vem sozinho.</p>
+    <p class="dica"><b>Quando algo cruza e o app não consegue confirmar</b> (acontece a 30 quadros
+       por segundo, quando o cavalo cobre a faixa por menos de dois quadros), a passada sai marcada
+       com um aviso e como <b>degradada</b>. Um tempo assim pode ser de outro par de eventos —
+       confira no vídeo antes de usar.</p>
   </div>
 </section>
 

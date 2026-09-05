@@ -168,6 +168,8 @@ function runStrip(v: any): void {
   assert.equal(eng.lag, exp.lag, "lag");
   assertTrigger(exp.start, eng.start, "start");
   assert.equal(eng.drops, exp.drops, "drops");
+  assert.equal(eng.abandoned, exp.abandoned, "abandoned");
+  assert.equal(eng.abandonedNearMiss, exp.abandonedNearMiss, "abandonedNearMiss");
 }
 
 // ------------------------------------------------------------------ calibração
@@ -243,6 +245,8 @@ function runFsm(v: any): void {
   assertTrigger(exp.start, eng.start, "start");
   assertTrigger(exp.finish, eng.finish, "finish");
   assert.equal(eng.drops, exp.drops, "drops");
+  assert.equal(eng.abandoned, exp.abandoned, "abandoned");
+  assert.equal(eng.abandonedNearMiss, exp.abandonedNearMiss, "abandonedNearMiss");
   const er = exp.result;
   const r = eng.result;
   if (er === null || er === undefined) {
@@ -253,6 +257,8 @@ function runFsm(v: any): void {
   assert.equal(r!.elapsedRawNs, er.elapsedRawNs, "elapsedRaw");
   assert.ok(Math.abs(er.elapsedRefinedNs - r!.elapsedRefinedNs) <= 2, "elapsedRefined");
   assert.equal(r!.drops, er.drops);
+  assert.equal(r!.abandoned, er.abandoned);
+  assert.equal(r!.abandonedNearMiss, er.abandonedNearMiss);
   assert.equal(r!.degraded, er.degraded);
   assertClose(er.thresholdStart, r!.thresholdStart, "thresholdStart");
   assertClose(er.thresholdFinish, r!.thresholdFinish, "thresholdFinish");

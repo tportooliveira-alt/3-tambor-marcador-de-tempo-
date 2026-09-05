@@ -990,6 +990,10 @@ class RunResult:
     degraded: bool
     threshold_start: float
     threshold_finish: float
+    # Candidatos que passaram do limiar e NÃO confirmaram — o cruzamento engolido mora aqui.
+    abandoned: int = 0
+    # Destes, os que chegaram a confirmar ao menos uma vez (perto de confirmar, não poeira).
+    abandoned_near_miss: int = 0
 
 
 @dataclass
@@ -1035,6 +1039,8 @@ class PhotocellEngine:
         self.last_measured_ts: Optional[int] = None
         self.seed_ts: Optional[int] = None
         self.drops = 0
+        self.abandoned = 0
+        self.abandoned_near_miss = 0
         self.last_drop_ts: Optional[int] = None
         self.drop_pending = False     # a plataforma avisou de quadros perdidos sem timestamp
         self.effects: List[str] = []
@@ -1091,6 +1097,8 @@ class PhotocellEngine:
         self.result = None
         self.error_reason = None
         self.drops = 0
+        self.abandoned = 0
+        self.abandoned_near_miss = 0
         self.last_drop_ts = None
         self.drop_pending = False
         self.last_frame_ts = None
@@ -1140,6 +1148,8 @@ class PhotocellEngine:
         self.result = None
         self.error_reason = None
         self.drops = 0
+        self.abandoned = 0
+        self.abandoned_near_miss = 0
         self.last_drop_ts = None
         self.drop_pending = False
         self.last_frame_ts = None
@@ -1294,6 +1304,13 @@ class PhotocellEngine:
             else:
                 self._trigger_finish(info)
         elif c.seen >= cfg.confirm_window:
+            # Aqui morria o cruzamento engolido: o candidato passou do limiar, não juntou as
+            # confirmações e sumia sem deixar rastro — a passada saía limpa com o par errado de
+            # eventos. Agora ele fica contado, e o near-miss (chegou a confirmar uma vez) marca a
+            # passada como degradada em _finish_run.
+            self.abandoned += 1
+            if c.confirmed >= 1:
+                self.abandoned_near_miss += 1
             self.candidate = None
             self._go(back_state)
 
@@ -1325,7 +1342,9 @@ class PhotocellEngine:
             elapsed_raw_ns=f.raw_ts_ns - s.raw_ts_ns,
             elapsed_refined_ns=f.refined_ts_ns - s.refined_ts_ns,
             drops=self.drops,
-            degraded=s.degraded or f.degraded,
+            degraded=s.degraded or f.degraded or self.abandoned_near_miss > 0,
+            abandoned=self.abandoned,
+            abandoned_near_miss=self.abandoned_near_miss,
             threshold_start=self.threshold_start,
             threshold_finish=self.threshold or 0.0,
         )

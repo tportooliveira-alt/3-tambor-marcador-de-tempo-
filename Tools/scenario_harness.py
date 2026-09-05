@@ -176,6 +176,7 @@ def run_scenario(**p):
     eng, meas, eff = run_strip(cfg, roi, pw, ph, stride, frames, ts, {0: "user_arm"})
     st = eng.start
     out = {"params": p, "triggered": st is not None, "state": eng.state, "drops": eng.drops,
+           "abandoned": eng.abandoned, "abandoned_near_miss": eng.abandoned_near_miss,
            "threshold": eng.threshold, "period_ms": P / 1e6}
     if st is None:
         expect = bool(p.get("expect_trigger", True))

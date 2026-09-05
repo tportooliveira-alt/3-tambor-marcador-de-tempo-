@@ -63,6 +63,10 @@ data class RunResult(
     val degraded: Boolean,
     val thresholdStart: Double,
     val thresholdFinish: Double,
+    /** Candidatos que passaram do limiar e NÃO confirmaram — o cruzamento engolido mora aqui. */
+    val abandoned: Int = 0,
+    /** Destes, os que chegaram a confirmar ao menos uma vez (perto de confirmar, não poeira). */
+    val abandonedNearMiss: Int = 0,
 )
 
 private class Candidate(val inp: CrossingInput, val degraded: Boolean) {
@@ -101,6 +105,8 @@ class PhotocellEngine(
     var result: RunResult? = null
         private set
     var drops: Int = 0
+    var abandoned: Int = 0
+    var abandonedNearMiss: Int = 0
         private set
     var noiseSigmaPx: Double = 0.0
         private set
@@ -184,6 +190,8 @@ class PhotocellEngine(
         result = null
         errorReason = null
         drops = 0
+        abandoned = 0
+        abandonedNearMiss = 0
         lastDropTs = null
         dropPending = false
         lastFrameTs = null
@@ -238,6 +246,8 @@ class PhotocellEngine(
         result = null
         errorReason = null
         drops = 0
+        abandoned = 0
+        abandonedNearMiss = 0
         lastDropTs = null
         dropPending = false
         lastFrameTs = null
@@ -397,6 +407,11 @@ class PhotocellEngine(
             candidate = null
             if (isStart) triggerStart(info) else triggerFinish(info)
         } else if (c.seen >= cfg.confirmWindow) {
+            // Aqui morria o cruzamento engolido: o candidato passou do limiar, não juntou as
+            // confirmações e sumia sem deixar rastro — a passada saía limpa com o par errado de
+            // eventos. Agora ele fica contado, e o near-miss marca a passada como degradada.
+            abandoned += 1
+            if (c.confirmed >= 1) abandonedNearMiss += 1
             candidate = null
             go(back)
         }
@@ -430,7 +445,9 @@ class PhotocellEngine(
             elapsedRawNs = f.rawTsNs - s.rawTsNs,
             elapsedRefinedNs = f.refinedTsNs - s.refinedTsNs,
             drops = drops,
-            degraded = s.degraded || f.degraded,
+            degraded = s.degraded || f.degraded || abandonedNearMiss > 0,
+            abandoned = abandoned,
+            abandonedNearMiss = abandonedNearMiss,
             thresholdStart = thresholdStart,
             thresholdFinish = threshold ?: 0.0,
         )

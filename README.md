@@ -189,7 +189,7 @@ Tools/gen_test_vectors.py      gera shared/test-vectors/*.json
 shared/test-vectors/           vetores compartilhados (Swift e Kotlin precisam bater)
 ios/Packages/PhotocellCore     núcleo Swift + XCTest
 ios/App                        app SwiftUI (Capture, Session, Timing, Results, Feedback, UI)
-android/core                   núcleo Kotlin + JUnit (46 testes passando, 30 vetores)
+android/core                   núcleo Kotlin + JUnit (48 testes passando, 31 vetores)
 android/app                    app Compose (camera, engine, results, feedback, ui)
 docs/estudo-tecnico.md         estudo avançado (física, APIs, decisões, fontes)
 ```

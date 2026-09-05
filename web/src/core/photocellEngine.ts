@@ -89,6 +89,10 @@ export interface RunResult {
   degraded: boolean;
   thresholdStart: number;
   thresholdFinish: number;
+  /** Candidatos que passaram do limiar e NÃO confirmaram — o cruzamento engolido mora aqui. */
+  abandoned: number;
+  /** Destes, os que chegaram a confirmar ao menos uma vez (perto de confirmar, não poeira). */
+  abandonedNearMiss: number;
 }
 
 class Candidate {
@@ -122,6 +126,8 @@ export class PhotocellEngine {
   finish: TriggerInfo | null = null;
   result: RunResult | null = null;
   drops = 0;
+  abandoned = 0;
+  abandonedNearMiss = 0;
   noiseSigmaPx = 0.0;
 
   readonly effects: Effect[] = [];
@@ -217,6 +223,8 @@ export class PhotocellEngine {
     this.result = null;
     this.errorReason = null;
     this.drops = 0;
+    this.abandoned = 0;
+    this.abandonedNearMiss = 0;
     this.lastDropTs = null;
     this.dropPending = false;
     this.lastFrameTs = null;
@@ -298,6 +306,8 @@ export class PhotocellEngine {
     this.result = null;
     this.errorReason = null;
     this.drops = 0;
+    this.abandoned = 0;
+    this.abandonedNearMiss = 0;
     this.lastDropTs = null;
     this.dropPending = false;
     this.lastFrameTs = null;
@@ -489,6 +499,11 @@ export class PhotocellEngine {
       if (isStart) this.triggerStart(info);
       else this.triggerFinish(info);
     } else if (c.seen >= this.cfg.confirmWindow) {
+      // Aqui morria o cruzamento engolido: o candidato passou do limiar, não juntou as confirmações
+      // e sumia sem deixar rastro — a passada saía limpa com o par errado de eventos. Agora ele fica
+      // contado, e o near-miss marca a passada como degradada.
+      this.abandoned += 1;
+      if (c.confirmed >= 1) this.abandonedNearMiss += 1;
       this.candidate = null;
       this.go(back);
     }
@@ -524,7 +539,9 @@ export class PhotocellEngine {
       elapsedRawNs: f.rawTsNs - s.rawTsNs,
       elapsedRefinedNs: f.refinedTsNs - s.refinedTsNs,
       drops: this.drops,
-      degraded: s.degraded || f.degraded,
+      degraded: s.degraded || f.degraded || this.abandonedNearMiss > 0,
+      abandoned: this.abandoned,
+      abandonedNearMiss: this.abandonedNearMiss,
       thresholdStart: this.thresholdStart,
       thresholdFinish: this.threshold ?? 0.0,
     };

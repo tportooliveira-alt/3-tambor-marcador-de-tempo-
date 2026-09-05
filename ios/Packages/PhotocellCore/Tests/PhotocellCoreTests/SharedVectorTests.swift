@@ -185,6 +185,8 @@ final class SharedVectorTests: XCTestCase {
             XCTAssertEqual(int(exp["lag"]), eng.lag, "\(name): lag")
             assertTrigger(exp["start"], eng.start, "\(name): start")
             XCTAssertEqual(int(exp["drops"]), eng.drops, "\(name): drops")
+            XCTAssertEqual(int(exp["abandoned"]), eng.abandoned, "\(name): abandoned")
+            XCTAssertEqual(int(exp["abandonedNearMiss"]), eng.abandonedNearMiss, "\(name): abandonedNearMiss")
         }
     }
 
@@ -266,11 +268,15 @@ final class SharedVectorTests: XCTestCase {
             assertTrigger(exp["start"], eng.start, "\(name): start")
             assertTrigger(exp["finish"], eng.finish, "\(name): finish")
             XCTAssertEqual(int(exp["drops"]), eng.drops, "\(name): drops")
+            XCTAssertEqual(int(exp["abandoned"]), eng.abandoned, "\(name): abandoned")
+            XCTAssertEqual(int(exp["abandonedNearMiss"]), eng.abandonedNearMiss, "\(name): abandonedNearMiss")
             if let er = exp["result"] as? [String: Any] {
                 let r = try XCTUnwrap(eng.result, "\(name): result")
                 XCTAssertEqual(int64(er["elapsedRawNs"]), r.elapsedRawNs, "\(name): elapsedRaw")
                 XCTAssertLessThanOrEqual(abs(int64(er["elapsedRefinedNs"]) - r.elapsedRefinedNs), 2, "\(name): elapsedRefined")
                 XCTAssertEqual(int(er["drops"]), r.drops)
+                XCTAssertEqual(int(er["abandoned"]), r.abandoned)
+                XCTAssertEqual(int(er["abandonedNearMiss"]), r.abandonedNearMiss)
                 XCTAssertEqual(bool(er["degraded"]), r.degraded)
                 assertClose(dbl(er["thresholdStart"]), r.thresholdStart, "\(name): thresholdStart")
                 assertClose(dbl(er["thresholdFinish"]), r.thresholdFinish, "\(name): thresholdFinish")

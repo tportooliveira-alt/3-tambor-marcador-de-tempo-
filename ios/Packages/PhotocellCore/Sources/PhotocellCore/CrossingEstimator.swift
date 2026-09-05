@@ -95,7 +95,11 @@ public enum CrossingEstimator {
         let sMin = 1e9 / cfg.speedPxPerSMax
         let sMax = 1e9 / cfg.speedPxPerSMin
         let minRows = max(max(1, cfg.minInteriorRowsPerColumn), Int((cfg.minInteriorRowsFraction * Double(h)).rounded(.up)))
-        let uncFloor = max(max(1, cfg.exposureNs / 50), cfg.systematicUncNs)
+        // Piso de erro de MODELO (não de ruído). O maior termo é a curva de tom: o app supõe uma
+        // gamma e a real varia com o aparelho. O viés de um desvio de gamma cresce com a exposição
+        // como ~Δγ·E/8,6 — cinco vezes mais rápido que o antigo piso E/50, que só cobria Δγ ≈ 0,2.
+        // E/25 cobre Δγ ≈ 0,35, a faixa plausível entre aparelhos.
+        let uncFloor = max(max(1, cfg.exposureNs / 25), cfg.systematicUncNs)
         let satLo = Double(cfg.saturationLow)
         let satHi = Double(cfg.saturationHigh)
         func saturated(_ raw: Double) -> Bool { raw <= satLo || raw >= satHi }
@@ -231,8 +235,15 @@ public enum CrossingEstimator {
             let bb = hi
             if floorDiv(bb - a, 2) > p / 2 { return nil }
             let mid = floorDiv(a + bb, 2)
-            return CrossingEstimate(quality: quality, refinedTsNs: mid, uncertaintyNs: floorDiv(bb - a, 2),
-                                    interiorCount: interior, boundCount: bounds, lowerNs: a, upperNs: bb,
+            // O piso vale para o INTERVALO também. Sem isto, um resultado rebaixado para qualidade 1
+            // saía declarando menos incerteza que o melhor qualidade 2 que o sistema admite emitir —
+            // rebaixar a qualidade apertando a incerteza é o contrário do que rebaixar significa.
+            var half = floorDiv(bb - a, 2)
+            var lo = a
+            var hi = bb
+            if half < uncFloor { half = uncFloor; lo = mid - half; hi = mid + half }
+            return CrossingEstimate(quality: quality, refinedTsNs: mid, uncertaintyNs: half,
+                                    interiorCount: interior, boundCount: bounds, lowerNs: lo, upperNs: hi,
                                     texturedColumns: texturedCols)
         }
 

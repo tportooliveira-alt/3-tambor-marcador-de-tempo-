@@ -278,6 +278,8 @@ def strip_vector(name: str, *, direction: int, skew_ns: Optional[int], flicker: 
             "lag": eng.lag,
             "start": trigger_json(eng.start),
             "drops": eng.drops,
+            "abandoned": eng.abandoned,
+            "abandonedNearMiss": eng.abandoned_near_miss,
         },
         "groundTruth": {"tCrossCenterNs": truth, "exposureNs": exposure, "sceneSkewNs": scene_skew,
                         "crossFraction": cross_fraction,
@@ -354,9 +356,12 @@ def fsm_vector(name: str, desc: str, cfg: PhotocellConfig, steps: List[Dict]) ->
             "errorReason": eng.error_reason, "threshold": eng.threshold,
             "start": trigger_json(eng.start), "finish": trigger_json(eng.finish),
             "drops": eng.drops,
+            "abandoned": eng.abandoned,
+            "abandonedNearMiss": eng.abandoned_near_miss,
             "result": None if res is None else {
                 "elapsedRawNs": res.elapsed_raw_ns, "elapsedRefinedNs": res.elapsed_refined_ns,
                 "drops": res.drops, "degraded": res.degraded,
+                "abandoned": res.abandoned, "abandonedNearMiss": res.abandoned_near_miss,
                 "thresholdStart": res.threshold_start, "thresholdFinish": res.threshold_finish,
                 "elapsedText": format_elapsed(res.elapsed_raw_ns),
             },
@@ -393,7 +398,7 @@ def strip_arrays(h: int, w: int, a: int, b: int, frac: float, bg: float = 100.0,
 
 
 def build_full_run(cfg: PhotocellConfig, *, with_drop: bool, interrupted: bool,
-                   reject_first: bool) -> List[Dict]:
+                   reject_first: bool, swallowed_first: bool = False) -> List[Dict]:
     p = cfg.frame_period_ns
     t0 = 500 * NS_PER_SEC
     steps: List[Dict] = [{"type": "user", "event": "user_arm"}, {"type": "seed", "ts": t0}]
@@ -405,6 +410,19 @@ def build_full_run(cfg: PhotocellConfig, *, with_drop: bool, interrupted: bool,
         steps.append({"type": "frames", "count": 1, "ts0": t0 + n * p, "period": p,
                       "full": 12.0, "core": 15.0, "bg": 1.0, "rows": crossing_rows(96, 12, 83, 40, 15.0)}); n += 1
         steps.append(quiet(t0 + n * p, 4, p)); n += 4
+        steps.append(quiet(t0 + n * p, 10, p)); n += 10
+    if swallowed_first:
+        # O CRUZAMENTO ENGOLIDO: o candidato passa do limiar e o fundo confirma UMA vez (faltando
+        # uma para as duas exigidas) — é o que acontece a 30 quadros por segundo quando o cavalo
+        # cobre a faixa por menos de dois quadros. A janela fecha, o candidato é descartado, e a
+        # passada que vier depois estará medindo o par errado de eventos. Tem de sair degradada.
+        steps.append({"type": "frames", "count": 1, "ts0": t0 + n * p, "period": p,
+                      "full": 12.0, "core": 15.0, "bg": 1.0,
+                      "rows": crossing_rows(96, 12, 83, 40, 15.0)}); n += 1
+        steps.append({"type": "frames", "count": 1, "ts0": t0 + n * p, "period": p,
+                      "full": 12.0, "core": 14.0, "bg": 20.0,
+                      "rows": crossing_rows(96, 12, 83, 40, 14.0)}); n += 1
+        steps.append(quiet(t0 + n * p, 3, p)); n += 3
         steps.append(quiet(t0 + n * p, 10, p)); n += 10
     # largada: candidato + 4 quadros de passagem (fundo confirma)
     start_ts = t0 + n * p
@@ -539,6 +557,12 @@ def main() -> None:
                               PhotocellConfig(skew_ns=3_200_000),
                               build_full_run(PhotocellConfig(skew_ns=3_200_000), with_drop=False,
                                              interrupted=False, reject_first=True)))
+    vectors.append(fsm_vector("fsm_swallowed_crossing",
+                              "Cruzamento visto mas não confirmado (30 fps): a prova sai degradada",
+                              PhotocellConfig(skew_ns=3_200_000),
+                              build_full_run(PhotocellConfig(skew_ns=3_200_000), with_drop=False,
+                                             interrupted=False, reject_first=False,
+                                             swallowed_first=True)))
     vectors.append(fsm_vector("fsm_drop_degraded", "Drops logo antes da chegada marcam a prova como degradada",
                               PhotocellConfig(skew_ns=3_200_000),
                               build_full_run(PhotocellConfig(skew_ns=3_200_000), with_drop=True,

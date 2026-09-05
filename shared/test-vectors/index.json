@@ -151,6 +151,12 @@
       "description": "Pico de um quadro rejeitado, depois prova válida"
     },
     {
+      "name": "fsm_swallowed_crossing",
+      "kind": "fsm",
+      "file": "fsm_swallowed_crossing.json",
+      "description": "Cruzamento visto mas não confirmado (30 fps): a prova sai degradada"
+    },
+    {
       "name": "fsm_drop_degraded",
       "kind": "fsm",
       "file": "fsm_drop_degraded.json",

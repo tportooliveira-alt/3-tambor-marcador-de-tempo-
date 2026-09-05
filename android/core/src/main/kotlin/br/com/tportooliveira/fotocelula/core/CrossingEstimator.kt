@@ -92,7 +92,11 @@ object CrossingEstimator {
         val sMin = 1e9 / cfg.speedPxPerSMax
         val sMax = 1e9 / cfg.speedPxPerSMin
         val minRows = maxOf(1, cfg.minInteriorRowsPerColumn, Math.ceil(cfg.minInteriorRowsFraction * h).toInt())
-        val uncFloor = maxOf(1L, cfg.exposureNs / 50, cfg.systematicUncNs)
+        // Piso de erro de MODELO (não de ruído). O maior termo é a curva de tom: o app supõe uma
+        // gamma e a real varia com o aparelho. O viés de um desvio de gamma cresce com a exposição
+        // como ~Δγ·E/8,6 — cinco vezes mais rápido que o antigo piso E/50, que só cobria Δγ ≈ 0,2.
+        // E/25 cobre Δγ ≈ 0,35, a faixa plausível entre aparelhos.
+        val uncFloor = maxOf(1L, cfg.exposureNs / 25, cfg.systematicUncNs)
         val satLo = cfg.saturationLow.toDouble()
         val satHi = cfg.saturationHigh.toDouble()
         fun saturated(raw: Double): Boolean = raw <= satLo || raw >= satHi
@@ -222,7 +226,14 @@ object CrossingEstimator {
             val bb = hiNs
             if (Math.floorDiv(bb - a, 2L) > p / 2) return null
             val mid = Math.floorDiv(a + bb, 2L)
-            return CrossingEstimate(quality, mid, Math.floorDiv(bb - a, 2L), interior, bounds, a, bb, texturedCols)
+            // O piso vale para o INTERVALO também. Sem isto, um resultado rebaixado para qualidade 1
+            // saía declarando menos incerteza que o melhor qualidade 2 que o sistema admite emitir —
+            // rebaixar a qualidade apertando a incerteza é o contrário do que rebaixar significa.
+            var half = Math.floorDiv(bb - a, 2L)
+            var lo = a
+            var hi = bb
+            if (half < uncFloor) { half = uncFloor; lo = mid - half; hi = mid + half }
+            return CrossingEstimate(quality, mid, half, interior, bounds, lo, hi, texturedCols)
         }
 
         /** Qualidade 2 se a incerteza (3σ) propagada do ajuste é pequena; senão intervalo. */

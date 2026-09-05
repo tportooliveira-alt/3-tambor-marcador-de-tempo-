@@ -4,7 +4,7 @@
  */
 import { analyzeVideo, configForFile, probeFramePeriod, type AnalysisResult } from "./analyze.ts";
 import { defaultConfig } from "./core/photocellConfig.ts";
-import type { RunResult } from "./core/photocellEngine.ts";
+import { PhotocellState, type RunResult } from "./core/photocellEngine.ts";
 import { formatElapsed } from "./core/timeFormatter.ts";
 import {
   csvClassificacao,
@@ -582,6 +582,7 @@ function mostrarResultado(res: AnalysisResult, segundos: number, analisado: File
     quadrosPerdidos: res.missedFrames,
     arquivo: analisado?.name ?? "",
     origem: "video",
+    cruzamentosNaoConfirmados: r.abandonedNearMiss,
   };
   passadaAberta = p;
   // GRAVA JÁ. O número existe; esperar um toque em "Salvar" é o que fazia a passada sumir ao trocar
@@ -596,6 +597,13 @@ function desenharCartao(segundos: number, res: AnalysisResult): void {
   const p = passadaAberta!;
   const el = $("resultado");
   const qualidade = Math.min(p.qualidadeLargada, p.qualidadeChegada);
+  // Um cruzamento visto e não confirmado é o defeito mais caro que este app pode ter: o tempo que
+  // sai pode ser de OUTRO par de eventos, e sem esta linha ele sairia com cara de tempo bom.
+  const engolido = (p.cruzamentosNaoConfirmados ?? 0) > 0
+    ? `<p class="faixa-aviso ruim"><b>Atenção:</b> ${p.cruzamentosNaoConfirmados} vez(es) algo cruzou a
+       faixa e não confirmou. O tempo pode ser de outro par de eventos — confira antes de usar.</p>`
+    : "";
+
   const incerteza = (p.incertezaLargadaNs + p.incertezaChegadaNs) / 1e6;
   const finalNs = p.elapsedRefinedNs + p.tamboresDerrubados * 5_000_000_000;
   const quem = p.inscricaoId
@@ -608,6 +616,7 @@ function desenharCartao(segundos: number, res: AnalysisResult): void {
       <span class="selo q${qualidade}">qualidade ${qualidade} · ±${incerteza.toFixed(2)} ms</span>
       ${p.degradada ? '<span class="selo aviso">degradada</span>' : ""}
     </div>
+    ${engolido}
     <p class="detalhe">
       refinado ${formatElapsed(p.elapsedRefinedNs)} · bruto ${formatElapsed(p.elapsedRawNs)}<br>
       ${res.measuredFps.toFixed(0)} FPS · ${res.reader.received} quadros lidos${res.missedFrames > 0 ? ` · <b>${res.missedFrames} não entregues pelo navegador</b>` : ""} · análise em ${segundos.toFixed(0)} s<br>
@@ -1263,20 +1272,26 @@ const visor = new Visor(
     },
     onCronometro: (estado, decorridoNs, resultado) => {
       $("visorTempo").hidden = false;
-      const fase: Record<string, string> = {
-        ARMED: "armado — esperando a largada",
-        CONFIRMING_START: "confirmando a largada…",
-        DEBOUNCE_START: "largou! (bloqueio para o resto do cavalo passar)",
-        RUNNING: "correndo",
-        AWAITING_FINISH: "esperando a chegada",
-        CONFIRMING_FINISH: "confirmando a chegada…",
-        DEBOUNCE_FINISH: "chegou!",
-        FINISHED: "tempo fechado",
-      };
+      // As chaves são EXATAMENTE o que o motor emite (`PhotocellState`, em camelCase). Estavam em
+      // MAIÚSCULAS, da especificação, então nenhuma casava e a tela mostrava `awaitingFinish` cru
+      // para quem está com o celular no tripé. O `satisfies` faz o compilador cobrar cada estado.
+      const fase = {
+        [PhotocellState.IDLE]: "parado",
+        [PhotocellState.CALIBRATING]: "medindo a cena…",
+        [PhotocellState.ARMED]: "armado — esperando a largada",
+        [PhotocellState.CONFIRMING_START]: "confirmando a largada…",
+        [PhotocellState.DEBOUNCE_START]: "largou! (bloqueio para o resto do cavalo passar)",
+        [PhotocellState.RUNNING]: "correndo",
+        [PhotocellState.AWAITING_FINISH]: "esperando a chegada",
+        [PhotocellState.CONFIRMING_FINISH]: "confirmando a chegada…",
+        [PhotocellState.DEBOUNCE_FINISH]: "chegou!",
+        [PhotocellState.FINISHED]: "tempo fechado",
+        [PhotocellState.ERROR]: "erro na captura",
+      } satisfies Record<PhotocellState, string>;
       // Nada de número de precisão cravado aqui: o que vale é o que o estimador declarar em cada
       // gatilho, e isso aparece no cartão quando o tempo fecha.
       $("visorFase").textContent =
-        `${fase[estado] ?? estado} · ${visor.taxaMedida.toFixed(0)} quadros por segundo` +
+        `${fase[estado]} · ${visor.taxaMedida.toFixed(0)} quadros por segundo` +
         (visor.porQuadroDaCamera ? "" : " · laço da tela (o navegador não entrega quadro a quadro)");
       if (resultado) {
         $("visorRelogio").textContent = formatElapsed(resultado.elapsedRefinedNs);
@@ -1566,6 +1581,7 @@ function abrirPassadaAoVivo(r: RunResult): void {
     quadrosPerdidos: visor.quadrosPerdidos,
     arquivo: "",
     origem: visor.naMao ? "ao-vivo-mao" : "ao-vivo",
+    cruzamentosNaoConfirmados: r.abandonedNearMiss,
   };
   // Guarda na hora, como no caminho do arquivo: o cavalo seguinte não pode apagar este tempo.
   store.salvarPassada(passadaVisor);
@@ -1579,6 +1595,13 @@ function desenharCartaoVisor(): void {
   const el = $("resultadoVisor");
   el.hidden = false;
   const qualidade = Math.min(p.qualidadeLargada, p.qualidadeChegada);
+  // Um cruzamento visto e não confirmado é o defeito mais caro que este app pode ter: o tempo que
+  // sai pode ser de OUTRO par de eventos, e sem esta linha ele sairia com cara de tempo bom.
+  const engolido = (p.cruzamentosNaoConfirmados ?? 0) > 0
+    ? `<p class="faixa-aviso ruim"><b>Atenção:</b> ${p.cruzamentosNaoConfirmados} vez(es) algo cruzou a
+       faixa e não confirmou. O tempo pode ser de outro par de eventos — confira antes de usar.</p>`
+    : "";
+
   const incerteza = (p.incertezaLargadaNs + p.incertezaChegadaNs) / 1e6;
   const finalNs = p.elapsedRefinedNs + p.tamboresDerrubados * 5_000_000_000;
   const quem = p.inscricaoId
@@ -1591,6 +1614,7 @@ function desenharCartaoVisor(): void {
       <span class="selo q${qualidade}">qualidade ${qualidade} · ±${incerteza.toFixed(2)} ms</span>
       ${p.degradada ? '<span class="selo aviso">degradada</span>' : ""}
     </div>
+    ${engolido}
     <p class="detalhe">
       refinado ${formatElapsed(p.elapsedRefinedNs)} · bruto ${formatElapsed(p.elapsedRawNs)}<br>
       ${p.fps.toFixed(0)} quadros por segundo${p.quadrosPerdidos > 0 ? ` · <b>${p.quadrosPerdidos} quadro(s) perdido(s)</b>` : ""}

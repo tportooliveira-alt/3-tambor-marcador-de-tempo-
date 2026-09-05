@@ -65,6 +65,14 @@ export interface Passada {
    * usa `p.origem ?? "video"`.
    */
   origem?: Origem;
+  /**
+   * Cruzamentos que passaram do limiar e NÃO chegaram a confirmar — o motor viu algo cruzar a faixa
+   * e descartou. Quando isto acontece, o tempo pode ser de OUTRO par de eventos (o cruzamento
+   * engolido e o seguinte), e por isso a passada sai marcada como degradada.
+   *
+   * Opcional pela mesma disciplina dos campos acima: passada antiga chega sem ele (`?? 0`).
+   */
+  cruzamentosNaoConfirmados?: number;
 }
 
 /**
@@ -314,6 +322,7 @@ export function csvHistorico(passadas: Passada[]): string {
     "qualidade_largada", "qualidade_chegada", "incerteza_largada_ms", "incerteza_chegada_ms",
     "fps", "quadros_perdidos", "arquivo",
     "tempo_oficial_s", "erro_refinado_ms", "erro_bruto_ms", "origem",
+    "cruzamentos_nao_confirmados",
   ];
   const linhas = [cab.join(";")];
   for (const p of passadas) {
@@ -332,6 +341,7 @@ export function csvHistorico(passadas: Passada[]): string {
         oficial === null ? "" : dec((p.elapsedRefinedNs - oficial) / 1e6, 2),
         oficial === null ? "" : dec((p.elapsedRawNs - oficial) / 1e6, 2),
         p.origem ?? "video",
+        String(p.cruzamentosNaoConfirmados ?? 0),
       ].join(";"),
     );
   }

@@ -5,7 +5,7 @@
  * A diferença para o app nativo é só a fonte do relógio: lá é o sensor, aqui é o `mediaTime` do
  * arquivo. Dentro de um mesmo clipe os dois têm a mesma qualidade para medir ΔT — e é ΔT que a prova
  * mede. O algoritmo (differencer, calibração, estimador sub-quadro, FSM) é o mesmo núcleo
- * compartilhado, conferido pelos 30 vetores.
+ * compartilhado, conferido pelos 31 vetores.
  */
 import { MEAN_ABS_DIFF_TO_SIGMA } from "./core/nanos.ts";
 import { computeThreshold, NoiseCalibrator } from "./core/noiseCalibrator.ts";

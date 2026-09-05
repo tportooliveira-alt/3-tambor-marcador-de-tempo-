@@ -79,6 +79,10 @@ public struct RunResult: Equatable, Sendable {
     public var degraded: Bool
     public var thresholdStart: Double
     public var thresholdFinish: Double
+    /// Candidatos que passaram do limiar e NÃO confirmaram — o cruzamento engolido mora aqui.
+    public var abandoned: Int = 0
+    /// Destes, os que chegaram a confirmar ao menos uma vez (perto de confirmar, não poeira).
+    public var abandonedNearMiss: Int = 0
 }
 
 private struct Candidate {
@@ -103,6 +107,8 @@ public final class PhotocellEngine {
     public private(set) var finish: TriggerInfo? = nil
     public private(set) var result: RunResult? = nil
     public private(set) var drops: Int = 0
+    public private(set) var abandoned: Int = 0
+    public private(set) var abandonedNearMiss: Int = 0
     public private(set) var noiseSigmaPx: Double = 0.0
     /// Estatísticas da última calibração (para diagnóstico na UI).
     public private(set) var noiseMean: Double = 0.0
@@ -196,6 +202,8 @@ public final class PhotocellEngine {
         result = nil
         errorReason = nil
         drops = 0
+        abandoned = 0
+        abandonedNearMiss = 0
         lastDropTs = nil
         dropPending = false
         lastFrameTs = nil
@@ -248,6 +256,8 @@ public final class PhotocellEngine {
         result = nil
         errorReason = nil
         drops = 0
+        abandoned = 0
+        abandonedNearMiss = 0
         lastDropTs = nil
         dropPending = false
         lastFrameTs = nil
@@ -397,6 +407,11 @@ public final class PhotocellEngine {
             candidate = nil
             if isStart { triggerStart(info) } else { triggerFinish(info) }
         } else if c.seen >= cfg.confirmWindow {
+            // Aqui morria o cruzamento engolido: o candidato passou do limiar, não juntou as
+            // confirmações e sumia sem deixar rastro — a passada saía limpa com o par errado de
+            // eventos. Agora ele fica contado, e o near-miss marca a passada como degradada.
+            abandoned += 1
+            if c.confirmed >= 1 { abandonedNearMiss += 1 }
             candidate = nil
             go(back)
         } else {
@@ -430,9 +445,11 @@ public final class PhotocellEngine {
                            elapsedRawNs: f.rawTsNs - s.rawTsNs,
                            elapsedRefinedNs: f.refinedTsNs - s.refinedTsNs,
                            drops: drops,
-                           degraded: s.degraded || f.degraded,
+                           degraded: s.degraded || f.degraded || abandonedNearMiss > 0,
                            thresholdStart: thresholdStart,
-                           thresholdFinish: threshold ?? 0.0)
+                           thresholdFinish: threshold ?? 0.0,
+                           abandoned: abandoned,
+                           abandonedNearMiss: abandonedNearMiss)
         go(.finished)
     }
 }

@@ -59,6 +59,11 @@ pagina.on("console", (m) => { if (m.type() === "error" && !m.text().includes("fa
 
 let falhou = false;
 const checar = (ok, msg) => { console.log(`${ok ? "ok  " : "FALHA"} — ${msg}`); if (!ok) falhou = true; };
+/** O limiar impresso em `#visorEstado` ("… (limiar 5.3) …"), para comparar tripé com na mão. */
+const numeroLimiar = (texto) => {
+  const m = /limiar ([\d.]+)/.exec(texto ?? "");
+  return m ? Number.parseFloat(m[1]) : Number.NaN;
+};
 
 try {
   await pagina.goto(`http://127.0.0.1:${porta}/index.html`);
@@ -104,6 +109,7 @@ try {
   console.log(`    estado: ${estado}`);
   checar(/quadros por segundo/.test(estado), "o visor mostra a taxa real medida");
   checar(/limiar/.test(estado), "a calibragem terminou sozinha e o limiar apareceu");
+  const limiarTripe = numeroLimiar(estado);
 
   // o overlay tem de estar desenhado (canvas com pixels não transparentes)
   const pintado = await pagina.evaluate(() => {
@@ -146,6 +152,19 @@ try {
   const fase = await pagina.textContent("#visorFase");
   console.log(`    fase: ${fase}`);
   checar(/\d+ quadros por segundo/.test(fase), "o cronômetro mostra a taxa medida, sem cravar precisão");
+
+  // A fase tem de estar SEMPRE em português. O mapa usava as chaves da especificação (MAIÚSCULAS) e
+  // o motor emite camelCase, então nenhuma casava e a tela mostrava `awaitingFinish` cru — e este
+  // teste não pegava porque lia a fase logo depois de armar, no instante em que `armarAgora()`
+  // escreve a frase em português, antes de o primeiro quadro sobrescrever. Agora colhe por 2 s.
+  const CRU = /\bidle\b|\bcalibrating\b|\barmed\b|\brunning\b|\bfinished\b|\berror\b|awaitingFinish|confirmingStart|confirmingFinish|debounceStart|debounceFinish/;
+  const fases = new Set();
+  for (let i = 0; i < 20; i++) {
+    fases.add(((await pagina.textContent("#visorFase")) ?? "").trim());
+    await pagina.waitForTimeout(100);
+  }
+  const cruas = [...fases].filter((f) => CRU.test(f));
+  checar(cruas.length === 0, `a fase aparece sempre em português${cruas.length ? ": " + cruas.join(" | ") : ` (${fases.size} texto(s) diferente(s))`}`);
   checar(await pagina.isVisible("#desarmarVisor"), "o botão de parar apareceu");
 
   // --- a passada ao vivo, de ponta a ponta ---------------------------------------------------
@@ -195,6 +214,16 @@ try {
     return (d.passadas ?? []).map((p) => p.origem);
   });
   checar(guardada.length === 1 && guardada[0] === "ao-vivo", `gravada com origem "ao-vivo" (${guardada.join(",")})`);
+
+  // A invariante que este projeto existe para sustentar: se o motor viu algo cruzar a faixa e não
+  // conseguiu confirmar, o tempo que saiu pode ser de OUTRO par de eventos — e nunca pode sair
+  // limpo. Antes de a contagem existir, um cruzamento engolido devolvia um tempo errado com
+  // qualidade 1 e ±25 ms, mais confiante do que um cruzamento certo a 30 quadros por segundo.
+  const semRastro = await pagina.evaluate(() => {
+    const ps = JSON.parse(localStorage.getItem("fotocelula.dados.v1") ?? "{}").passadas ?? [];
+    return ps.filter((p) => (p.cruzamentosNaoConfirmados ?? 0) > 0 && p.degradada !== true).length;
+  });
+  checar(semRastro === 0, "cruzamento não confirmado nunca sai sem a marca de degradada");
   // Voltar para a aba fecha o ciclo: a câmera foi desligada ao sair, então tem de reabrir aqui
   // para que a verificação seguinte (sair desliga) signifique alguma coisa.
   await pagina.click('#abas button[data-aba="visor"]');
@@ -205,6 +234,18 @@ try {
   // Sem tripé o limiar sobe (o tremor produz diferença em toda a faixa), e a passada tem de ficar
   // num caminho SEPARADO: misturada com as do tripé, estragaria a comparação que se quer fazer.
   await pagina.check("#visorMao");
+  // O limiar aplicado na mão é 2,5× o medido. Enquanto o fator só existia dentro de `armar()`, a
+  // barra acendia num nível que o motor não aceitava: a tela dizia CRUZANDO e nada disparava.
+  await pagina.waitForFunction(
+    () => /limiar/.test(document.getElementById("visorEstado")?.textContent ?? ""),
+    null,
+    { timeout: 60_000 },
+  );
+  const limiarMao = numeroLimiar(await pagina.textContent("#visorEstado"));
+  checar(
+    limiarMao > 1.8 * limiarTripe,
+    `na mão a tela mostra o limiar que o motor aplica (${limiarTripe.toFixed(1)} → ${limiarMao.toFixed(1)})`,
+  );
   await pagina.click("#armarVisor");
   await pagina.waitForSelector("#resultadoVisor:not([hidden])", { timeout: 120_000 });
   const quemMao = await pagina.evaluate(

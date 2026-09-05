@@ -192,7 +192,8 @@ function relatar(res, rotulo) {
   const unc = r.start.uncertaintyNs + r.finish.uncertaintyNs;
   console.log(
     `${rotulo}  refinado ${fmt(r.elapsedRefinedNs)} s · bruto ${fmt(r.elapsedRawNs)} s · qualidade ${q} · ±${ms(unc)} ms` +
-      `${r.degraded ? " · DEGRADADA" : ""}`,
+      `${r.degraded ? " · DEGRADADA" : ""}` +
+      `${r.abandonedNearMiss > 0 ? ` · ${r.abandonedNearMiss} cruzamento(s) VISTO(S) E NÃO CONFIRMADO(S)` : ""}`,
   );
   console.log(
     `          largada q${r.start.quality} ±${ms(r.start.uncertaintyNs)} ms (${r.start.interiorCount} col., ${r.start.texturedColumns} texturizadas)` +

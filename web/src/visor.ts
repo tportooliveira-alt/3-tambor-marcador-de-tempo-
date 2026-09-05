@@ -35,7 +35,7 @@ export interface VisorCallbacks {
   /** Chamado a cada quadro medido: taxa real, ΔY do quadro e se passou do limiar. */
   onQuadro: (fps: number, delta: number, limiar: number | null, cruzando: boolean) => void;
   /** Estado da máquina e o cronômetro correndo, em nanossegundos desde a largada. */
-  onCronometro: (estado: string, decorridoNs: number | null, resultado: RunResult | null) => void;
+  onCronometro: (estado: PhotocellState, decorridoNs: number | null, resultado: RunResult | null) => void;
   onErro: (mensagem: string) => void;
 }
 
@@ -327,10 +327,19 @@ export class Visor {
    * hipótese não se sustenta, ele cai para qualidade 1 ou 0 com intervalo largo, que é o
    * comportamento honesto.
    */
+  /**
+   * O limiar realmente aplicado: o medido, e 2,5× ele no modo sem tripé. Tela, barra de movimento e
+   * motor leem daqui, para nunca mais falarem de números diferentes.
+   */
+  get limiarEfetivo(): number | null {
+    if (this.limiar === null) return null;
+    return this.naMao ? this.limiar * FATOR_MAO : this.limiar;
+  }
+
   armar(): boolean {
-    if (this.differencer === null || this.limiar === null) return false;
+    const limiar = this.limiarEfetivo;
+    if (this.differencer === null || limiar === null) return false;
     const cfg = { ...this.cfg };
-    const limiar = this.naMao ? this.limiar * FATOR_MAO : this.limiar;
     cfg.frameRateHz = Math.max(15, Math.round(this.fps || 30));
     cfg.exposureNs = Math.round(1e9 / cfg.frameRateHz);
     // vídeo de câmera traz curva de tom, como o arquivo: linearizar antes da fração de exposição
@@ -485,8 +494,12 @@ export class Visor {
       this.picoValor = m.deltaCore;
       this.picoTsMs = quadroMs;
     }
-    const cruzando = this.limiar !== null && m.deltaCore > this.limiar;
-    this.cb.onQuadro(this.fps, m.deltaCore, this.limiar, cruzando);
+    // O limiar que a tela mostra e a barra de movimento usam tem de ser o MESMO que o motor
+    // aplica. Na mão ele sobe 2,5×, e enquanto isso só acontecia dentro de `armar()` a barra
+    // acendia num nível que o motor não aceitava — e a dica "passou perto do limiar" mentia junto.
+    const lim = this.limiarEfetivo;
+    const cruzando = lim !== null && m.deltaCore > lim;
+    this.cb.onQuadro(this.fps, m.deltaCore, lim, cruzando);
 
     if (this.cronometrando && this.engine !== null) {
       const eng = this.engine;

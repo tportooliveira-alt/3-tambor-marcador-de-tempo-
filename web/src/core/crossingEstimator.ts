@@ -127,7 +127,10 @@ export function estimateCrossing(
   const sMin = 1e9 / cfg.speedPxPerSMax;
   const sMax = 1e9 / cfg.speedPxPerSMin;
   const minRows = Math.max(1, cfg.minInteriorRowsPerColumn, Math.ceil(cfg.minInteriorRowsFraction * h));
-  const uncFloor = Math.max(1, Math.floor(cfg.exposureNs / 50), cfg.systematicUncNs);
+  // Piso de erro de MODELO (não de ruído). O maior termo é a curva de tom: o app supõe uma gamma e
+  // a real varia com o aparelho. O viés de um desvio de gamma cresce com a exposição como ~Δγ·E/8,6
+  // — cinco vezes mais rápido que o antigo piso E/50, que só cobria Δγ ≈ 0,2. E/25 cobre Δγ ≈ 0,35.
+  const uncFloor = Math.max(1, Math.floor(cfg.exposureNs / 25), cfg.systematicUncNs);
   const satLo = cfg.saturationLow;
   const satHi = cfg.saturationHigh;
   const saturated = (raw: number): boolean => raw <= satLo || raw >= satHi;
@@ -258,14 +261,26 @@ export function estimateCrossing(
     // limites contraditórios (classificação corrompida, p.ex. textura): sem informação honesta
     if (loNs > hiNs) return null;
     if (Math.floor((hiNs - loNs) / 2) > Math.floor(p / 2)) return null;
+    const mid = Math.floor((loNs + hiNs) / 2);
+    // O piso vale para o INTERVALO também. Sem isto, um resultado rebaixado para qualidade 1 saía
+    // declarando menos incerteza que o melhor qualidade 2 que o sistema admite emitir — rebaixar a
+    // qualidade apertando a incerteza é o contrário do que rebaixar significa.
+    let half = Math.floor((hiNs - loNs) / 2);
+    let lo = loNs;
+    let hi = hiNs;
+    if (half < uncFloor) {
+      half = uncFloor;
+      lo = mid - half;
+      hi = mid + half;
+    }
     return {
       quality,
-      refinedTsNs: Math.floor((loNs + hiNs) / 2),
-      uncertaintyNs: Math.floor((hiNs - loNs) / 2),
+      refinedTsNs: mid,
+      uncertaintyNs: half,
       interiorCount: interior,
       boundCount: bounds,
-      lowerNs: loNs,
-      upperNs: hiNs,
+      lowerNs: lo,
+      upperNs: hi,
       texturedColumns: texturedCols,
     };
   };

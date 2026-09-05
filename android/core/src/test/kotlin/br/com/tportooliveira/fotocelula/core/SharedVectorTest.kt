@@ -196,6 +196,8 @@ class SharedVectorTest {
         assertEquals(exp.getInt("lag"), eng.lag, "lag")
         assertTrigger(exp.optJSONObject("start"), eng.start, "start")
         assertEquals(exp.getInt("drops"), eng.drops, "drops")
+        assertEquals(exp.getInt("abandoned"), eng.abandoned, "abandoned")
+        assertEquals(exp.getInt("abandonedNearMiss"), eng.abandonedNearMiss, "abandonedNearMiss")
     }
 
     // ------------------------------------------------------------------ calibração
@@ -261,6 +263,8 @@ class SharedVectorTest {
         assertTrigger(exp.optJSONObject("start"), eng.start, "start")
         assertTrigger(exp.optJSONObject("finish"), eng.finish, "finish")
         assertEquals(exp.getInt("drops"), eng.drops, "drops")
+        assertEquals(exp.getInt("abandoned"), eng.abandoned, "abandoned")
+        assertEquals(exp.getInt("abandonedNearMiss"), eng.abandonedNearMiss, "abandonedNearMiss")
         val er = exp.optJSONObject("result")
         val r = eng.result
         if (er == null) { assertNull(r, "result"); return }
@@ -268,6 +272,8 @@ class SharedVectorTest {
         assertEquals(er.getLong("elapsedRawNs"), r!!.elapsedRawNs, "elapsedRaw")
         assertTrue(abs(er.getLong("elapsedRefinedNs") - r.elapsedRefinedNs) <= 2, "elapsedRefined")
         assertEquals(er.getInt("drops"), r.drops)
+        assertEquals(er.getInt("abandoned"), r.abandoned)
+        assertEquals(er.getInt("abandonedNearMiss"), r.abandonedNearMiss)
         assertEquals(er.getBoolean("degraded"), r.degraded)
         assertClose(er.getDouble("thresholdStart"), r.thresholdStart, "thresholdStart")
         assertClose(er.getDouble("thresholdFinish"), r.thresholdFinish, "thresholdFinish")
