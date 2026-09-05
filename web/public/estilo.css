@@ -262,8 +262,21 @@ tr.sat td { color: var(--suave); }
    e o overlay é posicionado por JS sobre o retângulo real do vídeo — nunca sobre o container, senão
    a linha vermelha desenhada deixaria de corresponder à faixa medida. */
 #palcoVisor { position: relative; width: 100%; margin: 10px 0; touch-action: none; text-align: center; }
-#palcoVisor video { max-width: 100%; max-height: 46vh; display: block; margin: 0 auto;
-  border-radius: 10px; background: #000; }
+#palcoVisor video { max-width: 100%; max-height: 40vh; max-height: 40dvh; display: block;
+  margin: 0 auto; border-radius: 10px; background: #000; }
+/* Deitado, a altura visível é pouca e é ela que manda: a imagem só precisa ser grande o bastante
+   para posicionar a linha, enquanto o cronômetro tem de ser lido a metros de distância. */
+@media (orientation: landscape) { #palcoVisor video { max-height: 46dvh; } }
+
+/* O cronômetro do visor. Sem isto ele herdava o texto comum da página — o relógio existia e ninguém
+   via, porque a fonte grande só estava definida para o cartão de resultado. */
+#visorTempo { text-align: center; margin: 2px 0 8px; }
+#visorRelogio {
+  font: 800 clamp(40px, 13vw, 72px)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+@media (orientation: landscape) { #visorRelogio { font-size: clamp(30px, 11dvh, 56px); } }
+#visorTempo .detalhe { color: var(--suave); font-size: 13px; }
 #visorOverlay { position: absolute; left: 0; top: 0; }
 #visorFaixa { position: absolute; left: 0; top: 0; visibility: hidden; }
 

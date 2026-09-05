@@ -1173,6 +1173,7 @@ $("abrirVisor").addEventListener("click", async () => {
   $("palcoVisor").hidden = false;
   $("visorSinal").hidden = false;
   $("visorAjustes").hidden = false;
+  relogioParado("não armado — toque em Armar quando a linha estiver no lugar");
   $("visorEstado").textContent = "abrindo a câmera…";
   await visor.abrir();
   if (visor.ativo) {
@@ -1183,6 +1184,17 @@ $("abrirVisor").addEventListener("click", async () => {
 $("fecharVisor").addEventListener("click", fecharVisor);
 
 /** Arma de verdade, e só então a tela diz que está armado. Devolve se conseguiu. */
+/**
+ * O relógio fica SEMPRE visível com a câmera aberta, marcando 0.000, e quem diz o que está
+ * acontecendo é a linha de baixo. Escondê-lo até armar deixava a tela sem cronômetro nenhum — e a
+ * primeira pergunta de quem abre o visor é justamente "cadê o cronômetro?".
+ */
+function relogioParado(fase: string): void {
+  $("visorTempo").hidden = false;
+  $("visorRelogio").textContent = "0.000";
+  $("visorFase").textContent = fase;
+}
+
 function armarAgora(): boolean {
   if (!visor.armar()) return false;
   armarPendente = false;
@@ -1211,7 +1223,7 @@ $("armarVisor").addEventListener("click", () => {
   $("desarmarVisor").hidden = false;
   $("desarmarVisor").textContent = "Cancelar";
   $("visorPendente").hidden = false;
-  $("visorTempo").hidden = true;
+  relogioParado("ainda não armado — esperando a cena ser medida");
 });
 
 $("recalibrarVisor").addEventListener("click", () => {
@@ -1221,9 +1233,9 @@ $("recalibrarVisor").addEventListener("click", () => {
   $("desarmarVisor").hidden = true;
   $("desarmarVisor").textContent = "Parar";
   $("visorPendente").hidden = true;
-  $("visorTempo").hidden = true;
   $("visorDica").hidden = true;
   dicaVisor = "nenhuma";
+  relogioParado("não armado — medindo a cena");
   aviso("Medindo a cena de novo — deixe a pista vazia por uns segundos.", true);
 });
 
@@ -1236,7 +1248,7 @@ $<HTMLInputElement>("visorMao").addEventListener("change", (ev) => {
   $("desarmarVisor").hidden = true;
   $("desarmarVisor").textContent = "Parar";
   $("visorPendente").hidden = true;
-  $("visorTempo").hidden = true;
+  relogioParado("não armado — medindo a cena");
   aviso(
     visor.naMao
       ? "Modo na mão: medindo a cena de novo. O tempo daqui não entra na conferência com a fotocélula."

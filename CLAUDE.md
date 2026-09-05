@@ -135,13 +135,19 @@ Branch de trabalho: `claude/ios-sports-timing-system-65t7ng`. Página publicada 
 4. **Metal no iOS** foi pedido e recusado com números: a ROI tem 1.400 a 10.000 pixels, custa
    dezenas de µs na CPU contra 50-200 µs só de despacho na GPU, num orçamento de 4.166 µs por
    quadro. O app já mostra `custo/quadro µs` no painel — é esse número que decide, no aparelho.
-5. **`Tools/test_cena.py` não testa o gerador de verdade.** Ele compara uma TERCEIRA cópia da
+5. **Uma passada ao vivo pulou um cruzamento, uma vez em quatro execuções** do `e2e-visor.mjs`, com
+   a máquina carregada: o tempo saiu 8,028 s (o período do laço do arquivo falso) em vez de 3,0 s —
+   ou seja, o cruzamento do meio não foi visto. Nas outras três, erro de 1 a 2 ms. Não consegui
+   reproduzir de novo. O que falta saber: nesse caso a passada saiu marcada como **degradada**
+   (quadros perdidos) ou silenciosamente errada? A checagem a acrescentar no teste é essa — quando o
+   intervalo medido não for um dos fisicamente possíveis, exigir a marca de degradada.
+6. **`Tools/test_cena.py` não testa o gerador de verdade.** Ele compara uma TERCEIRA cópia da
    física, escrita dentro do próprio teste, com a `Scene` — e não o `_render_arena` de
    `gen_test_video.py`, que é quem produz os vídeos. Uma divergência que apareça só no gerador passa
    despercebida. Conserto: `_render_arena` expõe os quadros (hoje escreve direto no ffmpeg) e o teste
    passa a consumi-los; ou o teste gera o vídeo de verdade (VP9 sem perdas, luma intacta), decodifica
    de volta e compara. Não afeta o app — afeta a confiança nas cenas sintéticas.
-6. `web/src/app.ts` passou de **1.400 linhas** e acumula tela, estado e persistência. Quebrar em
+7. `web/src/app.ts` passou de **1.400 linhas** e acumula tela, estado e persistência. Quebrar em
    módulos só depois de os testes de botão estarem consolidados — não às vésperas de uma prova. Os
    candidatos naturais a sair primeiro são o cartão de resultado (que já existe em duas versões
    quase iguais, arquivo e ao vivo) e o bloco do visor.

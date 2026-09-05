@@ -80,9 +80,15 @@ try {
   // ARMAR ANTES DE A CALIBRAGEM TERMINAR — o defeito relatado em campo: a tela trocava o botão e
   // mostrava 0.000, mas por dentro `armar()` tinha desistido em silêncio, e o cronômetro nunca
   // disparava. Agora o pedido fica de pé e a tela diz o que falta.
+  checar(await pagina.isVisible("#visorTempo"), "o cronômetro aparece assim que a câmera abre");
   await pagina.click("#armarVisor");
   checar(await pagina.isVisible("#visorPendente"), "armar cedo avisa que ainda está medindo a cena");
-  checar(!(await pagina.isVisible("#visorTempo")), "e NÃO mostra um cronômetro que não está armado");
+  // O relógio continua na tela (era ele que sumia e virava "cadê o cronômetro?"), mas a linha de
+  // baixo tem de dizer que NÃO está armado — mostrar 0.000 sem essa frase seria fingir de novo.
+  checar(
+    /não armado/.test(await pagina.textContent("#visorFase")),
+    `enquanto não arma, a tela diz isso (${(await pagina.textContent("#visorFase")).trim()})`,
+  );
   console.log(`    esperando: ${(await pagina.textContent("#visorEstado")).trim()}`);
 
   // a calibragem tem de terminar sozinha e o limiar aparecer no texto de estado
