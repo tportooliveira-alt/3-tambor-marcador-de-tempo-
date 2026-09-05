@@ -109,6 +109,26 @@ try {
   });
   checar(pintado > 100, `a linha e a banda estão desenhadas sobre a câmera (${pintado} pixels)`);
 
+  // O overlay TEM de cobrir o retângulo do vídeo, não o do container. Se o vídeo for limitado pela
+  // altura (celular deitado), o container fica mais largo — e um overlay esticado sobre ele
+  // desenharia a linha vermelha numa coluna diferente da que o app mede. Seria uma mira mentirosa.
+  const caixas = await pagina.evaluate(() => {
+    const v = document.getElementById("visorVideo").getBoundingClientRect();
+    const o = document.getElementById("visorOverlay").getBoundingClientRect();
+    const p = document.getElementById("visorSinal").getBoundingClientRect();
+    const palco = document.getElementById("palcoVisor").getBoundingClientRect();
+    return {
+      dx: Math.abs(v.left - o.left), dy: Math.abs(v.top - o.top),
+      dw: Math.abs(v.width - o.width), dh: Math.abs(v.height - o.height),
+      painelAcima: p.bottom <= palco.top + 1,
+    };
+  });
+  checar(
+    caixas.dx <= 1 && caixas.dy <= 1 && caixas.dw <= 1 && caixas.dh <= 1,
+    `a linha desenhada cai sobre a faixa medida (desvio ${caixas.dx.toFixed(1)}/${caixas.dy.toFixed(1)} px, tamanho ${caixas.dw.toFixed(1)}/${caixas.dh.toFixed(1)} px)`,
+  );
+  checar(caixas.painelAcima, "o cronômetro e os botões ficam ACIMA da imagem");
+
   // armar o cronômetro
   await pagina.click("#armarVisor");
   await pagina.waitForSelector("#visorTempo:not([hidden])", { timeout: 5000 });

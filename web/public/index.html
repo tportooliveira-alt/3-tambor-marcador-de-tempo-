@@ -173,9 +173,8 @@
 <section id="aba-visor" class="aba">
   <div class="cartao">
     <h2>Mirar e cronometrar ao vivo</h2>
-    <p class="dica">Aponte o celular e ajuste a linha <b>antes</b> de gravar: a faixa que você
-       posicionar aqui é a mesma que a análise vai usar no vídeo. Com a linha no lugar, dá para
-       <b>armar e cronometrar na hora</b>, sem gravar nada.</p>
+    <p class="dica">Aponte, ajuste a linha e <b>arme</b>: o tempo sai na hora. A faixa que você
+       posicionar aqui é a mesma que a análise vai usar no vídeo.</p>
     <div class="linha">
       <button id="abrirVisor" class="botao grande primario">Abrir a câmera</button>
       <button id="fecharVisor" class="botao" hidden>Desligar</button>
@@ -183,12 +182,16 @@
     <div id="aviso-paisagem" class="faixa-aviso" hidden><b>Vire o celular na horizontal.</b>
        A linha da fotocélula é vertical e a banda tem de pegar a altura do peito do cavalo — em pé,
        sobra pouca imagem para a banda e a medição piora.</div>
-    <div id="palcoVisor" hidden>
-      <video id="visorVideo" playsinline muted></video>
-      <canvas id="visorOverlay"></canvas>
-      <canvas id="visorFaixa" hidden></canvas>
-    </div>
+
+    <!-- O painel fica ACIMA da imagem de propósito: com o celular deitado no tripé, o vídeo ocupa a
+         tela inteira e tudo que estivesse embaixo exigiria rolar a página justamente na hora da
+         passada. Aqui o cronômetro, o movimento e os botões ficam no campo de visão. -->
     <div id="visorSinal" hidden>
+      <div id="visorTempo" hidden>
+        <div class="tempo" id="visorRelogio">0.000</div>
+        <p class="detalhe" id="visorFase"></p>
+      </div>
+      <div id="resultadoVisor" hidden></div>
       <div id="visorBarra"><div></div></div>
       <p class="detalhe" id="visorEstado"></p>
       <div class="linha">
@@ -200,6 +203,16 @@
       <p class="dica" id="visorPendente" hidden><b>Ainda medindo a cena parada.</b> Deixe o celular
          quieto e não passe nada na frente da linha. Assim que terminar, o cronômetro arma sozinho —
          a linha acima mostra o quanto falta.</p>
+    </div>
+
+    <div id="palcoVisor" hidden>
+      <video id="visorVideo" playsinline muted></video>
+      <canvas id="visorOverlay"></canvas>
+      <canvas id="visorFaixa" hidden></canvas>
+    </div>
+
+    <!-- Ajustes de antes da prova: ficam embaixo para não roubar espaço do que se olha de longe. -->
+    <div id="visorAjustes" hidden>
       <label class="linha" for="visorMao">
         <input type="checkbox" id="visorMao">
         <span class="detalhe"><b>Estou segurando na mão (sem tripé).</b> O limiar sobe para o tremor
@@ -212,12 +225,8 @@
               mão). Numa prova de verdade deixe desligado — o rabo do cavalo e a poeira passam na
               linha logo depois da largada e parariam o cronômetro cedo.</span>
       </label>
-      <div id="visorTempo" hidden>
-        <div class="tempo" id="visorRelogio">0.000</div>
-        <p class="detalhe" id="visorFase"></p>
-      </div>
-      <div id="resultadoVisor" hidden></div>
     </div>
+
     <p class="dica"><b>Aqui a câmera é a do navegador: 30 ou 60 quadros por segundo, contra 240 do
        vídeo em câmera lenta.</b> Cada passada sai com a incerteza que o próprio app calculou —
        nenhum número é prometido de antemão. Para saber se este caminho serve, digite o tempo da

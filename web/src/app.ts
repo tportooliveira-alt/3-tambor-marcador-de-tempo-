@@ -1146,6 +1146,7 @@ const visor = new Visor(
       $("fecharVisor").hidden = true;
       $("palcoVisor").hidden = true;
       $("visorSinal").hidden = true;
+      $("visorAjustes").hidden = true;
     },
   },
 );
@@ -1164,15 +1165,20 @@ function fecharVisor(): void {
   $("fecharVisor").hidden = true;
   $("palcoVisor").hidden = true;
   $("visorSinal").hidden = true;
+  $("visorAjustes").hidden = true;
 }
 
 $("abrirVisor").addEventListener("click", async () => {
   $("abrirVisor").hidden = true;
   $("palcoVisor").hidden = false;
   $("visorSinal").hidden = false;
+  $("visorAjustes").hidden = false;
   $("visorEstado").textContent = "abrindo a câmera…";
   await visor.abrir();
-  if (visor.ativo) $("fecharVisor").hidden = false;
+  if (visor.ativo) {
+    $("fecharVisor").hidden = false;
+    iniciarPinturaVisor();
+  }
 });
 $("fecharVisor").addEventListener("click", fecharVisor);
 
@@ -1374,19 +1380,48 @@ $("desarmarVisor").addEventListener("click", () => {
   $("visorPendente").hidden = true;
 });
 
+/**
+ * Liga o laço que desenha a linha sobre a câmera.
+ *
+ * Tem de ser chamado DEPOIS de a câmera abrir. Antes ele era disparado no toque do botão, quando
+ * `visor.ativo` ainda era falso porque `abrir()` é assíncrono: o laço pintava uma vez e parava na
+ * própria condição de continuar. Com o canvas esticado por CSS ninguém percebia — a linha caía no
+ * lugar certo por acaso, já que esticar preserva a fração. Com o canvas posicionado sobre o
+ * retângulo do vídeo, o mesmo defeito deixaria a mira do tamanho errado.
+ */
+let iniciarPinturaVisor: () => void = () => {};
+
 // arrastar a linha e as alças TAMBÉM no visor, com a mesma matemática do editor
 {
   const palcoV = $("palcoVisor");
   const over = $<HTMLCanvasElement>("visorOverlay");
   let arr: "linha" | "topo" | "base" | null = null;
+  // Sempre pelo retângulo do VÍDEO: o container pode ser mais largo que ele (o vídeo é limitado
+  // pela altura), e medir pelo container faria o dedo cair numa coluna diferente da que ele vê.
   const pos = (ev: PointerEvent): { x: number; y: number } => {
-    const r = palcoV.getBoundingClientRect();
-    return { x: (ev.clientX - r.left) / r.width, y: (ev.clientY - r.top) / r.height };
+    const r = $<HTMLVideoElement>("visorVideo").getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return { x: roi.lineXFraction, y: roi.bandTopFraction };
+    return {
+      x: Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)),
+      y: Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height)),
+    };
   };
   const pintar = (): void => {
     const v = $<HTMLVideoElement>("visorVideo");
-    const w = over.clientWidth || 1;
-    const h = over.clientHeight || 1;
+    // O canvas cobre o retângulo do vídeo, não o do container: é isso que mantém a linha desenhada
+    // e a faixa medida na MESMA coluna, seja qual for o tamanho em que o vídeo acabou desenhado.
+    const rv = v.getBoundingClientRect();
+    const rp = palcoV.getBoundingClientRect();
+    if (rv.width < 1 || rv.height < 1) {
+      if (visor.ativo) requestAnimationFrame(pintar);
+      return;
+    }
+    const w = Math.max(1, Math.round(rv.width));
+    const h = Math.max(1, Math.round(rv.height));
+    over.style.left = `${Math.round(rv.left - rp.left)}px`;
+    over.style.top = `${Math.round(rv.top - rp.top)}px`;
+    over.style.width = `${w}px`;
+    over.style.height = `${h}px`;
     if (over.width !== w || over.height !== h) {
       over.width = w;
       over.height = h;
@@ -1445,7 +1480,9 @@ $("desarmarVisor").addEventListener("click", () => {
     visor.reiniciarMedicao();
     desenharOverlay();
   }
-  $("abrirVisor").addEventListener("click", () => requestAnimationFrame(pintar));
+  iniciarPinturaVisor = (): void => {
+    requestAnimationFrame(pintar);
+  };
 }
 
 // Só registra o service worker quando a página é servida por um site (num visualizador embutido

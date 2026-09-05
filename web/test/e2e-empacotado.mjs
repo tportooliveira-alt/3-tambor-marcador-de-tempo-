@@ -27,18 +27,22 @@ const checar = (ok, msg) => {
   if (!ok) falhou = true;
 };
 
-// as duas páginas empacotadas, recém-construídas
+// As duas páginas empacotadas, recém-construídas — cada uma comparada com O SEU bundle.
+// Os dois modos escrevem no MESMO `dist/app-single.js`, então ler o bundle depois de construir as
+// duas comparava a página de um modo com o bundle do outro: passava só enquanto os dois saíssem
+// idênticos por acaso, e falhava sem explicação quando não saíam.
 execFileSync("node", [path.join(raiz, "build.mjs"), "--single"], { cwd: raiz, stdio: "ignore" });
-execFileSync("node", [path.join(raiz, "build.mjs"), "--artifact"], { cwd: raiz, stdio: "ignore" });
-
 const bundle = readFileSync(path.join(raiz, "dist/app-single.js"), "utf8");
 const unico = readFileSync(path.join(raiz, "fotocelula-tambor.html"), "utf8");
+
+execFileSync("node", [path.join(raiz, "build.mjs"), "--artifact"], { cwd: raiz, stdio: "ignore" });
+const bundleArtifact = readFileSync(path.join(raiz, "dist/app-single.js"), "utf8");
 const artifact = readFileSync(path.join(raiz, "fotocelula-tambor.artifact.html"), "utf8");
 
 // 1) o JavaScript embutido tem de ser IDÊNTICO ao bundle — nada pode ser reescrito na inclusão
 const embutido = /<script type="module">\n([\s\S]*?)\n<\/script>/.exec(unico)?.[1] ?? "";
 checar(embutido === bundle, `o arquivo único embute o bundle sem alterar um byte (${embutido.length} de ${bundle.length})`);
-checar(artifact.includes(bundle), "a página para publicar embute o bundle sem alterar um byte");
+checar(artifact.includes(bundleArtifact), "a página para publicar embute o bundle sem alterar um byte");
 for (const [nome, pagina] of [["arquivo único", unico], ["página para publicar", artifact]]) {
   checar(!pagina.includes('src="app.js"'), `${nome}: nenhum resto de <script src> dentro do código`);
 }
