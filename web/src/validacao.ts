@@ -98,7 +98,17 @@ export function comparacoes(passadas: Passada[]): Comparacao[] {
   for (const p of passadas) {
     const oficial = p.oficialNs ?? null;
     if (oficial === null || oficial <= 0 || p.semTempo) continue;
-    const incertezaNs = (p.incertezaLargadaNs ?? 0) + (p.incertezaChegadaNs ?? 0);
+    // A incerteza da comparação não é só a do app: um oficial com 2 casas ("14,32") carrega
+    // ±5 ms de arredondamento DA PRÓPRIA REFERÊNCIA. Ignorar isso marcava como "fora" passadas em
+    // que o app estava certo — e o painel do dia diria "3 de 10 dentro", levando à conclusão
+    // errada de que o app mente.
+    // Só quando o texto digitado é conhecido: sem ele não dá para supor casa nenhuma, e supor zero
+    // daria meio segundo de folga a toda passada — o teste de honestidade viraria enfeite.
+    const texto = p.oficialTexto ?? "";
+    const casas = casasDecimais(texto);
+    const arredondamentoNs =
+      texto.trim() === "" || casas >= 3 ? 0 : Math.round(0.5 * Math.pow(10, -casas) * NS_POR_S);
+    const incertezaNs = (p.incertezaLargadaNs ?? 0) + (p.incertezaChegadaNs ?? 0) + arredondamentoNs;
     const erroRefinadoNs = p.elapsedRefinedNs - oficial;
     out.push({
       passada: p,

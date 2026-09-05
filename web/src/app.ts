@@ -112,6 +112,9 @@ for (const id of ["arquivo", "arquivoDoc"]) {
     const f = (ev.target as HTMLInputElement).files?.[0];
     if (!f) return;
     arquivo = f;
+    // Sem isto, reescolher o MESMO arquivo depois de uma falha não muda o `value` do campo e o
+    // evento não vem: o botão parece morto justamente quando ele está tentando se recuperar.
+    (ev.target as HTMLInputElement).value = "";
     // Limpar o cartão, e não só escondê-lo: `store.salvarPassada` guarda a REFERÊNCIA do objeto, de
     // modo que `passadaAberta` continua apontando para a passada já salva. Um toque em "+ tambor"
     // depois de trocar de vídeo alteraria uma passada do histórico sem ninguém pedir.
@@ -427,6 +430,7 @@ $("analisar").addEventListener("click", async () => {
   // A análise é o momento de pico de memória: o leitor, o decodificador e as faixas ao mesmo tempo.
   // Um `<video>` com o arquivo aberto ao lado disso é o que mata a aba num clipe grande.
   soltarVideoEditor();
+  void manterTelaAcesa();
   const ctrl = new AbortController();
   analisando = ctrl;
   $("analisar").hidden = true;
@@ -488,6 +492,7 @@ $("analisar").addEventListener("click", async () => {
   } catch (e) {
     if ((e as Error).name !== "AbortError") aviso((e as Error).message);
   } finally {
+    if (!visor.ativo) soltarTela();
     analisando = null;
     $("analisar").hidden = false;
     $("cancelar").hidden = true;
@@ -511,18 +516,20 @@ function mostrarResultado(res: AnalysisResult, segundos: number): void {
     return;
   }
   const r = res.run;
-  const prox = store.proximaInscricao();
   const p: Passada = {
     id: novoId(),
     dataMs: Date.now(),
-    competidor: prox?.competidor ?? "",
-    cavalo: prox?.cavalo ?? "",
-    categoria: prox?.categoria ?? "",
-    ordem: prox?.ordem ?? 0,
+    // A passada nasce SEM DONO. Quem a amarra a um competidor é o toque em "Salvar para #N": um
+    // tempo que apareceu sozinho (poeira, alguém atravessando) não pode consumir a lista de largada
+    // e empurrar todos os nomes uma casa para trás pelo resto da prova.
+    competidor: "",
+    cavalo: "",
+    categoria: "",
+    ordem: 0,
     // A prova aberta é do DIA, não do competidor: para calibrar ninguém digita nome, e sem isto
     // toda passada nasceria órfã — e a conferência não teria como somar só a sessão de hoje.
     eventoId: store.eventoAtualId,
-    inscricaoId: prox?.id ?? null,
+    inscricaoId: null,
     elapsedRawNs: r.elapsedRawNs,
     elapsedRefinedNs: r.elapsedRefinedNs,
     tamboresDerrubados: 0,
@@ -538,6 +545,11 @@ function mostrarResultado(res: AnalysisResult, segundos: number): void {
     origem: "video",
   };
   passadaAberta = p;
+  // GRAVA JÁ. O número existe; esperar um toque em "Salvar" é o que fazia a passada sumir ao trocar
+  // de vídeo, ao armar de novo, ao trocar de aba, ou quando a bateria acabava. `salvarPassada` é
+  // idempotente pelo id, então o toque depois só atualiza.
+  store.salvarPassada(p);
+  desenharHistorico();
   desenharCartao(segundos, res);
 }
 
@@ -593,16 +605,21 @@ function desenharCartao(segundos: number, res: AnalysisResult): void {
       </button>
     </div>
   </div>`;
+  // Cada um destes GRAVA: a passada já está no histórico, e mudar só o objeto na memória fazia a
+  // penalidade aparecer na tela e não existir no dia seguinte — com o pódio da categoria trocado.
   $("menosTambor").addEventListener("click", () => {
     p.tamboresDerrubados = Math.max(0, p.tamboresDerrubados - 1);
+    store.salvarPassada(p);
     desenharCartao(segundos, res);
   });
   $("maisTambor").addEventListener("click", () => {
     p.tamboresDerrubados = Math.min(3, p.tamboresDerrubados + 1);
+    store.salvarPassada(p);
     desenharCartao(segundos, res);
   });
   $("botaoSat").addEventListener("click", () => {
     p.semTempo = !p.semTempo;
+    store.salvarPassada(p);
     desenharCartao(segundos, res);
   });
   // O campo do tempo oficial NUNCA repinta o cartão: `desenharCartao` refaz o `innerHTML` inteiro,
@@ -626,6 +643,11 @@ function desenharCartao(segundos: number, res: AnalysisResult): void {
       alvo.className = "detalhe";
       return;
     }
+    if (!oficialPlausivel(p, oficial)) {
+      alvo.textContent = `esse tempo não parece o desta passada (medido ${formatElapsed(p.elapsedRefinedNs)}) — faltou a vírgula?`;
+      alvo.className = "detalhe conf-fora";
+      return;
+    }
     const erroNs = p.elapsedRefinedNs - oficial;
     const incertezaNs = p.incertezaLargadaNs + p.incertezaChegadaNs;
     const dentro = Math.abs(erroNs) <= incertezaNs;
@@ -635,19 +657,53 @@ function desenharCartao(segundos: number, res: AnalysisResult): void {
   };
   campoOficial.addEventListener("input", () => {
     p.oficialTexto = campoOficial.value;
-    p.oficialNs = parseTempo(campoOficial.value);
+    const lido = parseTempo(campoOficial.value);
+    // Absurdo não entra: fica na tela para ele corrigir, mas não contamina a conferência.
+    p.oficialNs = oficialPlausivel(p, lido) ? lido : null;
     pintarErro();
   });
   pintarErro();
 
   $("salvarPassada").addEventListener("click", () => {
     p.oficialTexto = campoOficial.value;
-    p.oficialNs = parseTempo(campoOficial.value);
+    const lido = parseTempo(campoOficial.value);
+    p.oficialNs = oficialPlausivel(p, lido) ? lido : null;
+    amarrarAoProximo(p);
     store.salvarPassada(p);
-    aviso("Passada salva no histórico.", true);
+    aviso(p.inscricaoId ? `Passada de #${p.ordem} guardada.` : "Passada guardada.", true);
     atualizarProximo();
     desenharHistorico();
+    desenharCartao(segundos, res);
   });
+}
+
+/**
+ * Amarra a passada ao próximo competidor da lista de largada — só no TOQUE do operador.
+ *
+ * A passada nasce sem dono e é guardada assim. É ele quem diz "esta é do #12", e é por isso que um
+ * tempo que apareceu sozinho (poeira, alguém atravessando a pista) não empurra a lista de largada
+ * uma casa para trás e faz todos os nomes seguintes saírem errados pelo resto da prova.
+ */
+/**
+ * O tempo digitado é desta passada?
+ *
+ * `14,25` sem a vírgula vira `1425` — que o leitor aceita como 1425 segundos. Isso entrava na
+ * conferência e o viés do dia saltava para mais de vinte minutos, sem uma linha vermelha em lugar
+ * nenhum: o único número que decide se o app serve virava lixo por um dedo de luva.
+ */
+function oficialPlausivel(p: Passada, ns: number | null): boolean {
+  return ns !== null && Math.abs(ns - p.elapsedRefinedNs) <= 2_000_000_000;
+}
+
+function amarrarAoProximo(p: Passada): void {
+  if (p.inscricaoId !== null) return;
+  const prox = store.proximaInscricao();
+  if (prox === null) return;
+  p.inscricaoId = prox.id;
+  p.competidor = prox.competidor;
+  p.cavalo = prox.cavalo;
+  p.categoria = prox.categoria;
+  p.ordem = prox.ordem;
 }
 
 const escapar = (s: string): string =>
@@ -1038,6 +1094,45 @@ if (!supportsFrameCallback()) {
 // Sem aviso de orientação: em pé funciona, e quem escolhe a altura da banda é quem está olhando a
 // pista. O que a medição pede é que a banda pegue a altura do peito do cavalo — não uma orientação.
 
+// ------------------------------------------------------------------ manter a tela acesa
+/**
+ * Sem isto o iPhone bloqueia a tela sozinho, o `requestVideoFrameCallback` para, e a passada não é
+ * medida — com a tela dizendo "armado — esperando a largada" até o fim. Vale também na análise: um
+ * clipe grande leva minutos sem ninguém tocar em nada.
+ *
+ * A trava é solta pelo próprio navegador quando a aba sai da frente, então é preciso repedir ao
+ * voltar. Onde a API não existe (Safari antigo), não há o que fazer pelo código — a Ajuda manda pôr
+ * o bloqueio automático em "Nunca".
+ */
+type TravaTela = { release: () => Promise<void> };
+let travaTela: TravaTela | null = null;
+let queroTelaAcesa = false;
+
+async function manterTelaAcesa(): Promise<void> {
+  queroTelaAcesa = true;
+  const nav = navigator as unknown as { wakeLock?: { request: (t: string) => Promise<TravaTela> } };
+  if (nav.wakeLock === undefined || travaTela !== null) return;
+  try {
+    travaTela = await nav.wakeLock.request("screen");
+  } catch {
+    /* recusado (bateria fraca, aba em segundo plano): a Ajuda cobre o caso */
+  }
+}
+
+function soltarTela(): void {
+  queroTelaAcesa = false;
+  void travaTela?.release().catch(() => {});
+  travaTela = null;
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") {
+    travaTela = null;
+    return;
+  }
+  if (queroTelaAcesa) void manterTelaAcesa();
+});
+
 // ------------------------------------------------------------------ visor ao vivo
 /**
  * O visor compartilha o MESMO objeto `roi` da análise. Mirar ao vivo já deixa a faixa no lugar
@@ -1157,6 +1252,7 @@ const visor = new Visor(
 
 function fecharVisor(): void {
   if (!visor.ativo) return;
+  soltarTela();
   clearInterval(timerGravacao);
   timerGravacao = 0;
   clearTimeout(timerRearmar);
@@ -1187,6 +1283,7 @@ $("abrirVisor").addEventListener("click", async () => {
   if (visor.ativo) {
     $("fecharVisor").hidden = false;
     iniciarPinturaVisor();
+    void manterTelaAcesa();
   }
 });
 $("fecharVisor").addEventListener("click", fecharVisor);
@@ -1382,16 +1479,16 @@ $<HTMLInputElement>("visorEnsaio").addEventListener("change", (ev) => {
  * arquivo, que é a razão de existir do modo, seria impossível de fazer.
  */
 function abrirPassadaAoVivo(r: RunResult): void {
-  const prox = store.proximaInscricao();
   passadaVisor = {
     id: novoId(),
     dataMs: Date.now(),
-    competidor: prox?.competidor ?? "",
-    cavalo: prox?.cavalo ?? "",
-    categoria: prox?.categoria ?? "",
-    ordem: prox?.ordem ?? 0,
+    // Sem dono até alguém dizer de quem é — ver `amarrarAoProximo`.
+    competidor: "",
+    cavalo: "",
+    categoria: "",
+    ordem: 0,
     eventoId: store.eventoAtualId,
-    inscricaoId: prox?.id ?? null,
+    inscricaoId: null,
     elapsedRawNs: r.elapsedRawNs,
     elapsedRefinedNs: r.elapsedRefinedNs,
     tamboresDerrubados: 0,
@@ -1400,12 +1497,18 @@ function abrirPassadaAoVivo(r: RunResult): void {
     qualidadeChegada: r.finish.quality,
     incertezaLargadaNs: r.start.uncertaintyNs,
     incertezaChegadaNs: r.finish.uncertaintyNs,
-    degradada: r.degraded || visor.quadrosPerdidos > 0,
+    // Quadro perdido OU laço da tela: os dois valem marca. Sem `requestVideoFrameCallback` o
+    // navegador repete quadro e a contagem de perdidos nem existe — medir assim é medição
+    // degradada, e tem de ficar escrito na passada, não só na tela.
+    degradada: r.degraded || visor.quadrosPerdidos > 0 || !visor.porQuadroDaCamera,
     fps: visor.taxaMedida,
     quadrosPerdidos: visor.quadrosPerdidos,
     arquivo: "",
     origem: visor.naMao ? "ao-vivo-mao" : "ao-vivo",
   };
+  // Guarda na hora, como no caminho do arquivo: o cavalo seguinte não pode apagar este tempo.
+  store.salvarPassada(passadaVisor);
+  desenharHistorico();
   desenharCartaoVisor();
 }
 
@@ -1452,14 +1555,17 @@ function desenharCartaoVisor(): void {
 
   $("visorMenosTambor").addEventListener("click", () => {
     p.tamboresDerrubados = Math.max(0, p.tamboresDerrubados - 1);
+    store.salvarPassada(p);
     desenharCartaoVisor();
   });
   $("visorMaisTambor").addEventListener("click", () => {
     p.tamboresDerrubados = Math.min(3, p.tamboresDerrubados + 1);
+    store.salvarPassada(p);
     desenharCartaoVisor();
   });
   $("visorSat").addEventListener("click", () => {
     p.semTempo = !p.semTempo;
+    store.salvarPassada(p);
     desenharCartaoVisor();
   });
 
@@ -1474,6 +1580,11 @@ function desenharCartaoVisor(): void {
       alvo.className = "detalhe";
       return;
     }
+    if (!oficialPlausivel(p, oficial)) {
+      alvo.textContent = `esse tempo não parece o desta passada (medido ${formatElapsed(p.elapsedRefinedNs)}) — faltou a vírgula?`;
+      alvo.className = "detalhe conf-fora";
+      return;
+    }
     const erroNs = p.elapsedRefinedNs - oficial;
     const incertezaNs = p.incertezaLargadaNs + p.incertezaChegadaNs;
     const dentro = Math.abs(erroNs) <= incertezaNs;
@@ -1483,18 +1594,23 @@ function desenharCartaoVisor(): void {
   };
   campo.addEventListener("input", () => {
     p.oficialTexto = campo.value;
-    p.oficialNs = parseTempo(campo.value);
+    const lido = parseTempo(campo.value);
+    // Absurdo não entra: fica na tela para ele corrigir, mas não contamina a conferência.
+    p.oficialNs = oficialPlausivel(p, lido) ? lido : null;
     pintarErro();
   });
   pintarErro();
 
   $("visorSalvar").addEventListener("click", () => {
     p.oficialTexto = campo.value;
-    p.oficialNs = parseTempo(campo.value);
+    const lido = parseTempo(campo.value);
+    p.oficialNs = oficialPlausivel(p, lido) ? lido : null;
+    amarrarAoProximo(p);
     store.salvarPassada(p);
-    aviso("Passada ao vivo salva no histórico.", true);
+    aviso(p.inscricaoId ? `Passada de #${p.ordem} guardada.` : "Passada guardada.", true);
     atualizarProximo();
     desenharHistorico();
+    desenharCartaoVisor();
   });
 }
 $("desarmarVisor").addEventListener("click", () => {
@@ -1609,6 +1725,7 @@ let iniciarPinturaVisor: () => void = () => {};
     else roi.lineXFraction = lim(p.x, 0.03, 0.97);
     // mexer na faixa invalida a calibragem: a cena medida passou a ser outra
     visor.reiniciarMedicao();
+    guardarRoi(true);
     desenharOverlay();
   }
   iniciarPinturaVisor = (): void => {

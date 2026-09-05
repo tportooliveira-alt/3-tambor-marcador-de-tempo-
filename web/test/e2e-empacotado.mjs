@@ -39,6 +39,34 @@ execFileSync("node", [path.join(raiz, "build.mjs"), "--artifact"], { cwd: raiz, 
 const bundleArtifact = readFileSync(path.join(raiz, "dist/app-single.js"), "utf8");
 const artifact = readFileSync(path.join(raiz, "fotocelula-tambor.artifact.html"), "utf8");
 
+// 0) O service worker TEM de sair carimbado em todos os caminhos de construção.
+// Este é o defeito mais caro que este projeto já teve: `cpSync(public → dist)` roda em toda
+// invocação e repunha o `sw.js` cru, e só o caminho normal carimbava. O fluxo de publicação roda
+// `--single` DEPOIS do build normal, então o que foi ao ar tinha o literal `__VERSAO__` — nome de
+// cache idêntico em toda versão, `sw.js` byte a byte igual, e o navegador nunca via atualização.
+// O usuário ficava preso na primeira versão que carregasse, e fechar a aba não resolve: quem
+// responde é o service worker, não a rede.
+{
+  const sw = readFileSync(path.join(raiz, "dist/sw.js"), "utf8");
+  checar(!sw.includes("__VERSAO__"), "o service worker sai carimbado (sem o literal __VERSAO__)");
+  const carimbo = /const CACHE = "fotocelula-([a-z0-9]+)"/.exec(sw)?.[1] ?? "";
+  checar(carimbo.length > 3, `o nome do cache tem carimbo de versão (${carimbo})`);
+  // E o carimbo tem de MUDAR quando o HTML muda, senão uma correção só de tela nunca chega.
+  const htmlPath = path.join(raiz, "public/index.html");
+  const original = readFileSync(htmlPath, "utf8");
+  try {
+    writeFileSync(htmlPath, original + "\n<!-- carimbo -->");
+    execFileSync("node", [path.join(raiz, "build.mjs")], { cwd: raiz, stdio: "ignore" });
+    const outro = /const CACHE = "fotocelula-([a-z0-9]+)"/.exec(
+      readFileSync(path.join(raiz, "dist/sw.js"), "utf8"),
+    )?.[1] ?? "";
+    checar(outro !== carimbo, `mudar só o HTML troca o carimbo (${carimbo} -> ${outro})`);
+  } finally {
+    writeFileSync(htmlPath, original);
+    execFileSync("node", [path.join(raiz, "build.mjs")], { cwd: raiz, stdio: "ignore" });
+  }
+}
+
 // 1) o JavaScript embutido tem de ser IDÊNTICO ao bundle — nada pode ser reescrito na inclusão
 const embutido = /<script type="module">\n([\s\S]*?)\n<\/script>/.exec(unico)?.[1] ?? "";
 checar(embutido === bundle, `o arquivo único embute o bundle sem alterar um byte (${embutido.length} de ${bundle.length})`);

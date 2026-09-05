@@ -144,3 +144,36 @@ test("textoConferencia sai colável, com resumo e uma linha por caso", () => {
   assert.match(t, /IMG_0001\.MOV/);
   assert.equal(textoConferencia([]), "Nenhuma passada com tempo oficial ainda.");
 });
+
+test("oficial com 2 casas carrega o arredondamento DA REFERÊNCIA", () => {
+  // A fotocélula mostrou 14,32; o app mediu 14,3247. O erro de 4,7 ms é maior que os ±0,84 ms do
+  // app, mas MENOR que o arredondamento de ±5 ms da própria referência — marcar isso como "fora"
+  // faria o painel do dia dizer que o app mente quando quem arredondou foi o painel da pista.
+  const doisDecimais = passada({
+    elapsedRefinedNs: 14 * S + 3247 * 100000,
+    oficialNs: 14 * S + 320 * MS,
+    oficialTexto: "14,32",
+    incertezaLargadaNs: 420_000,
+    incertezaChegadaNs: 420_000,
+  });
+  assert.equal(comparacoes([doisDecimais])[0].dentro, true);
+
+  // Com três casas não há folga: o oficial é exato e o app tem de se sustentar sozinho.
+  const tresDecimais = passada({
+    elapsedRefinedNs: 14 * S + 3247 * 100000,
+    oficialNs: 14 * S + 320 * MS,
+    oficialTexto: "14,320",
+    incertezaLargadaNs: 420_000,
+    incertezaChegadaNs: 420_000,
+  });
+  assert.equal(comparacoes([tresDecimais])[0].dentro, false);
+
+  // E sem o texto digitado não se supõe casa nenhuma — supor zero daria meio segundo de folga.
+  const semTexto = passada({
+    elapsedRefinedNs: 14 * S + 3247 * 100000,
+    oficialNs: 14 * S + 320 * MS,
+    incertezaLargadaNs: 420_000,
+    incertezaChegadaNs: 420_000,
+  });
+  assert.equal(comparacoes([semTexto])[0].dentro, false);
+});

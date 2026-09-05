@@ -407,6 +407,13 @@ export class Visor {
     const dt = this.ultimoQuadroMs >= 0 ? quadroMs - this.ultimoQuadroMs : 0;
     if (dt > DT_MIN_MS && dt < DT_MAX_MS) {
       this.fps = this.fps === 0 ? 1000 / dt : this.fps * 0.9 + (1000 / dt) * 0.1;
+    } else if (dt >= DT_MAX_MS) {
+      // Buraco no tempo (aba suspensa, compositor engasgado, memória): o quadro seguinte NÃO é o
+      // próximo da fila. Antes isso era descartado só da conta de FPS e a máquina de estados
+      // recebia o quadro como se nada tivesse acontecido — um cruzamento inteiro podia ser engolido
+      // e o tempo saía como o intervalo até o cruzamento SEGUINTE, limpo, sem marca nenhuma.
+      this.perdidos += 1;
+      this.engine?.framesDropped();
     }
     this.ultimoQuadroMs = quadroMs;
     this.quadrosVistos++;

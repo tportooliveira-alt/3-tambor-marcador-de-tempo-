@@ -50,11 +50,38 @@ function contarVetores() {
   }
 }
 
-// versão do cache do service worker = conteúdo do bundle (troca sozinha a cada build)
-function carimbarSW(bundle) {
+/**
+ * Carimba o nome do cache do service worker com o conteúdo do que vai ao ar.
+ *
+ * DOIS defeitos moravam aqui, e juntos eles prendiam o usuário na primeira versão que ele tivesse
+ * carregado, para sempre:
+ *
+ * 1. `cpSync(public → dist)` roda no topo deste arquivo, em TODA invocação. O fluxo de publicação
+ *    faz `npm run build` (que carimbava) e logo depois `build.mjs --single` — que copiava o
+ *    `sw.js` cru por cima e NÃO carimbava. O que foi publicado tinha o literal `__VERSAO__`:
+ *    nome de cache idêntico em toda versão, `sw.js` byte a byte igual, navegador não vê
+ *    atualização nenhuma, e o `install` (que é quem rebusca os arquivos) nunca mais roda.
+ * 2. O carimbo saía só do bundle. Mudar apenas o HTML ou o CSS não mudava o hash.
+ *
+ * Agora entra tudo o que a página serve, e é chamado ao fim de TODOS os caminhos.
+ */
+function carimbarSW() {
   const sw = path.join(dist, "sw.js");
-  const hash = createHashLike(bundle);
+  const pedaco = (p) => {
+    try {
+      return readFileSync(p, "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const hash = createHashLike(
+    pedaco(path.join(dist, "app.js")) +
+      pedaco(path.join(raiz, "public/index.html")) +
+      pedaco(path.join(raiz, "public/estilo.css")) +
+      pedaco(path.join(raiz, "public/manifest.webmanifest")),
+  );
   writeFileSync(sw, readFileSync(sw, "utf8").replace("__VERSAO__", hash));
+  return hash;
 }
 
 function createHashLike(texto) {
@@ -98,9 +125,11 @@ if (servir) {
     saida = path.join(raiz, "fotocelula-tambor.artifact.html");
   }
   writeFileSync(saida, html);
-  console.log(`${paraArtifact ? "página para publicar" : "arquivo único"}: ${saida} (${(html.length / 1024).toFixed(0)} KB)`);
+  // O `cpSync` do topo repôs o `sw.js` cru: carimbar aqui também, senão o que sobra em `dist/`
+  // depois deste caminho é o literal.
+  const marca = carimbarSW();
+  console.log(`${paraArtifact ? "página para publicar" : "arquivo único"}: ${saida} (${(html.length / 1024).toFixed(0)} KB) · sw ${marca}`);
 } else {
   await build(opcoes);
-  carimbarSW(readFileSync(path.join(dist, "app.js"), "utf8"));
-  console.log("dist/ pronto");
+  console.log(`dist/ pronto · sw ${carimbarSW()}`);
 }
