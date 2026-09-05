@@ -221,6 +221,16 @@ try {
     `tripé e na mão ficam em caminhos separados (${origens.join(", ")})`,
   );
 
+  // --- disparar sozinho: sem tocar em nada, ele tem de armar quando a cena for medida ----------
+  await pagina.uncheck("#visorMao");
+  await pagina.check("#visorAuto");
+  await pagina.waitForFunction(
+    () => /armado — esperando/.test(document.getElementById("visorFase")?.textContent ?? ""),
+    null,
+    { timeout: 40_000 },
+  );
+  checar(true, "no modo sozinho ele arma sem ninguém tocar em nada");
+
   // sair da aba TEM de desligar a câmera (aparelho quente estraga a medição depois)
   await pagina.click('#abas button[data-aba="passada"]');
   await pagina.waitForTimeout(500);

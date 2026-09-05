@@ -270,6 +270,9 @@ tr.sat td { color: var(--suave); }
 
 /* O cronômetro do visor. Sem isto ele herdava o texto comum da página — o relógio existia e ninguém
    via, porque a fonte grande só estava definida para o cartão de resultado. */
+/* Nada de `position: sticky` aqui: o painel flutuando cobre os controles de baixo (as caixinhas de
+   ajuste, o campo do tempo oficial) e o toque não chega neles — o teste pegou isso. Ele já está
+   acima da imagem, que é o que se queria; e com o vídeo limitado pela altura, tudo cabe sem rolar. */
 #visorTempo { text-align: center; margin: 2px 0 8px; }
 #visorRelogio {
   font: 800 clamp(40px, 13vw, 72px)/1 ui-monospace, SFMono-Regular, Menlo, monospace;

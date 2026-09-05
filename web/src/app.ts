@@ -1065,6 +1065,16 @@ let resultadoVisor: RunResult | null = null;
 let armarPendente = false;
 /** Qual dica de diagnóstico está na tela, para não reescrever o DOM a cada quadro. */
 let dicaVisor: "nenhuma" | "mira" | "limiar" = "nenhuma";
+/**
+ * Disparar sozinho: arma assim que a cena é medida e rearma depois de cada passada.
+ *
+ * É o modo de quem está na beira da pista — abrir o celular e não tocar em mais nada entre um
+ * cavalo e outro. O preço é que ele dispara em QUALQUER coisa que cruze a faixa (poeira, alguém
+ * atravessando), e por isso a passada anterior é salva antes de rearmar: nada se perde, e o que
+ * não for cavalo se apaga depois no Histórico.
+ */
+let autoVisor = true;
+let timerRearmar = 0;
 let passadaVisor: Passada | null = null;
 
 const visor = new Visor(
@@ -1112,6 +1122,9 @@ const visor = new Visor(
       }
       // Pedido de armar que estava esperando a cena: arma no instante em que o limiar aparece.
       if (armarPendente && limiar !== null) armarAgora();
+      // E, no modo "sozinho", o pedido é permanente: assim que houver limiar e não houver passada
+      // em andamento nem rearme agendado, ele arma por conta própria.
+      else if (autoVisor && limiar !== null && !visor.armado && timerRearmar === 0) armarAgora();
     },
     onCronometro: (estado, decorridoNs, resultado) => {
       $("visorTempo").hidden = false;
@@ -1138,6 +1151,7 @@ const visor = new Visor(
       if (resultado !== null && resultado !== resultadoVisor) {
         resultadoVisor = resultado;
         abrirPassadaAoVivo(resultado);
+        if (autoVisor) agendarRearme();
       }
     },
     onErro: (m) => {
@@ -1153,6 +1167,8 @@ const visor = new Visor(
 
 function fecharVisor(): void {
   if (!visor.ativo) return;
+  clearTimeout(timerRearmar);
+  timerRearmar = 0;
   armarPendente = false;
   visor.desarmar();
   visor.fechar();
@@ -1224,6 +1240,44 @@ $("armarVisor").addEventListener("click", () => {
   $("desarmarVisor").textContent = "Cancelar";
   $("visorPendente").hidden = false;
   relogioParado("ainda não armado — esperando a cena ser medida");
+});
+
+/**
+ * Rearma para a próxima passada, guardando a que acabou.
+ *
+ * A espera existe para dar tempo de ler o tempo na tela; salvar antes de rearmar é o que impede a
+ * passada de sumir quando o cavalo seguinte entra na pista sem ninguém ter tocado em nada.
+ */
+function agendarRearme(): void {
+  clearTimeout(timerRearmar);
+  timerRearmar = window.setTimeout(() => {
+    timerRearmar = 0;
+    if (!visor.ativo || !autoVisor) return;
+    if (passadaVisor !== null) {
+      store.salvarPassada(passadaVisor);
+      desenharHistorico();
+      aviso("Passada salva sozinha. O tempo da fotocélula pode ser digitado depois, no Histórico.", true);
+    }
+    passadaVisor = null;
+    resultadoVisor = null;
+    $("resultadoVisor").hidden = true;
+    $("resultadoVisor").innerHTML = "";
+    visor.desarmar();
+    armarAgora();
+  }, 6000);
+}
+
+$<HTMLInputElement>("visorAuto").addEventListener("change", (ev) => {
+  autoVisor = (ev.target as HTMLInputElement).checked;
+  clearTimeout(timerRearmar);
+  timerRearmar = 0;
+  if (!autoVisor && visor.armado) {
+    visor.desarmar();
+    $("armarVisor").hidden = false;
+    $("desarmarVisor").hidden = true;
+    relogioParado("não armado — toque em Armar quando quiser");
+  }
+  aviso(autoVisor ? "Vai disparar sozinho a cada passada." : "Agora só dispara quando você armar.");
 });
 
 $("recalibrarVisor").addEventListener("click", () => {
@@ -1384,6 +1438,11 @@ function desenharCartaoVisor(): void {
   });
 }
 $("desarmarVisor").addEventListener("click", () => {
+  // Parar é parar: desliga também o rearme automático, senão o cronômetro voltaria sozinho.
+  autoVisor = false;
+  $<HTMLInputElement>("visorAuto").checked = false;
+  clearTimeout(timerRearmar);
+  timerRearmar = 0;
   armarPendente = false;
   visor.desarmar();
   $("armarVisor").hidden = false;
