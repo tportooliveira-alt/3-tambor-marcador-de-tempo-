@@ -1063,6 +1063,8 @@ let resultadoVisor: RunResult | null = null;
  * no instante em que a cena for medida.
  */
 let armarPendente = false;
+/** Qual dica de diagnóstico está na tela, para não reescrever o DOM a cada quadro. */
+let dicaVisor: "nenhuma" | "mira" | "limiar" = "nenhuma";
 let passadaVisor: Passada | null = null;
 
 const visor = new Visor(
@@ -1080,12 +1082,34 @@ const visor = new Visor(
       barra.classList.toggle("cruzando", cruzando);
       const prog = visor.calibragemProgresso;
       const recomecos = visor.calibragemRecomecos;
+      const pico = visor.picoRecente;
       $("visorEstado").textContent =
         limiar === null
           ? `medindo a cena parada… ${prog.feitas}/${prog.total}` +
             (recomecos > 0 ? ` · recomeçou ${recomecos}× (algo se mexeu na linha)` : "") +
             ` · ${fps.toFixed(0)} quadros por segundo`
-          : `${cruzando ? "CRUZANDO" : "livre"} · movimento ${delta.toFixed(1)} (limiar ${limiar.toFixed(1)}) · ${fps.toFixed(0)} quadros por segundo`;
+          : `${cruzando ? "CRUZANDO" : "livre"} · movimento ${delta.toFixed(1)} · maior ${pico.toFixed(1)} (limiar ${limiar.toFixed(1)}) · ${fps.toFixed(0)} quadros por segundo`;
+      // O diagnóstico de "por que não disparou?", dito em português enquanto ele está na pista.
+      // O valor instantâneo pisca rápido demais para ser lido com o cavalo passando; o MAIOR dos
+      // últimos segundos é que separa "a linha está no lugar errado" de "o limiar ficou alto".
+      // Só escreve quando MUDA: `innerHTML` a cada quadro custa uma reconstrução de DOM por quadro,
+      // rouba tempo do laço da câmera e faz perder quadro — que é exatamente o que estraga a medição.
+      const qual =
+        limiar === null || pico >= limiar ? "nenhuma" : pico < limiar * 0.35 ? "mira" : "limiar";
+      if (qual !== dicaVisor) {
+        dicaVisor = qual;
+        const dica = $("visorDica");
+        dica.hidden = qual === "nenhuma";
+        if (qual === "mira") {
+          dica.innerHTML =
+            "<b>Nada cruzou a faixa ainda.</b> O maior movimento visto está bem abaixo do limiar — " +
+            "arraste a linha vermelha até onde o cavalo passa, e as alças até a altura do peito dele.";
+        } else if (qual === "limiar") {
+          dica.innerHTML =
+            "<b>Passou perto, mas não alcançou o limiar.</b> A cena provavelmente estava se mexendo " +
+            "na hora da medição. Com a pista vazia, toque em <b>Medir a cena de novo</b>.";
+        }
+      }
       // Pedido de armar que estava esperando a cena: arma no instante em que o limiar aparece.
       if (armarPendente && limiar !== null) armarAgora();
     },
@@ -1182,6 +1206,19 @@ $("armarVisor").addEventListener("click", () => {
   $("desarmarVisor").textContent = "Cancelar";
   $("visorPendente").hidden = false;
   $("visorTempo").hidden = true;
+});
+
+$("recalibrarVisor").addEventListener("click", () => {
+  visor.reiniciarMedicao();
+  armarPendente = false;
+  $("armarVisor").hidden = false;
+  $("desarmarVisor").hidden = true;
+  $("desarmarVisor").textContent = "Parar";
+  $("visorPendente").hidden = true;
+  $("visorTempo").hidden = true;
+  $("visorDica").hidden = true;
+  dicaVisor = "nenhuma";
+  aviso("Medindo a cena de novo — deixe a pista vazia por uns segundos.", true);
 });
 
 $<HTMLInputElement>("visorMao").addEventListener("change", (ev) => {

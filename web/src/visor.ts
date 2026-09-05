@@ -67,6 +67,9 @@ const AMOSTRAS_CALIBRACAO = 60;
  */
 const FATOR_MAO = 2.5;
 
+/** Por quanto tempo o maior movimento visto fica na tela, em ms. */
+const JANELA_PICO_MS = 4000;
+
 /** Intervalo plausível entre dois quadros de câmera, em ms. Fora disso houve buraco. */
 const DT_MIN_MS = 0.5;
 const DT_MAX_MS = 500;
@@ -100,6 +103,8 @@ export class Visor {
   private usarMediaTime = true;
   private quadrosVistos = 0;
   private recomecos = 0;
+  private picoValor = 0;
+  private picoTsMs = 0;
   private ultimoPresented = -1;
   private perdidos = 0;
   /**
@@ -141,6 +146,18 @@ export class Visor {
   /** Quantas vezes a medição da cena recomeçou por causa de movimento. */
   get calibragemRecomecos(): number {
     return this.recomecos;
+  }
+
+  /**
+   * O maior movimento visto nos últimos segundos.
+   *
+   * É o número que responde "por que não disparou?" sem depender de ver a tela no instante exato: o
+   * valor instantâneo pisca rápido demais para alguém ler enquanto o cavalo passa. Se o pico ficar
+   * rente ao repouso, nada cruzou a faixa — é mira. Se o pico subir mas não alcançar o limiar, a
+   * calibragem pegou a cena em movimento — é recalibrar.
+   */
+  get picoRecente(): number {
+    return this.picoValor;
   }
 
   /** Quadros que a câmera produziu e a página não recebeu. Entra no registro da passada. */
@@ -225,6 +242,8 @@ export class Visor {
     this.perdidos = 0;
     this.usarMediaTime = true;
     this.recomecos = 0;
+    this.picoValor = 0;
+    this.picoTsMs = 0;
   }
 
   /**
@@ -380,6 +399,12 @@ export class Visor {
       // sem limiar e sem como armar. Aqui ele recomeça — e a tela diz que recomeçou.
       if (estado === "RESTARTED" || estado === "FAILED") this.recomecos += 1;
       if (estado === "FAILED") this.calibrador.reset();
+    }
+    // Pico com memória de JANELA_PICO_MS: segura o valor tempo suficiente para ser lido, e depois
+    // volta ao nível atual em vez de ficar preso num susto de dez minutos atrás.
+    if (m.deltaCore >= this.picoValor || quadroMs - this.picoTsMs > JANELA_PICO_MS) {
+      this.picoValor = m.deltaCore;
+      this.picoTsMs = quadroMs;
     }
     const cruzando = this.limiar !== null && m.deltaCore > this.limiar;
     this.cb.onQuadro(this.fps, m.deltaCore, this.limiar, cruzando);
